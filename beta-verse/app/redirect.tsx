@@ -1,14 +1,25 @@
-import { Redirect } from 'expo-router';
-import { useAuth } from '@/hooks/useAuth'; // replace with your logic
+import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { View } from 'react-native';
 
 export default function RedirectScreen() {
-  const isAuthenticated = false; // useAuth() in production
+  const router = useRouter();
+  const [isReady, setIsReady] = useState(false);
 
-  if (isAuthenticated === null) return null;
+  const isAuthenticated = false; // use your auth logic
 
-  return isAuthenticated ? (
-    <Redirect href="/(tabs)" />
-  ) : (
-    <Redirect href="/user" />
-  );
+  useEffect(() => {
+    // Allow root layout to mount before redirecting
+    setTimeout(() => {
+      if (isAuthenticated) {
+        router.replace('/(tabs)');
+      } else {
+        router.replace('/user');
+      }
+      setIsReady(true);
+    }, 0);
+  }, []);
+
+  // Optional loading placeholder
+  return <View />;
 }

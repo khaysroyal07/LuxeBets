@@ -4,7 +4,7 @@ import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { ThemeProvider, DarkTheme, DefaultTheme } from '@react-navigation/native';
-import "../global.css"
+
 
 import { useColorScheme } from '@/components/useColorScheme';
 

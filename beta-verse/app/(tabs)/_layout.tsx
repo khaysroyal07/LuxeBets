@@ -1,13 +1,15 @@
-import React from 'react';
+import React, { useEffect } from 'react';
+import { Tabs, useRouter } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { Link, Tabs } from 'expo-router';
-import { Pressable } from 'react-native';
 
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
-import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 
-// You can explore the built-in icon families and icons on the web at https://icons.expo.fyi/
+// Simulated auth state — replace with your real auth logic
+const useAuth = () => {
+  return false; // Set to `true` to simulate logged-in
+};
+
 function TabBarIcon(props: {
   name: React.ComponentProps<typeof FontAwesome>['name'];
   color: string;
@@ -17,35 +19,43 @@ function TabBarIcon(props: {
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
+  const router = useRouter();
+  const isAuthenticated = useAuth();
+
+  // Fallback redirect in case tabs load without auth
+  useEffect(() => {
+    if (!isAuthenticated) {
+      router.replace('/user');
+    }
+  }, [isAuthenticated]);
 
   return (
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
-      }}>
+      }}
+    >
       <Tabs.Screen
         name="index"
         options={{
           title: 'Dashboard',
-          tabBarIcon: ({ color }) => <TabBarIcon name="code" color={color} />,
-        
+          tabBarIcon: ({ color }) => <TabBarIcon name="dashboard" color={color} />,
         }}
       />
       <Tabs.Screen
         name="wallet"
         options={{
           title: 'Wallet',
-          tabBarIcon: ({ color }) => <TabBarIcon name="code" color={color} />,
+          tabBarIcon: ({ color }) => <TabBarIcon name="money" color={color} />,
         }}
       />
-            <Tabs.Screen
+      <Tabs.Screen
         name="rankings"
         options={{
           title: 'Rankings',
-          tabBarIcon: ({ color }) => <TabBarIcon name="code" color={color} />,
+          tabBarIcon: ({ color }) => <TabBarIcon name="trophy" color={color} />,
         }}
       />
     </Tabs>
-    
   );
 }
