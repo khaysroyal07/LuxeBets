@@ -8,6 +8,7 @@ import {
   Dimensions,
 } from "react-native";
 import React, { useEffect } from "react";
+import { useRouter } from "expo-router";
 import { useFonts } from "expo-font";
 import { RFValue } from "react-native-responsive-fontsize";
 import Animated, {
@@ -16,11 +17,13 @@ import Animated, {
   withRepeat,
   withTiming,
   Easing,
+  withDelay,
 } from "react-native-reanimated";
 
 const { width, height } = Dimensions.get("window");
 
 export default function Login() {
+  const router = useRouter();
   const [fontsLoaded] = useFonts({
     Poppins: require("@/assets/fonts/Poppins-Regular.ttf"),
     PoppinsMedium: require("@/assets/fonts/Poppins-Medium.ttf"),
@@ -29,43 +32,47 @@ export default function Login() {
   });
 
   // Animation values
-  const floatY = useSharedValue(0);
-  const slideX = useSharedValue(-50);
-  const fadeIn = useSharedValue(0);
+  const slideX = useSharedValue(-50);      // For both texts
+  const fadeIn = useSharedValue(0);        // For both texts
+  const floatY = useSharedValue(0);        // Only for "World"
+
 
   useEffect(() => {
-    floatY.value = withRepeat(
-      withTiming(-10, {
-        duration: 2000,
-        easing: Easing.inOut(Easing.ease),
-      }),
-      -1,
-      true
-    );
-
+    // Both texts slide in and fade in
     slideX.value = withTiming(0, {
-      duration: 5000,
+      duration: 1800,
       easing: Easing.out(Easing.exp),
     });
 
-    fadeIn.value = withTiming(1, {
+    fadeIn.value = withTiming(2000, {
       duration: 1000,
       easing: Easing.out(Easing.ease),
     });
+
+    // "World" starts floating AFTER slide-in
+    floatY.value = withDelay(
+      1000,
+      withRepeat(
+        withTiming(-10, {
+          duration: 2000,
+          easing: Easing.inOut(Easing.ease),
+        }),
+        -1,
+        true
+      )
+    );
   }, []);
 
-  const animatedWorldStyle = useAnimatedStyle(() => {
-    return {
-      transform: [{ translateY: floatY.value }],
-    };
-  });
+  const animatedTextSharedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: slideX.value }],
+    opacity: fadeIn.value,
+  }));
 
-  const animatedSubStyle = useAnimatedStyle(() => {
-    return {
-      transform: [{ translateX: slideX.value }],
-      opacity: fadeIn.value,
-    };
-  });
+  const animatedWorldStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: slideX.value }, { translateY: floatY.value }],
+    opacity: fadeIn.value,
+  }));
+
 
   const textShadowStyle = {
     textShadowColor: "rgba(255, 255, 255, 0.6)",
@@ -77,12 +84,12 @@ export default function Login() {
 
   return (
     <ImageBackground
-      source={require("@/assets/images/loginbg.png")}
+      source={require("@/assets/images/splash.png")}
       resizeMode="cover"
       style={styles.log_bg}
     >
       <View style={styles.log_contain}>
-        <Animated.Text style={[styles.log_sub, animatedSubStyle]}>
+        <Animated.Text style={[styles.log_sub, animatedTextSharedStyle]}>
           You vs. the
         </Animated.Text>
 
@@ -101,15 +108,16 @@ export default function Login() {
         <View style={styles.welc_cont}>
           <Text style={styles.log_welc}>Welcome</Text>
           <Text style={styles.login_text}>
-            Beta Verse is your place to compete against the world. Beta Verse is your place to shine.
+            🏆 Welcome to LuxeBets 🏆
+            Get ready to experience the thrill of the game like never before!...ff! 🚀🔥.
           </Text>
         </View>
 
-        <TouchableOpacity style={styles.login_btn}>
+        <TouchableOpacity onPress={() => router.push("/user/login")} style={styles.login_btn}>
           <Text style={styles.log_btn_text}>Log in</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.create_cont}>
+        <TouchableOpacity onPress={() => router.push("/user/singup")} style={styles.create_cont}>
           <Text style={styles.create_text}>Create a new account</Text>
         </TouchableOpacity>
       </View>
