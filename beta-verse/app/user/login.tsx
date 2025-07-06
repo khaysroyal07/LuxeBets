@@ -17,7 +17,7 @@ import React, { useState } from "react";
 import { useFonts } from "expo-font";
 import { RFValue } from "react-native-responsive-fontsize";
 import { useRouter } from "expo-router";
-
+import { useAuth } from "@/hooks/AuthContext"; // ✅ correct
 const { width, height } = Dimensions.get("window");
 
 export default function Login() {
@@ -31,12 +31,20 @@ export default function Login() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const { user, login } = useAuth(); // login() should handle actual login logic
 
+  const handleLogin = async () => {
+    const success = await login(email, password);
+    if (success) {
+      router.replace("/(tabs)"); // use replace to prevent going back to login
+    }
+
+  };
   if (!fontsLoaded) return null;
 
   return (
     <ImageBackground
-      source={require("@/assets/images/Login.png")}
+      source={require("@/assets/images/Signup.png")}
       resizeMode="cover"
       style={styles.log_bg}
     >
@@ -52,7 +60,7 @@ export default function Login() {
           >
 
             <View style={styles.log_contain}>
-              <TouchableOpacity onPress={() => router.push("/user/singup")} style={styles.back_btn}>
+              <TouchableOpacity onPress={() => router.push("/user")} style={styles.back_btn}>
                 <Image
                   style={styles.back_img}
                   source={require("@/assets/images/back.png")}
@@ -105,8 +113,8 @@ export default function Login() {
                 </View>
               </View>
 
-              <TouchableOpacity style={styles.login_btn}>
-                <Text style={styles.log_btn_text}>Log in</Text>
+              <TouchableOpacity onPress={handleLogin} style={styles.login_btn}>
+                <Text style={styles.log_btn_text}>Log in {'->'}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity onPress={() => router.push("/user/singup")} style={styles.create_cont}>

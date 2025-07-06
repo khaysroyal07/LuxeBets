@@ -1,11 +1,10 @@
-import { Stack } from 'expo-router';
 import { useEffect } from 'react';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { ThemeProvider, DarkTheme, DefaultTheme } from '@react-navigation/native';
-
-
+import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { AuthProvider } from "@/hooks/AuthContext"; // ✅ not hooks
+import { Slot } from "expo-router";
 import { useColorScheme } from '@/components/useColorScheme';
 
 SplashScreen.preventAutoHideAsync();
@@ -28,9 +27,9 @@ export default function RootLayout() {
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="redirect" />
-      </Stack>
+      <AuthProvider>
+        <Slot />
+      </AuthProvider>
     </ThemeProvider>
   );
 }

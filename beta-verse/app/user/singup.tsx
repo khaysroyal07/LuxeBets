@@ -2,19 +2,26 @@ import {
   StyleSheet,
   Text,
   View,
-  Image as RNImage,
+  Image,
   ImageBackground,
   TouchableOpacity,
   Dimensions,
+  TextInput,
+  ScrollView,
+  KeyboardAvoidingView,
+  Platform,
+  TouchableWithoutFeedback,
+  Keyboard,
 } from "react-native";
-import React, { useEffect } from "react";
+import React, { useState } from "react";
 import { useFonts } from "expo-font";
 import { RFValue } from "react-native-responsive-fontsize";
 import { useRouter } from "expo-router";
 
+const { width, height } = Dimensions.get("window");
+
 export default function SignUp() {
   const router = useRouter();
-
   const [fontsLoaded] = useFonts({
     Poppins: require("@/assets/fonts/Poppins-Regular.ttf"),
     PoppinsMedium: require("@/assets/fonts/Poppins-Medium.ttf"),
@@ -22,6 +29,8 @@ export default function SignUp() {
     PoppinsBold: require("@/assets/fonts/Poppins-Bold.ttf"),
   });
 
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
   if (!fontsLoaded) return null;
 
@@ -29,91 +38,131 @@ export default function SignUp() {
     <ImageBackground
       source={require("@/assets/images/Signup.png")}
       resizeMode="cover"
-      style={styles.log_bg}
+      style={styles.sign_bg}
     >
-      <View style={styles.log_contain}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 60 : 0}
+      >
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+          <ScrollView
+            contentContainerStyle={styles.scroll_container}
+            keyboardShouldPersistTaps="handled"
+          >
 
-        <View style={styles.welc_cont}>
-          <Text style={styles.log_welc}>Welcome</Text>
-          <Text style={styles.login_text}>
-            Beta Verse is your place to compete against the world. Beta Verse is your place to shine.
-          </Text>
-        </View>
+            <View style={styles.sign_contain}>
+              <TouchableOpacity onPress={() => router.push("/user")} style={styles.back_btn}>
+                <Image
+                  style={styles.back_img}
+                  source={require("@/assets/images/back.png")}
+                  resizeMode="contain"
+                />
+              </TouchableOpacity>
+              <Text style={styles.sign_sub}>Let's</Text>
+              <Text style={styles.sign_head}>Start</Text>
 
-        <TouchableOpacity style={styles.login_btn}>
-          <Text style={styles.log_btn_text}>Log in</Text>
-        </TouchableOpacity>
 
-        <TouchableOpacity style={styles.create_cont}>
-          <Text style={styles.create_text}>Create a new account</Text>
-        </TouchableOpacity>
-      </View>
+
+              <View style={styles.sign_input_cont}>
+                <View style={styles.email_cont}>
+                  <TextInput
+                    style={styles.sign_input}
+                    placeholder="Email Address"
+                    placeholderTextColor="white"
+                    value={email}
+                    onChangeText={setEmail}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                  />
+                  <Image
+                    style={styles.email_img}
+                    source={require("@/assets/images/email.png")}
+                    resizeMode="contain"
+                  />
+                </View>
+
+                <View style={styles.pw_cont}>
+                  <TextInput
+                    style={styles.pw_input}
+                    placeholder="Password"
+                    placeholderTextColor="white"
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry
+                  />
+                  <Image
+                    style={styles.pw_img}
+                    source={require("@/assets/images/LockIcon.png")}
+                    resizeMode="contain"
+                  />
+                </View>
+              </View>
+
+              <TouchableOpacity style={styles.signin_btn}>
+                <Text style={styles.sign_btn_text}>Sign Up {'->'}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity onPress={() => router.push("/user/singup")} style={styles.create_cont}>
+                <Text style={styles.terms_text}>Terms and Conditions</Text>
+              </TouchableOpacity>
+
+
+            </View>
+          </ScrollView>
+        </TouchableWithoutFeedback>
+      </KeyboardAvoidingView>
     </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  log_bg: {
+  sign_bg: {
     flex: 1,
     width: "100%",
     height: "100%",
   },
-  log_contain: {
+  scroll_container: {
+    flexGrow: 1,
+  },
+  sign_contain: {
     flex: 1,
-    paddingHorizontal: RFValue(24),
-    paddingTop: RFValue(60),
+    paddingHorizontal: RFValue(28),
+    paddingTop: RFValue(80),
     justifyContent: "flex-start",
   },
-  log_sub: {
+  sign_sub: {
     fontFamily: "PoppinsMedium",
-    fontSize: RFValue(32),
+    fontSize: RFValue(25),
     color: "white",
-    marginBottom: RFValue(0),
-    height: 40,
+    height: RFValue(30),
+
   },
-  log_head: {
+  sign_head: {
     fontFamily: "PoppinsSemiBold",
-    fontSize: RFValue(54),
+    fontSize: RFValue(45),
     color: "white",
-    marginBottom: RFValue(20),
+    marginBottom: RFValue(10),
   },
-  log_img_cont: {
+  sign_img_cont: {
     width: "100%",
     alignItems: "center",
-    marginBottom: RFValue(15),
-    overflow: "visible",
+    marginBottom: RFValue(2),
   },
-  logo: {
-    width: 200,
-    height: 200,
-    backfaceVisibility: "hidden",
+  signo: {
+    width: RFValue(260),
+    height: RFValue(190),
   },
-  welc_cont: {
-    alignSelf: "stretch",
-    marginBottom: RFValue(5),
-  },
-  log_welc: {
-    fontFamily: "PoppinsSemiBold",
-    fontSize: RFValue(34),
-    color: "white",
-    marginBottom: RFValue(8),
-  },
-  login_text: {
-    fontFamily: "PoppinsMedium",
-    fontSize: RFValue(15),
-    color: "white",
-    maxWidth: "100%",
-  },
-  login_btn: {
+  signin_btn: {
     marginTop: RFValue(30),
     borderRadius: RFValue(16),
-    height: RFValue(60),
+    width: "100%",
+    height: RFValue(55),
     backgroundColor: "white",
     justifyContent: "center",
     alignItems: "center",
-    alignSelf: "stretch",
   },
-  log_btn_text: {
+  sign_btn_text: {
     fontFamily: "PoppinsMedium",
     fontSize: RFValue(18),
     color: "black",
@@ -122,12 +171,66 @@ const styles = StyleSheet.create({
     marginTop: RFValue(18),
     alignItems: "center",
     justifyContent: "center",
-    alignSelf: "stretch",
   },
-  create_text: {
+  terms_text: {
     textDecorationLine: "underline",
     fontFamily: "PoppinsMedium",
     fontSize: RFValue(15),
     color: "white",
   },
+  sign_input_cont: {
+    width: "100%",
+    marginTop: RFValue(180),
+  },
+  email_cont: {
+    position: "relative",
+    marginBottom: RFValue(10),
+  },
+  sign_input: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(16),
+    width: "100%",
+    height: RFValue(50),
+    paddingHorizontal: RFValue(15),
+    paddingRight: RFValue(45), // space for icon
+    borderBottomWidth: RFValue(2),
+    borderColor: "white",
+    borderRadius: RFValue(8),
+    backgroundColor: "rgba(0,0,0,0.2)",
+    color: "white",
+    marginBottom: RFValue(10),
+  },
+  email_img: {
+    width: RFValue(22),
+    height: RFValue(22),
+    position: "absolute",
+    right: RFValue(15),
+    top: RFValue(14),
+  },
+  pw_cont: {
+    position: "relative",
+    marginBottom: RFValue(5),
+  },
+  pw_input: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(16),
+    width: "100%",
+    height: RFValue(50),
+    paddingHorizontal: RFValue(15),
+    paddingRight: RFValue(45), // space for icon
+    borderBottomWidth: RFValue(2),
+    borderColor: "white",
+    borderRadius: RFValue(8),
+    backgroundColor: "rgba(0,0,0,0.2)",
+    color: "white",
+  },
+  pw_img: {
+    width: RFValue(22),
+    height: RFValue(22),
+    position: "absolute",
+    right: RFValue(15),
+    top: RFValue(14),
+  },
+  back_btn: { width: RFValue(105), height: RFValue(44), marginBottom: 25 },
+  back_img: { width: "100%", height: "100%", }
 });
