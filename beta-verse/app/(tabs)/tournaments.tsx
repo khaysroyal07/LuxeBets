@@ -1,188 +1,300 @@
-import { StyleSheet, Text, View, Image, TouchableOpacity } from 'react-native'
-import React from 'react'
+import React, { useState, useEffect } from "react";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  Modal,
+  ScrollView,
+  ImageBackground,
+  ActivityIndicator,
+} from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
-import { useFonts } from 'expo-font';
+import { useRouter } from "expo-router";
 
-const tournamentData = [
+// Mock tournaments
+const mockTournaments = [
   {
-    id: 1,
-    entry: '$20 Entry',
-    date: 'June 28 – 30',
-    players: 12,
-    prize: 680,
-    status: 'Active',
+    id: "1",
+    name: "NFL Week 3",
+    entryFee: 20,
+    games: [
+      { idEvent: "101", strHomeTeam: "Patriots", strAwayTeam: "Cowboys" },
+      { idEvent: "102", strHomeTeam: "Packers", strAwayTeam: "Vikings" },
+    ],
   },
   {
-    id: 2,
-    entry: '$50 Entry',
-    date: 'June 28 – 30',
-    players: 12,
-    prize: 680,
-    status: 'Active',
-  },
-  {
-    id: 3,
-    entry: '$100 Entry',
-    date: 'June 28 – 30',
-    players: 12,
-    prize: 680,
-    status: 'Active',
+    id: "2",
+    name: "NBA Week 5",
+    entryFee: 50,
+    games: [
+      { idEvent: "201", strHomeTeam: "Lakers", strAwayTeam: "Celtics" },
+      { idEvent: "202", strHomeTeam: "Bulls", strAwayTeam: "Heat" },
+    ],
   },
 ];
-const tournaments = () => {
-  const [fontsLoaded] = useFonts({
-    Poppins: require('@/assets/fonts/Poppins-Regular.ttf'),
-    PoppinsMedium: require('@/assets/fonts/Poppins-Medium.ttf'),
-    PoppinsSemiBold: require('@/assets/fonts/Poppins-SemiBold.ttf'),
-    PoppinsBold: require('@/assets/fonts/Poppins-Bold.ttf'),
-  });
 
-  if (!fontsLoaded) return null;
+export default function TournamentPage() {
+  const [tournaments, setTournaments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [selectedTournament, setSelectedTournament] = useState(null);
+  const [picks, setPicks] = useState({});
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+
+  const router = useRouter();
+
+  useEffect(() => {
+    setTimeout(() => {
+      setTournaments(mockTournaments);
+      setLoading(false);
+    }, 1000);
+  }, []);
+
+  const joinTournament = (tournament) => {
+    setSelectedTournament(tournament);
+    setPicks({});
+    setModalVisible(true);
+  };
+
+  const handlePick = (gameId, team) => {
+    setPicks((prev) => ({ ...prev, [gameId]: team }));
+  };
+
+  const submitPicks = () => {
+    console.log("User picks for tournament", selectedTournament.name, picks);
+    setModalVisible(false);
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#613DC1" />
+      </View>
+    );
+  }
 
   return (
-    <View style={styles.tour_cont}>
-      <View style={styles.top_bar}>
-        <View>
-          <Image source={require('@/assets/icons/menu.png')} style={styles.top_baric_one} resizeMode="contain" />
-        </View>
-        <View style={styles.right_group}>
-          <Image source={require('@/assets/icons/search.png')} style={styles.top_baric_two} resizeMode="contain" />
-          <View style={styles.profile_border}>
-            <Image source={require('@/assets/icons/profile.png')} style={styles.top_baric_thr} resizeMode="contain" />
-          </View>
-        </View>
-      </View>
-      <View>
-        <Text style={{ fontFamily: 'PoppinsSemiBold', fontSize: RFValue(30), color: '#2C0735' }}>Tournaments</Text>
-        <View>
-          {tournamentData.map((item) => (
-            <View key={item.id} style={styles.tour_card}>
-              <View style={styles.tour_row_one}>
-                <Image style={{ width: RFValue(35), height: RFValue(42) }} source={require('@/assets/icons/trophy.png')} />
-                <View style={{ flexDirection: 'column' }}>
-                  <Text style={{ fontFamily: 'PoppinsMedium', fontSize: RFValue(16), color: '#2C0735' }}>{item.entry}</Text>
-                  <Text style={{ marginTop: RFValue(-4), fontFamily: 'PoppinsRegular', fontSize: RFValue(12), color: '#2C0735' }}>{item.date}</Text>
-                </View>
+    <ImageBackground
+      source={require("@/assets/images/bgDash.png")}
+      style={styles.background}
+      resizeMode="cover"
+    >
+      <ScrollView
+        contentContainerStyle={{
+          marginTop: RFValue(65),
+          paddingBottom: RFValue(50),
+          paddingHorizontal: RFValue(16),
+        }}
+      >
+        {/* Top Row with Title + Dropdown */}
+        <View style={styles.topRow}>
+          <Text style={styles.title}>Available Tournaments</Text>
+          <View style={{ position: "relative" }}>
+            <TouchableOpacity
+              style={styles.dropdownBtn}
+              onPress={() => setDropdownOpen(!dropdownOpen)}
+            >
+              <Text style={styles.dropdownText}>⋮</Text>
+            </TouchableOpacity>
 
-              </View>
-              <View style={styles.tour_row_two}>
-                <View style={{ flexDirection: 'column', width: '65%' }}>
-                  <View style={{ flexDirection: 'row' }}>
-                    <Image style={{ width: RFValue(20), height: RFValue(20) }} source={require('@/assets/icons/miniperson.png')} />
-                    <Text style={{ fontFamily: 'PoppinsRegular', fontSize: RFValue(12), color: '#2C0735' }}>{item.players} Players Joined</Text>
-                  </View>
-                  <View style={{ flexDirection: 'row' }}>
-                    <Image style={{ width: RFValue(20), height: RFValue(20) }} source={require('@/assets/icons/minicoin.png')} />
-                    <Text style={{ fontFamily: 'PoppinsRegular', fontSize: RFValue(12), color: '#2C0735' }}>Prize Pool: ${item.prize}</Text>
-                  </View>
-                </View>
-                <TouchableOpacity style={{ justifyContent: 'center', alignItems: 'center', borderRadius: 6, width: RFValue(88), height: RFValue(31), backgroundColor: '#613DC1' }}>
-                  <Text style={{ fontFamily: 'PoppinsSemiBold', fontSize: RFValue(12), color: '#FFFFFF' }}>Join</Text>
+            {dropdownOpen && (
+              <View style={styles.dropdownMenu}>
+                <TouchableOpacity
+                  onPress={() => {
+                    setDropdownOpen(false);
+                    router.push("tournaments/TournamentHistory");
+                  }}
+                >
+                  <Text style={styles.dropdownItem}>View History</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    setDropdownOpen(false);
+                    router.push("tournaments/Status");
+                  }}
+                >
+                  <Text style={styles.dropdownItem}>Tournament Status</Text>
                 </TouchableOpacity>
               </View>
-              <View style={styles.tour_row_thr}>
-                <View style={styles.sm_circle}></View>
-                <Text style={{ fontFamily: 'PoppinsRegular', fontSize: RFValue(13), color: '#97DFFC', fontWeight: 800 }}>{item.status}</Text>
-
-              </View>
-            </View>
-          ))}
+            )}
+          </View>
         </View>
-      </View>
-    </View>
-  )
+
+        {tournaments.map((item) => (
+          <View key={item.id} style={styles.tournamentCard}>
+            <Text style={styles.tournamentName}>{item.name}</Text>
+            <Text style={styles.tournamentText}>Entry Fee: ${item.entryFee}</Text>
+            <TouchableOpacity
+              style={styles.joinButton}
+              onPress={() => joinTournament(item)}
+            >
+              <Text style={styles.joinText}>Join Tournament</Text>
+            </TouchableOpacity>
+          </View>
+        ))}
+
+        {/* Picks Modal */}
+        <Modal visible={modalVisible} animationType="slide" transparent>
+          <ScrollView contentContainerStyle={styles.overlay}>
+            <View style={styles.modalContainer}>
+              <Text style={styles.modalTitle}>
+                Make Picks: {selectedTournament?.name}
+              </Text>
+
+              {selectedTournament?.games.map((game) => (
+                <View key={game.idEvent} style={styles.gameRow}>
+                  <Text style={styles.team}>{game.strHomeTeam}</Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.pickButton,
+                      picks[game.idEvent] === "Home" && styles.selectedPick,
+                    ]}
+                    onPress={() => handlePick(game.idEvent, "Home")}
+                  >
+                    <Text style={styles.pickText}>Pick</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.pickButton,
+                      picks[game.idEvent] === "Away" && styles.selectedPick,
+                    ]}
+                    onPress={() => handlePick(game.idEvent, "Away")}
+                  >
+                    <Text style={styles.pickText}>Pick</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.team}>{game.strAwayTeam}</Text>
+                </View>
+              ))}
+
+              <TouchableOpacity
+                style={styles.submitButton}
+                onPress={submitPicks}
+              >
+                <Text style={styles.submitText}>Submit Picks</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.closeButton}
+                onPress={() => setModalVisible(false)}
+              >
+                <Text style={styles.closeText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </Modal>
+      </ScrollView>
+    </ImageBackground>
+  );
 }
 
-export default tournaments
-
 const styles = StyleSheet.create({
-  tour_cont: {
-    paddingVertical: RFValue(15),
-    paddingHorizontal: RFValue(10),
-    backgroundColor: 'white',
-    flexDirection: 'column',
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center'
+  background: { flex: 1 },
+  topRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: RFValue(16),
+  },
+  dropdownBtn: {
+  height: RFValue(36), // set a fixed height
+  width: RFValue(36),  // make it square
+  justifyContent: "center",
+  alignItems: "center",
+  padding: 0,          // remove default padding
+},
+dropdownText: { 
+  fontSize: RFValue(24), 
+  color: "#fff",
+  textAlign: "center",
+  includeFontPadding: false, // improves vertical centering on Android
+  textAlignVertical: "center" // ensures vertical centering
+},
+    dropdownMenu: {
+    position: "absolute",
+    top: RFValue(32),
+    right: 0,
+    backgroundColor: "#222",
+    borderRadius: RFValue(12),
+    padding: RFValue(8),
+    zIndex: 10,
+  },
+  dropdownItem: {
+    color: "#fff",
+    paddingVertical: RFValue(6),
+    fontSize: RFValue(14),
+      width:150,
 
   },
-  top_bar: {
-    marginTop: RFValue(48),
-    display: 'flex',
-    flexDirection: 'row',
-    alignSelf: 'stretch',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    marginBottom: RFValue(25),
-
+  loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
+  title: { fontSize: RFValue(22), fontWeight: "700", color: "#fff" },
+  tournamentCard: {
+    backgroundColor: "rgba(0,0,0,0.6)",
+    padding: RFValue(16),
+    marginVertical: RFValue(8),
+    borderRadius: RFValue(16),
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.5,
+    shadowRadius: 5,
   },
-  right_group: {
-    marginLeft: 'auto',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10, // or use margin for spacing
+  tournamentName: {
+    fontSize: RFValue(18),
+    fontWeight: "700",
+    color: "#fff",
+    marginBottom: RFValue(6),
   },
-  top_baric_one: {
-    alignSelf: 'center',
-    width: RFValue(24),
-    height: RFValue(24),
+  tournamentText: { color: "#ddd", marginBottom: RFValue(6) },
+  joinButton: {
+    marginTop: RFValue(8),
+    backgroundColor: "#613DC1",
+    padding: RFValue(10),
+    borderRadius: RFValue(12),
+    alignItems: "center",
   },
-  top_baric_two: {
-    alignSelf: 'center',
-    width: RFValue(25),
-    height: RFValue(25),
-
+  joinText: { color: "#fff", fontWeight: "700" },
+  overlay: {
+    flexGrow: 1,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingVertical: RFValue(50),
   },
-  profile_border: {
-    padding: RFValue(6), // 👈 controls the border offset
-    borderWidth: 1,
-    borderColor: '#613DC1',
-    borderRadius: 8,
+  modalContainer: {
+    width: "90%",
+    backgroundColor: "#1a1a1a",
+    borderRadius: RFValue(16),
+    padding: RFValue(16),
   },
-  top_baric_thr: {
-    alignSelf: 'center',
-    width: RFValue(33),
-    height: RFValue(30),
+  modalTitle: {
+    fontSize: RFValue(18),
+    fontWeight: "700",
+    color: "#fff",
+    marginBottom: RFValue(12),
+    textAlign: "center",
   },
-  tour_card: {
-    display: 'flex',
-    flexDirection: 'column',
-    borderWidth: 2.21,
-    borderColor: '#858AE3',
-    width: RFValue(310),
-    height: RFValue(168),
-    padding: (RFValue(20)),
-    borderRadius: 12,
-    marginBottom: 20,
-    justifyContent: 'center',
-    alignItems: 'center'
+  gameRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginVertical: RFValue(8),
   },
-  tour_row_one: {
-    flexDirection: 'row',
-    width: '100%',
-    columnGap: 10,
-    marginBottom: RFValue(15),
+  team: { fontSize: RFValue(14), color: "#fff", flex: 2, textAlign: "center" },
+  pickButton: {
+    padding: RFValue(6),
+    backgroundColor: "#444",
+    borderRadius: RFValue(6),
+    marginHorizontal: RFValue(4),
   },
-  tour_row_two: {
-    flexDirection: 'row',
-    width: '100%',
-    alignItems: 'center',
-    marginBottom: RFValue(15)
+  selectedPick: { backgroundColor: "#613DC1" },
+  pickText: { color: "#fff", fontWeight: "600" },
+  submitButton: {
+    backgroundColor: "#2c91a1",
+    padding: RFValue(12),
+    borderRadius: RFValue(12),
+    marginTop: RFValue(12),
   },
-  tour_row_thr: {
-    display: 'flex',
-    flexDirection: 'row',
-    width: '100%',
-    columnGap: RFValue(8),
-    alignSelf: 'center',
-    justifyContent: 'flex-start'
-  },
-  sm_circle: {
-    borderRadius: '50%',
-    backgroundColor: '#97DFFC',
-    width: RFValue(9),
-    height: RFValue(9),
-    marginTop: 'auto',
-    marginBottom: 'auto'
-  },
-})
+  submitText: { color: "#fff", textAlign: "center", fontWeight: "700" },
+  closeButton: { padding: RFValue(10), marginTop: RFValue(8) },
+  closeText: { color: "#613DC1", textAlign: "center", fontWeight: "700" },
+});

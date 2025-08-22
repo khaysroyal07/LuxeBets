@@ -8,6 +8,8 @@
     "scheme": "betaverse",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "deepLinking": true,
+    "platforms": ["ios", "android", "web"],
     "splash": {
       "image": "./assets/images/logo.png",
       "resizeMode": "contain",

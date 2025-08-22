@@ -1,13 +1,16 @@
 import React from 'react';
-import { Image, ImageSourcePropType, StyleSheet, Platform } from 'react-native';
+import { Image, ImageSourcePropType, StyleSheet, Dimensions } from 'react-native';
 import { Tabs, Redirect } from 'expo-router';
 import { useAuth } from '@/hooks/AuthContext';
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
 
-import dashboardIcon from '@/assets/icons/dash.png';
+import dashboardIcon from '@/assets/icons/home.png';
 import walletIcon from '@/assets/icons/wallet.png';
 import rankingsIcon from '@/assets/icons/rank.png';
+import { RFValue } from "react-native-responsive-fontsize";
+
+const { width } = Dimensions.get('window');
 
 function TabBarIcon({
   source,
@@ -27,8 +30,8 @@ function TabBarIcon({
 
 const styles = StyleSheet.create({
   icon: {
-    width: 42,
-    height: 36,
+    width: RFValue(28, width),  // responsive size
+    height: RFValue(28, width), // make square for even appearance
   },
 });
 
@@ -44,31 +47,25 @@ export default function TabLayout() {
         tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
         tabBarShowLabel: false,
         tabBarStyle: {
-          backgroundColor: '#416985',
-          position: Platform.OS === 'ios' ? 'absolute' : 'relative',
+          backgroundColor: '#191919',
+          position: 'absolute',
           borderRadius: 20,
           marginHorizontal: 30,
           paddingVertical: 0,
-          marginBottom: 20,
+          marginBottom: 40,
           height: 90,
           display: 'flex',
-          justifyContent: 'center',   // center horizontally
-          alignItems: 'center',       // center vertically
+          justifyContent: 'center',
+          alignItems: 'center',
           flexDirection: 'row',
-
         },
-
-
-
       }}
     >
-      {/* Switched order: wallet first */}
       <Tabs.Screen
         name="wallet"
         options={{
           title: 'Wallet',
           headerShown: false,
-
           tabBarIcon: ({ color }) => <TabBarIcon source={walletIcon} color={color} />,
         }}
       />
@@ -85,7 +82,6 @@ export default function TabLayout() {
         options={{
           title: 'Tournaments',
           headerShown: false,
-
           tabBarIcon: ({ color }) => <TabBarIcon source={rankingsIcon} color={color} />,
         }}
       />

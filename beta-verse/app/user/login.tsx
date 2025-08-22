@@ -31,15 +31,17 @@ export default function Login() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const { user, login } = useAuth(); // login() should handle actual login logic
-
+  const { signIn } = useAuth();
   const handleLogin = async () => {
-    const success = await login(email, password);
-    if (success) {
-      router.replace("/(tabs)"); // use replace to prevent going back to login
+    try {
+      await signIn(email, password);
+      alert('Logged in!');
+      router.push("/(tabs)");
+    } catch (error) {
+      alert(error.message);
     }
-
   };
+
   if (!fontsLoaded) return null;
 
   return (

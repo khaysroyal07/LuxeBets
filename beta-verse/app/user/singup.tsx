@@ -17,6 +17,7 @@ import React, { useState } from "react";
 import { useFonts } from "expo-font";
 import { RFValue } from "react-native-responsive-fontsize";
 import { useRouter } from "expo-router";
+import { useAuth } from '@/hooks/AuthContext';
 
 const { width, height } = Dimensions.get("window");
 
@@ -31,6 +32,16 @@ export default function SignUp() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const { signUp } = useAuth();
+    const handleSignUp = async () => {
+    try {
+      await signUp(email, password);
+      alert('Signned Up completed!');
+      router.push("/user/confirm");
+    } catch (error) {
+      alert(error.message);
+    }
+  };
 
   if (!fontsLoaded) return null;
 
@@ -99,11 +110,11 @@ export default function SignUp() {
                 </View>
               </View>
 
-              <TouchableOpacity style={styles.signin_btn}>
+              <TouchableOpacity  onPress={handleSignUp} style={styles.signin_btn}>
                 <Text style={styles.sign_btn_text}>Sign Up {'->'}</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity onPress={() => router.push("/user/singup")} style={styles.create_cont}>
+              <TouchableOpacity style={styles.create_cont}>
                 <Text style={styles.terms_text}>Terms and Conditions</Text>
               </TouchableOpacity>
 

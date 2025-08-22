@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   ScrollView,
   TouchableOpacity,
@@ -7,24 +7,33 @@ import {
   StyleSheet,
   ImageBackground,
   Text,
+  ActivityIndicator,
+  Dimensions,
+  FlatList,
 } from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
-import { LinearGradient } from 'expo-linear-gradient';
+import { LinearGradient } from "expo-linear-gradient";
 import { useFonts } from "expo-font";
+import { useRouter } from "expo-router";
+
+const { width } = Dimensions.get("window");
 
 const sportsIcons = [
-  require("@/assets/icons/helmet.png"),
-  require("@/assets/icons/basketball.png"),
-  require("@/assets/icons/baseball.png"),
-  require("@/assets/icons/soccer.png"),
-  require("@/assets/icons/boxing.png"),
-  require("@/assets/icons/tennis.png"),
-  require("@/assets/icons/car.png"),
-
+  { id: "4391", icon: require("@/assets/icons/helmet.png"), name: "NFL" },
+  { id: "4387", icon: require("@/assets/icons/basketball.png"), name: "NBA" },
+  { id: "4424", icon: require("@/assets/icons/baseball.png"), name: "MLB" },
+  { id: "4335", icon: require("@/assets/icons/soccer.png"), name: "EPL" },
+  { id: "4444", icon: require("@/assets/icons/boxing.png"), name: "Boxing" },
+  { id: "4480", icon: require("@/assets/icons/tennis.png"), name: "Tennis" },
+  { id: "4390", icon: require("@/assets/icons/car.png"), name: "Nascar" },
 ];
 
 export default function Dash() {
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const router = useRouter();
+
   const [fontsLoaded] = useFonts({
     Poppins: require("@/assets/fonts/Poppins-Regular.ttf"),
     PoppinsMedium: require("@/assets/fonts/Poppins-Medium.ttf"),
@@ -32,217 +41,304 @@ export default function Dash() {
     PoppinsBold: require("@/assets/fonts/Poppins-Bold.ttf"),
   });
 
+  useEffect(() => {
+    if (!sportsIcons[selectedIndex]) return;
+
+    const fetchEvents = async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(
+          `https://www.thesportsdb.com/api/v1/json/3/eventsnextleague.php?id=${sportsIcons[selectedIndex].id}`
+        );
+        const data = await res.json();
+        setEvents(data.events || []);
+      } catch (error) {
+        console.error("Error fetching events:", error);
+        setEvents([]);
+      }
+      setLoading(false);
+    };
+
+    fetchEvents();
+  }, [selectedIndex]);
+
   if (!fontsLoaded) return null;
 
   return (
-    <ScrollView style={styles.dash_container}>
-      <View style={styles.top_bar}>
-        <View>
-          <Image source={require('@/assets/icons/menu.png')} style={styles.top_baric_one} resizeMode="contain" />
-        </View>
-        <View style={styles.right_group}>
-          <Image source={require('@/assets/icons/search.png')} style={styles.top_baric_two} resizeMode="contain" />
-          <View style={styles.profile_border}>
-            <Image source={require('@/assets/icons/profile.png')} style={styles.top_baric_thr} resizeMode="contain" />
+    <ImageBackground
+      source={require("@/assets/images/bgDash.png")}
+      resizeMode="cover"
+      style={styles.container}
+    >
+      {/* Top Bar */}
+      <View style={styles.topBar}>
+        <Image
+          source={require("@/assets/icons/Menu.png")}
+          style={styles.iconSmall}
+          resizeMode="contain"
+        />
+        <View style={styles.topBarRight}>
+          <Image
+            source={require("@/assets/icons/Search.png")}
+            style={styles.iconSmall}
+            resizeMode="contain"
+          />
+          <View style={styles.profileBorder}>
+            <Image
+              source={require("@/assets/icons/Profile.png")}
+              style={styles.profileIcon}
+              resizeMode="contain"
+            />
           </View>
         </View>
       </View>
-      <ScrollView style={styles.hmenu_cont} horizontal showsHorizontalScrollIndicator={false}>
-        {sportsIcons.map((icon, index) => (
+
+      {/* Sports Selector */}
+      <ScrollView
+        style={styles.sportsSelector}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ paddingHorizontal: RFValue(10) }}
+      >
+        {sportsIcons.map((sport, index) => (
           <TouchableOpacity
-            key={index}
+            key={sport.id}
             onPress={() => setSelectedIndex(index)}
-            style={styles.iconWrapper}
+            style={[
+              styles.sportIconWrapper,
+              selectedIndex === index && styles.selectedSportIconWrapper,
+            ]}
           >
-            <View style={[styles.iconInner, selectedIndex === index && styles.selectedIcon]}>
-              <Image source={icon} style={styles.iconImage} resizeMode="contain" />
-            </View>
+            <Image source={sport.icon} style={styles.sportIcon} />
+            <Text
+              style={[
+                styles.sportName,
+                selectedIndex === index && styles.sportNameSelected,
+              ]}
+            >
+              {sport.name}
+            </Text>
           </TouchableOpacity>
-
         ))}
-
       </ScrollView>
 
-      <View style={styles.dash_cont_two}>
-        <LinearGradient
-          colors={['#2C0735', '#478299']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={styles.line_gradient}
-        />
-        <ImageBackground
-          resizeMode="cover"
-          style={styles.live_cont}
-          source={require('@/assets/images/livebox.png')}>
-          <View style={styles.live_col_one}>
-            <View style={styles.live_circle}></View>
-            <Text style={{ marginTop: 10, fontFamily: 'Poppins', fontSize: RFValue(15), color: 'white' }}>Team {'\n'}Name</Text >
-          </View>
-          <View style={styles.live_col_two}>
-            <View style={styles.live_tag}>
-              <View style={styles.sm_circle}></View>
-              <Text style={{ fontFamily: 'PoppinsSemiBold', fontSize: RFValue(15), color: 'white' }}>LIVE</Text>
-            </View>
-            <Text style={{ fontFamily: 'PoppinsSemiBold', fontSize: RFValue(30), color: 'white' }}>1 - 5</Text>
-          </View>
-          <View style={styles.live_col_thr}>
-            <View style={styles.live_circle}></View>
-            <Text style={{ marginTop: 10, fontFamily: 'Poppins', fontSize: RFValue(15), color: 'white' }}>Team {'\n'}Name</Text >
-          </View>
-        </ImageBackground>
-        <View style={styles.upcoming}>
-          <Text style={{ fontFamily: 'PoppinsSemiBold', fontSize: RFValue(26), color: '#2C0735' }}>Upcoming</Text>
-          <View></View>
-        </View>
+      {/* Separator */}
+      <LinearGradient
+        colors={["#2C0735", "#478299"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={styles.separator}
+      />
+
+      {/* Events Carousel */}
+      <View style={styles.eventsContainer}>
+        {loading ? (
+          <ActivityIndicator size="large" color="#613DC1" />
+        ) : events.length === 0 ? (
+          <Text style={styles.noEventsText}>No upcoming matches found.</Text>
+        ) : (
+          <FlatList
+            data={events}
+            keyExtractor={(item) => item.idEvent}
+            horizontal
+            pagingEnabled
+            snapToAlignment="center"
+            decelerationRate="fast"
+            showsHorizontalScrollIndicator={false}
+            renderItem={({ item }) => (
+              <View style={styles.carouselItem}>
+                <TouchableOpacity
+                  style={styles.eventCard}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/tournament",
+                      params: { eventId: item.idEvent },
+                    })
+                  }
+                  activeOpacity={0.9}
+                >
+                  <ImageBackground
+                    source={require("@/assets/images/liveb.png")}
+                    style={styles.eventBg}
+                    imageStyle={{ borderRadius: RFValue(16) }}
+                  >
+                    {/* Left Team */}
+                    <View style={styles.teamContainer}>
+                      <View style={styles.teamCircle}></View>
+                      <Text style={styles.teamName} numberOfLines={2}>
+                        {item.strHomeTeam}
+                      </Text>
+                    </View>
+
+                    {/* Score & Info */}
+                    <View style={styles.scoreContainer}>
+                      {item.strStatus === "Live" && (
+                        <View style={styles.liveTag}>
+                          <View style={styles.liveDot}></View>
+                          <Text style={styles.liveText}>LIVE</Text>
+                        </View>
+                      )}
+                      <Text style={styles.scoreText}>
+                        {item.intHomeScore ?? "-"} - {item.intAwayScore ?? "-"}
+                      </Text>
+                      <Text style={styles.dateText}>{item.dateEvent}</Text>
+                    </View>
+
+                    {/* Right Team */}
+                    <View style={styles.teamContainer}>
+                      <View style={styles.teamCircle}></View>
+                      <Text style={styles.teamName} numberOfLines={2}>
+                        {item.strAwayTeam}
+                      </Text>
+                    </View>
+                  </ImageBackground>
+                </TouchableOpacity>
+              </View>
+            )}
+          />
+        )}
       </View>
-    </ScrollView>
+
+      {/* Upcoming Section */}
+      <View style={styles.upcomingSection}>
+        <Text style={styles.upcomingTitle}>Upcoming</Text>
+      </View>
+    </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  dash_container: {
-    paddingVertical: RFValue(15),
-    paddingHorizontal: RFValue(10),
-    backgroundColor: 'white',
-    flexDirection: 'column',
-    flex: 1
-
-  },
-  dash_cont_two: {
-    paddingVertical: RFValue(5),
-    paddingHorizontal: RFValue(18),
-    backgroundColor: 'white',
-    flexDirection: 'column',
-    alignSelf: 'stretch', // full width
-    flex: 1
-  },
-
-  hmenu_cont: {
-    backgroundColor: 'white',
-    alignSelf: 'stretch',
-    marginBottom: RFValue(12),
-    marginHorizontal: RFValue(10),
-
-  },
-  line_gradient: {
-    alignSelf: 'stretch',
-    height: RFValue(4),
-    marginBottom: RFValue(45),
-
-  },
-  top_bar: {
-    marginTop: RFValue(48),
-    display: 'flex',
-    flexDirection: 'row',
-    alignSelf: 'stretch',
-    alignItems: 'center',
-    paddingHorizontal: 16,
+  container: { flex: 1, width: "100%", height: "100%" },
+  topBar: {
+    flexDirection: "row",
+    paddingHorizontal: RFValue(16),
+    alignItems: "center",
     marginBottom: RFValue(25),
-
+    paddingTop: RFValue(48),
   },
-  right_group: {
-    marginLeft: 'auto',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10, // or use margin for spacing
+  iconSmall: { width: RFValue(24), height: RFValue(24) },
+  topBarRight: {
+    flexDirection: "row",
+    marginLeft: "auto",
+    alignItems: "center",
+    gap: RFValue(14),
   },
-  top_baric_one: {
-    alignSelf: 'center',
-    width: RFValue(24),
-    height: RFValue(24),
-  },
-  top_baric_two: {
-    alignSelf: 'center',
-    width: RFValue(25),
-    height: RFValue(25),
-
-  },
-  profile_border: {
-    padding: RFValue(6), // 👈 controls the border offset
+  profileBorder: {
+    padding: RFValue(6),
     borderWidth: 1,
-    borderColor: '#613DC1',
-    borderRadius: 8,
+    borderColor: "#613DC1",
+    borderRadius: RFValue(8),
   },
-  top_baric_thr: {
-    alignSelf: 'center',
-    width: RFValue(33),
-    height: RFValue(30),
-  },
-  iconWrapper: {
-    marginHorizontal: RFValue(6),
+  profileIcon: { width: RFValue(33), height: RFValue(30) },
+  sportsSelector: { maxHeight: RFValue(80), marginBottom: RFValue(20) },
+  sportIconWrapper: {
+    alignItems: "center",
+    marginHorizontal: RFValue(8),
     paddingVertical: RFValue(4),
-
-  },
-
-  iconInner: {
-    padding: RFValue(8),
-    borderWidth: RFValue(2),
-    borderColor: "transparent",
+    paddingHorizontal: RFValue(8),
     borderRadius: RFValue(12),
-    backgroundColor: "white",
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#f5f5f5",
   },
-
-  selectedIcon: {
-    borderColor: "#2c91a1", // Highlight color
-    borderWidth: 0,
-    borderBottomWidth: 8,
+  selectedSportIconWrapper: { backgroundColor: "#2c91a1" },
+  sportIcon: {
+    width: RFValue(40),
+    height: RFValue(40),
+    marginBottom: RFValue(4),
   },
-
-  iconImage: {
-    width: 40,
-    height: 40,
+  sportName: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(13),
+    color: "#555",
   },
-  live_cont: {
-    display: 'flex',
-    alignSelf: 'stretch',
+  sportNameSelected: { color: "white", fontWeight: "700" },
+  separator: {
+    height: RFValue(4),
+    marginBottom: RFValue(30),
+    marginHorizontal: RFValue(10),
+    borderRadius: RFValue(8),
+  },
+  eventsContainer: { minHeight: RFValue(200), marginBottom: RFValue(20) },
+  noEventsText: {
+    fontFamily: "PoppinsSemiBold",
+    fontSize: RFValue(16),
+    color: "#2C0735",
+    textAlign: "center",
+  },
+  carouselItem: { width, alignItems: "center", justifyContent: "center" },
+  eventCard: {
+    width: width * 0.88,
     height: RFValue(180),
-    flexDirection: 'row',
-    columnGap: RFValue(30),
-    justifyContent: 'center',
-    marginBottom: 20
+    borderRadius: RFValue(16),
+    overflow: "hidden",
   },
-  live_col_one: {
-    flexDirection: 'column',
-    justifyContent: 'center',
-    alignItems: 'center'
-  },
-  live_col_two: {
-    flexDirection: 'column',
-    justifyContent: 'center',
-    alignItems: 'center',
-    rowGap: RFValue(10),
-  },
-  live_tag: {
-    flexDirection: 'row',
-    backgroundColor: '#613DC1',
-    justifyContent: 'center',
-    alignItems: 'center',
-    width: RFValue(74),
-    height: RFValue(26),
-    borderRadius: 11,
-    columnGap: RFValue(5)
-  },
-  sm_circle: {
-    borderRadius: '50%',
-    backgroundColor: '#97DFFC',
-    width: RFValue(8),
-    height: RFValue(8),
-  },
-  live_col_thr: {
-    flexDirection: 'column',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  live_circle: {
-    borderRadius: '50%',
-    backgroundColor: '#D9D9D9',
-    width: RFValue(75),
-    height: RFValue(75),
-  },
-  upcoming: {
+  eventBg: {
     flex: 1,
-    flexDirection: 'column'
-  }
+    flexDirection: "row",
+    paddingHorizontal: RFValue(10),
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  teamContainer: {
+    flex: 1,
+    alignItems: "center",
+    maxWidth: RFValue(80),
+  },
+  teamCircle: {
+    backgroundColor: "#D9D9D9",
+    borderRadius: 999,
+    width: RFValue(60),
+    height: RFValue(60),
+  },
+  teamName: {
+    marginTop: RFValue(6),
+    fontFamily: "Poppins",
+    fontSize: RFValue(12),
+    color: "white",
+    textAlign: "center",
+  },
+  scoreContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 1,
+    paddingHorizontal: RFValue(6),
+  },
+  liveTag: {
+    flexDirection: "row",
+    backgroundColor: "#613DC1",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: RFValue(6),
+    height: RFValue(22),
+    borderRadius: RFValue(11),
+    marginBottom: RFValue(4),
+    gap: RFValue(4),
+  },
+  liveDot: {
+    width: RFValue(6),
+    height: RFValue(6),
+    backgroundColor: "#97DFFC",
+    borderRadius: RFValue(3),
+  },
+  liveText: {
+    fontFamily: "PoppinsSemiBold",
+    fontSize: RFValue(11),
+    color: "white",
+  },
+  scoreText: {
+    fontFamily: "PoppinsSemiBold",
+    fontSize: RFValue(20),
+    color: "white",
+  },
+  dateText: {
+    fontFamily: "Poppins",
+    fontSize: RFValue(10),
+    color: "white",
+    marginTop: RFValue(2),
+  },
+  upcomingSection: { paddingHorizontal: RFValue(18) },
+  upcomingTitle: {
+    fontFamily: "PoppinsSemiBold",
+    fontSize: RFValue(20),
+    color: "#2C0735",
+  },
 });
