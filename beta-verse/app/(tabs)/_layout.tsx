@@ -30,8 +30,10 @@ function TabBarIcon({
 
 const styles = StyleSheet.create({
   icon: {
-    width: RFValue(28, width),  // responsive size
-    height: RFValue(28, width), // make square for even appearance
+    marginTop:'50%',
+    margin:'auto',
+    width: RFValue(20, width),  // responsive size
+    height: RFValue(20, width), // make square for even appearance
   },
 });
 
@@ -50,14 +52,11 @@ export default function TabLayout() {
           backgroundColor: '#191919',
           position: 'absolute',
           borderRadius: 20,
-          marginHorizontal: 30,
-          paddingVertical: 0,
+          width:'90%',
           marginBottom: 40,
+          marginLeft: '5%',
           height: 90,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          flexDirection: 'row',
+          
         },
       }}
     >

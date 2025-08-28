@@ -18,12 +18,12 @@ export default function TournamentStatus() {
       style={styles.background}
       resizeMode="cover"
     >
-      <ScrollView contentContainerStyle={{ padding: RFValue(16), paddingBottom: RFValue(50) }}>
+      <ScrollView contentContainerStyle={{marginTop: RFValue(36), padding: RFValue(16), paddingBottom: RFValue(50) }}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Text style={styles.backText}>← Back</Text>
         </TouchableOpacity>
 
-        <Text style={styles.title}>Your Tournament Status</Text>
+        <Text style={styles.title}>Your Entries</Text>
 
         {mockUserTournaments.map((t) => (
           <View key={t.id} style={styles.card}>
