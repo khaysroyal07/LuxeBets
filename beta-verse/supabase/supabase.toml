@@ -1,0 +1,23 @@
+[functions.list_tournaments]
+verify_jwt = false
+
+[functions.games_today]
+verify_jwt = false
+# supabase/supabase.toml
+
+[functions.join_tournament]
+verify_jwt = true
+
+# If you also keep the hyphen name for backward-compat:
+[functions."join-tournament"]
+verify_jwt = true
+[functions.submit_pick]
+verify_jwt = true
+
+[functions.create_weekly_tournaments]
+verify_jwt = false
+schedule = "5 4 * * 1"      # Mon 04:05 UTC ≈ Mon 00:05 ET (DST)
+
+[functions.resolve_picks_for_day]
+verify_jwt = false
+schedule = "30 7 * * *"     # 07:30 UTC daily ≈ 03:30 ET (DST)

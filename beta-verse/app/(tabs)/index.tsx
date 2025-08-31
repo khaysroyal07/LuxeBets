@@ -1,5 +1,5 @@
 // app/(tabs)/Dash.js — SportsDataIO feed + profile dropdown + streaks modal
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   View, Text, Image, TouchableOpacity, StyleSheet, FlatList, Dimensions,
   ActivityIndicator, ImageBackground, LayoutAnimation, Platform, UIManager,
@@ -52,6 +52,9 @@ const PURPLE = "#613DC1";
 const DEEP_PURPLE = "#2c0735";
 const GOLD = "#FFD700";
 
+/** 👇 Add a default tier for deep-linking into the tournaments page */
+const DEFAULT_TIER = "20";
+
 function toSDIODate(d){const y=d.getFullYear();const m=MONTHS_ABBR[d.getMonth()];const day=String(d.getDate()).padStart(2,"0");return `${y}-${m}-${day}`;}
 function sanitizeUrl(u){if(!u)return null;try{const t=u.trim();return t.startsWith("http://")?"https://"+t.slice(7):t;}catch{return null;}}
 function parseGameDate(s){if(!s)return null;const dt=new Date(s);return isNaN(dt.getTime())?null:dt;}
@@ -98,9 +101,9 @@ export default function Dash(){
   const [selectedYear,setSelectedYear]=useState("Auto");
 
   // teams/standings
-  const [teamsMap,setTeamsMap]=useState({});      // key -> {name,logo,id}
-  const [teamIdMap,setTeamIdMap]=useState({});    // TeamID -> {name,logo,key}
-  const [standingsMap,setStandingsMap]=useState({}); // MANY keys -> {wins,losses,pct}
+  const [teamsMap,setTeamsMap]=useState({});
+  const [teamIdMap,setTeamIdMap]=useState({});
+  const [standingsMap,setStandingsMap]=useState({});
 
   const [events,setEvents]=useState([]);
   const [loading,setLoading]=useState(false);
@@ -130,12 +133,18 @@ export default function Dash(){
   const sportCfg=SPORT_CONFIG[sportKey];
   const headers=useMemo(()=>({"Ocp-Apim-Subscription-Key":SDIO_KEY}),[]);
 
+  // safe navigation helper: close then push on next frame
+  const go = useCallback((path) => {
+    setProfileOpen(false);
+    requestAnimationFrame(() => router.push(path));
+  }, [router]);
+
   /* -------- Teams (build byKey + byId maps) -------- */
   useEffect(()=>{ if(!SDIO_KEY)return; let off=false; (async()=>{
       try{
         const r=await fetch(`${sportCfg.base}/${sportCfg.teams}`,{headers});
         if(!r.ok) throw new Error(`Teams ${sportCfg.label} -> ${r.status}`);
-        const data=await r.json(); 
+        const data=await r.json();
         const byKey={}, byId={};
         (data||[]).forEach(t=>{
           const key=t.Key||t.Team||t.Abbreviation||t.Code;
@@ -149,7 +158,7 @@ export default function Dash(){
       }catch(e){ console.warn("Teams error",sportCfg.label,e); if(!off){ setTeamsMap({}); setTeamIdMap({}); } }
     })(); return()=>{off=true}; },[sportKey]);
 
-  /* -------- Standings (index by many keys so games can match) -------- */
+  /* -------- Standings -------- */
   useEffect(()=>{ if(!SDIO_KEY)return; let off=false; (async()=>{
       try{
         const season = selectedYear==="Auto"?new Date().getFullYear():Number(selectedYear);
@@ -188,7 +197,7 @@ export default function Dash(){
     return dedupeByGameId(res);
   }
 
-  /* -------- Enrich games (attach IDs + normalized keys) -------- */
+  /* -------- Enrich games -------- */
   function enrichGames(list){
     return list.map(g=>{
       const homeId = g.HomeTeamID ?? g.HomeTeamId ?? null;
@@ -252,8 +261,8 @@ export default function Dash(){
         }
       }catch(e){ console.warn("Events error",sportCfg.label,e); if(!off){ setEvents([]); setNote("No events to show (check API key / plan)."); } }
       finally{ if(!off) setLoading(false); }
-    })(); return()=>{off=true}; 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    })(); return()=>{off=true};
+  // eslint-disable-next-line react-hooks/exhaustive-comments
   },[sportKey,selectedYear,todayOnly,sortMode,SDIO_KEY,sportCfg.base,teamsMap,teamIdMap]);
 
   const shownEvents=useMemo(()=>quickFilter==="ALL"?events:events.filter(e=>e.bucket===quickFilter),[events,quickFilter]);
@@ -459,14 +468,15 @@ export default function Dash(){
         </View>
       )}
 
-      {/* Profile dropdown menu */}
+      {/* Profile dropdown menu (fixed layering + delayed navigation) */}
       {profileOpen && (
-        <View style={[StyleSheet.absoluteFill, { zIndex: 20 }]} pointerEvents="box-none">
+        <View style={[StyleSheet.absoluteFill, { zIndex: 40 }]} pointerEvents="box-none">
+          {/* Backdrop behind the menu so it doesn't block menu taps */}
           <Pressable style={styles.overlayTap} onPress={()=>setProfileOpen(false)} />
           <BlurView intensity={70} tint="dark" style={styles.profileMenu}>
             <Pressable
               style={styles.menuItem}
-              onPress={() => { setProfileOpen(false); router.push("/user/profile"); }}
+              onPress={() => go("/user/profile")}
             >
               <Image source={{ uri: "https://img.icons8.com/ios-glyphs/30/user--v1.png" }} style={styles.menuIcon} />
               <Text style={styles.menuText}>Profile</Text>
@@ -474,7 +484,7 @@ export default function Dash(){
             <View style={styles.menuDivider} />
             <Pressable
               style={styles.menuItem}
-              onPress={() => { setProfileOpen(false); router.push("/user/settings"); }}
+              onPress={() => go("/user/settings")}
             >
               <Image source={{ uri: "https://img.icons8.com/ios-glyphs/30/settings.png" }} style={styles.menuIcon} />
               <Text style={styles.menuText}>Settings</Text>
@@ -505,9 +515,9 @@ export default function Dash(){
               keyExtractor={(it, idx)=>String(it.id ?? idx)}
               refreshControl={
                 <RefreshControl
-                  refreshing={streakLoading}
-                  onRefresh={loadStreaks}
-                  tintColor="#fff"
+                    refreshing={streakLoading}
+                    onRefresh={loadStreaks}
+                    tintColor="#fff"
                 />
               }
               renderItem={({ item, index }) => {
@@ -543,7 +553,10 @@ export default function Dash(){
         data={shownEvents}
         keyExtractor={(item)=>String(item.id)}
         renderItem={({item})=>(
-          <TouchableOpacity activeOpacity={0.9} onPress={()=>router.push({ pathname: "/tournaments", params: { openJoin: theTournamentId } })}>
+          <TouchableOpacity
+            activeOpacity={0.9}
+            onPress={()=>router.push({ pathname: "/tournaments", params: { tier: DEFAULT_TIER } })}
+          >
             <EventCard item={item} />
           </TouchableOpacity>
         )}
@@ -642,11 +655,13 @@ const styles = StyleSheet.create({
   avatarInitials:{ fontFamily:"PoppinsSemiBold", color:"#FFD700", fontSize:RFValue(15) },
 
   /* Dropdown menu */
-  overlayTap:{ ...StyleSheet.absoluteFillObject , zIndex:2},
+  overlayTap:{ ...StyleSheet.absoluteFillObject }, // no zIndex -> behind the menu
   profileMenu:{
     position:"absolute", top:RFValue(92), right:RFValue(14),
     width:RFValue(170), borderRadius:RFValue(14), overflow:"hidden",
-    backgroundColor:"rgba(30,30,30,0.9)", borderWidth:1, borderColor:"rgba(255,255,255,0.08)"
+    backgroundColor:"rgba(30,30,30,0.9)", borderWidth:1, borderColor:"rgba(255,255,255,0.08)",
+    zIndex: 5,           // ensure above backdrop
+    elevation: 8         // Android tapability
   },
   menuItem:{ flexDirection:"row", alignItems:"center", paddingVertical:RFValue(10), paddingHorizontal:RFValue(12) },
   menuIcon:{ width:RFValue(18), height:RFValue(18), tintColor:"#fff", marginRight:RFValue(8) },

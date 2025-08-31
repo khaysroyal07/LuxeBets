@@ -3,13 +3,17 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView,
   ImageBackground, ActivityIndicator, Alert, TextInput, Platform,
-  LayoutAnimation,
+  RefreshControl,
 } from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { useRouter } from "expo-router";
 import Constants from "expo-constants";
 import { Ionicons } from "@expo/vector-icons";
-import { supabase } from "@/lib/supabase";
+import { LinearGradient } from "expo-linear-gradient";
+import { supabase, FUNCTIONS_BASE, SUPABASE_ANON_KEY } from "@/lib/supabase";
+
+// Try underscore first, then hyphen (both supported)
+const JOIN_FN_PATHS = ["/join_tournament", "/join-tournament"];
 
 /** ---------------- Theme & Config ---------------- */
 const GOLD = "#FFD700";
@@ -17,13 +21,13 @@ const PURPLE = "#613DC1";
 const DARK = "#1a1a1a";
 
 const TIER_TO_PLANET = { "20": "Tournament of Mars", "50": "Tournament of Jupiter", "100": "Tournament of Saturn" };
-const TIER_TO_ENTRY = { "20": 20, "50": 50, "100": 100 };
 const PROMO_CODES = { LUXE10: 10, VIP20: 20, BETA30: 30 }; // client stub
 
 const fmtMoney = (n) => `$${Number(n || 0).toFixed(2)}`;
-const timeLeft = (closeAtMs) => {
-  const diff = closeAtMs - Date.now();
-  if (diff <= 0) return "Locked";
+
+const timeUntil = (futureMs) => {
+  const diff = futureMs - Date.now();
+  if (diff <= 0) return "now";
   const min = Math.floor(diff / 60000);
   const h = Math.floor(min / 60), m = min % 60;
   if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
@@ -33,9 +37,9 @@ const timeLeft = (closeAtMs) => {
 
 export default function TournamentsIndex() {
   const router = useRouter();
-  const params = useLocalSearchParams(); // << deep-link params
 
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [tournaments, setTournaments] = useState([]);
   const [joinedIds, setJoinedIds] = useState(new Set());
   const [menuOpen, setMenuOpen] = useState(false);
@@ -50,51 +54,52 @@ export default function TournamentsIndex() {
   // Joined confirmation
   const [joinedConfirmOpen, setJoinedConfirmOpen] = useState(false);
 
-  // Status modal (per tournament)
+  // Status modal
   const [statusOpen, setStatusOpen] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusData, setStatusData] = useState(null);
 
-  // countdown timer refresh
+  // simple ticker to update countdown text
   const tickRef = useRef(null);
 
-  // deep-link scroll helpers
-  const scrollRef = useRef(null);
-  const layoutMapRef = useRef({});          // { [tournamentId]: y }
-  const [pendingJoinId, setPendingJoinId] = useState(null);
-  const [highlightId, setHighlightId] = useState(null);
+  const loadTournaments = async (showSpinner = true) => {
+    try {
+      if (showSpinner) setLoading(true);
+      setRefreshing(true);
+
+      // Include Authorization if user is logged in (prevents 401)
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers = {
+        apikey: SUPABASE_ANON_KEY,
+        ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+      };
+
+      // Edge function returns from view v_tournament_counts (or direct select)
+      const { data: listData, error: listErr } = await supabase.functions.invoke(
+        "list_tournaments",
+        { headers }
+      );
+      if (listErr) throw new Error(listErr.message || "Failed to load tournaments");
+      const tourneys = Array.isArray(listData?.tournaments) ? listData.tournaments : [];
+
+      // Which tournaments I joined
+      const { data: entries, error: eErr } = await supabase
+        .from("entrants")
+        .select("tournament_id");
+      if (eErr) throw eErr;
+
+      setTournaments(tourneys);
+      setJoinedIds(new Set(entries?.map((e) => e.tournament_id) || []));
+    } catch (e) {
+      Alert.alert("Error", e.message || "Failed to load tournaments");
+    } finally {
+      setRefreshing(false);
+      if (showSpinner) setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    let on = true;
-    (async () => {
-      try {
-        setLoading(true);
-        const today = new Date().toISOString().slice(0, 10);
-        const { data: tourneys, error: tErr } = await supabase
-          .from("tournaments")
-          .select("*")
-          .eq("status", "open")
-          .gte("window_start", today)
-          .order("sport", { ascending: true })
-          .order("tier", { ascending: true });
-        if (tErr) throw tErr;
-
-        const { data: entries, error: eErr } = await supabase
-          .from("tournament_entries")
-          .select("tournament_id");
-        if (eErr) throw eErr;
-
-        if (on) {
-          setTournaments(tourneys || []);
-          setJoinedIds(new Set(entries?.map((e) => e.tournament_id) || []));
-        }
-      } catch (e) {
-        Alert.alert("Error", e.message || "Failed to load tournaments");
-      } finally {
-        if (on) setLoading(false);
-      }
-    })();
-    return () => { on = false; };
+    loadTournaments(true);
   }, []);
 
   useEffect(() => {
@@ -103,45 +108,21 @@ export default function TournamentsIndex() {
     return () => clearInterval(tickRef.current);
   }, []);
 
-  /** Resolve deep-link target tournament */
-  const resolveDeepTarget = (list) => {
-    const byId = params?.openJoin || params?.tournamentId || params?.tid;
-    if (byId) return list.find(t => String(t.id) === String(byId));
-
-    const tierParam = params?.tier ? String(params.tier) : null;
-    const sportParam = params?.sport ? String(params.sport).toLowerCase() : null;
-    let cand = list;
-    if (sportParam) cand = cand.filter(t => String(t.sport || "").toLowerCase() === sportParam);
-    if (tierParam)  cand = cand.filter(t => String(t.tier) === tierParam);
-    return cand[0] || null;
-  };
-
-  /** After data loads, auto-scroll/highlight/open join if we have deep-link params */
-  useEffect(() => {
-    if (loading || !tournaments.length) return;
-    const target = resolveDeepTarget(tournaments);
-    if (!target) return;
-
-    LayoutAnimation.easeInEaseOut();
-    setPendingJoinId(target.id);
-
-    const y = layoutMapRef.current[target.id];
-    if (typeof y === "number") {
-      // already measured – do it now
-      doScrollAndOpen(target.id, target);
-    }
-    // else wait for onLayout of that card
-    // (handled inside each card's onLayout)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, tournaments, params?.openJoin, params?.tier, params?.sport]);
-
-  /** Join flow */
+  /** Manual open of the join modal */
   const openJoin = (t) => {
-    setSelectedT({ ...t, displayName: TIER_TO_PLANET[t.tier] || t.name, fee: TIER_TO_ENTRY[t.tier] || Number(t.tier) || 0 });
+    const fee = Number(t.entry_fee || 0);
+    setSelectedT({
+      ...t,
+      tier: String(fee),
+      displayName: TIER_TO_PLANET[String(fee)] || t.name || `Tournament $${fee}`,
+      fee,
+      sport: "ANY",
+    });
     setPromoInput("");
     setAppliedPromo(null);
     setJoinOpen(true);
   };
+
   const entryFee = useMemo(() => selectedT?.fee || 0, [selectedT]);
   const discountPct = useMemo(() => (appliedPromo ? PROMO_CODES[appliedPromo] || 0 : 0), [appliedPromo]);
   const discounted = useMemo(() => Math.max(0, entryFee - entryFee * (discountPct / 100)), [entryFee, discountPct]);
@@ -162,16 +143,40 @@ export default function TournamentsIndex() {
         setBusyJoin(false);
         return Alert.alert("Sign in required", "Please log in to join tournaments.");
       }
-      const FUNCTIONS_URL =
-        Constants.expoConfig?.extra?.FUNCTIONS_URL ||
-        Constants.manifest2?.extra?.FUNCTIONS_URL || "";
-      const res = await fetch(`${FUNCTIONS_URL}/join-tournament`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({ tournament_id: selectedT.id }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j.error || "Failed to join");
+
+      const fnBase =
+        FUNCTIONS_BASE ||
+        Constants?.expoConfig?.extra?.FUNCTIONS_URL ||
+        Constants?.manifest2?.extra?.FUNCTIONS_URL ||
+        "";
+      if (!fnBase) throw new Error("Missing FUNCTIONS_BASE / FUNCTIONS_URL.");
+
+      let ok = false;
+      let lastErr = null;
+
+      for (const path of JOIN_FN_PATHS) {
+        try {
+          const res = await fetch(`${fnBase}${path}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify({ tournament_id: selectedT.id }),
+          });
+          const j = await res.json().catch(() => ({}));
+          if (res.ok && (j?.ok || j?.alreadyJoined)) {
+            ok = true;
+            break;
+          } else {
+            lastErr = new Error(j?.error || j?.message || `Join failed (${res.status})`);
+          }
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+
+      if (!ok) throw lastErr || new Error("Join failed");
 
       setJoinOpen(false);
       setJoinedConfirmOpen(true);
@@ -183,34 +188,37 @@ export default function TournamentsIndex() {
     }
   };
 
-  /** Small status icon (per tournament) */
   const openStatus = async (t) => {
     try {
       setStatusOpen(true);
       setStatusBusy(true);
-
-      // entrants count may be hidden by RLS; try and gracefully degrade
-      let entrants = null;
-      try {
-        const { count } = await supabase
-          .from("tournament_entries")
-          .select("id", { count: "exact", head: true })
-          .eq("tournament_id", t.id);
-        if (typeof count === "number") entrants = count;
-      } catch {}
-
-      const fee = TIER_TO_ENTRY[t.tier] || Number(t.tier) || 0;
+      const entrants = typeof t.entrants_total === "number" ? t.entrants_total : null;
+      const fee = Number(t.entry_fee || 0);
       const prizePool = entrants != null ? entrants * fee : null;
-      const status = Date.now() >= new Date(t.close_at).getTime() ? "Locked" : "Open";
+
+      const openIso = t.join_open_at;
+      const closeIso = t.join_close_at || t.end_at;
+      const now = Date.now();
+      const openMs = openIso ? new Date(openIso).getTime() : null;
+      const closeMs = closeIso ? new Date(closeIso).getTime() : null;
+
+      const isOpen =
+        t.status === "open" &&
+        (openMs == null || now >= openMs) &&
+        (closeMs == null || now < closeMs);
+
+      const status = isOpen ? "Open" : (openMs && now < openMs) ? "Opens Soon" : "Locked";
 
       setStatusData({
         id: t.id,
-        name: TIER_TO_PLANET[t.tier] || t.name,
-        sport: String(t.sport || "").toUpperCase(),
+        name: TIER_TO_PLANET[String(fee)] || t.name || `Tournament $${fee}`,
+        sport: "ANY",
         entryFee: fee,
         status,
-        closesAt: t.close_at,
-        closesIn: timeLeft(new Date(t.close_at).getTime()),
+        closesAt: closeIso,
+        closesIn: closeMs ? timeUntil(closeMs) : "—",
+        opensAt: openIso,
+        opensIn: openMs ? timeUntil(openMs) : "—",
         entrants,
         prizePool,
         house: prizePool != null ? prizePool * 0.25 : null,
@@ -221,37 +229,31 @@ export default function TournamentsIndex() {
     }
   };
 
-  /** Scroll + highlight + open */
-  function doScrollAndOpen(id, tOverride = null) {
-    const y = layoutMapRef.current[id];
-    if (typeof y !== "number") return;
-    scrollRef.current?.scrollTo({ y: Math.max(0, y - RFValue(80)), animated: true });
-    setHighlightId(id);
-    setTimeout(() => {
-      const t = tOverride || tournaments.find(tt => String(tt.id) === String(id));
-      if (t) openJoin(t);
-      setTimeout(() => {
-        LayoutAnimation.easeInEaseOut();
-        setHighlightId(null);
-      }, 1200);
-    }, 300);
-  }
-
   if (loading) {
     return (
-      <View style={styles.loadingContainer}><ActivityIndicator size="large" color={PURPLE} /></View>
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={PURPLE} />
+      </View>
     );
   }
 
   return (
     <ImageBackground source={require("@/assets/images/bgDash.png")} style={styles.background} resizeMode="cover">
       <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={{ marginTop: RFValue(65), paddingBottom: RFValue(50), paddingHorizontal: RFValue(16) }}
+        contentContainerStyle={{ marginTop: RFValue(65), paddingBottom: RFValue(200), paddingHorizontal: RFValue(16) }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => loadTournaments(false)}
+            tintColor="#fff"
+            colors={["#613DC1"]}
+          />
+        }
       >
-        {/* Top */}
+        {/* Top (title + menu only) */}
         <View style={styles.topRow}>
           <Text style={styles.title}>Available Tournaments</Text>
+
           <View style={{ position: "relative" }}>
             <TouchableOpacity style={styles.iconBtn} onPress={() => setMenuOpen((v) => !v)}>
               <Ionicons name="ellipsis-vertical" size={RFValue(20)} color="#fff" />
@@ -269,6 +271,7 @@ export default function TournamentsIndex() {
           </View>
         </View>
 
+   
         {/* Info */}
         <View style={styles.infoBanner}>
           <Text style={styles.infoText}>
@@ -277,31 +280,71 @@ export default function TournamentsIndex() {
             <Text style={{ color: GOLD }}>Closes 30m</Text> before first game.
           </Text>
         </View>
+     {/* Centered badges row */}
+        <View style={styles.badgesRow}>
+          {/* Current Entries badge */}
+          <TouchableOpacity onPress={() => router.push("/entries")} activeOpacity={0.9}>
+            <LinearGradient
+              colors={["#FFE98B", "#FFD700"]}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+              style={[styles.badge, styles.badgeGold]}
+            >
+              <Ionicons name="trophy-outline" size={RFValue(16)} color="#111" />
+              <Text style={styles.badgeGoldText}>Current Entries</Text>
+            </LinearGradient>
+          </TouchableOpacity>
+
+          {/* Refresh badge */}
+          <TouchableOpacity
+            onPress={() => loadTournaments(false)}
+            activeOpacity={0.9}
+            disabled={refreshing}
+            style={{ opacity: refreshing ? 0.65 : 1 }}
+          >
+            <LinearGradient
+              colors={["#7A68E9", "#613DC1"]}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+              style={[styles.badge, styles.badgePurple]}
+            >
+              {refreshing ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Ionicons name="refresh" size={RFValue(16)} color="#fff" />
+              )}
+              <Text style={styles.badgePurpleText}>{refreshing ? "Refreshing…" : "Refresh"}</Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
 
         {/* Cards */}
         {tournaments?.length ? tournaments.map((t) => {
-          const fee = TIER_TO_ENTRY[t.tier] || Number(t.tier) || 0;
-          const planet = TIER_TO_PLANET[t.tier] || t.name;
-          const closeMs = new Date(t.close_at).getTime();
-          const locked = Date.now() >= closeMs;
+          const fee = Number(t.entry_fee || 0);
+          const planet = TIER_TO_PLANET[String(fee)] || t.name || `Tournament $${fee}`;
+
+          const openIso = t.join_open_at;
+          const closeIso = t.join_close_at || t.end_at;
+
+          const now = Date.now();
+          const openMs = openIso ? new Date(openIso).getTime() : null;
+          const closeMs = closeIso ? new Date(closeIso).getTime() : null;
+
+          const isOpen =
+            t.status === "open" &&
+            (openMs == null || now >= openMs) &&
+            (closeMs == null || now < closeMs);
+
           const alreadyIn = joinedIds.has(t.id);
+          const joinDisabled = !isOpen || alreadyIn;
+
+          let statusLine = "—";
+          if (isOpen && closeMs) statusLine = `Closes in ${timeUntil(closeMs)}`;
+          else if (!isOpen && openMs && now < openMs) statusLine = `Opens in ${timeUntil(openMs)}`;
+          else statusLine = "Locked";
 
           return (
-            <View
-              key={t.id}
-              onLayout={(e) => {
-                layoutMapRef.current[t.id] = e.nativeEvent.layout.y;
-                // If this was the target, act now
-                if (pendingJoinId && String(pendingJoinId) === String(t.id)) {
-                  doScrollAndOpen(t.id, t);
-                  setPendingJoinId(null);
-                }
-              }}
-              style={[styles.card, highlightId === t.id && styles.cardHighlight]}
-            >
+            <View key={t.id} style={styles.card}>
               <View style={styles.cardHeader}>
-                <Text style={styles.cardTitle}>{planet} • {String(t.sport || "").toUpperCase()}</Text>
-                {/* Small status icon button */}
+                <Text style={styles.cardTitle}>{planet} • ANY</Text>
                 <TouchableOpacity onPress={() => openStatus(t)} style={styles.iconBtnSmall}>
                   <Ionicons name="stats-chart" size={RFValue(18)} color={GOLD} />
                 </TouchableOpacity>
@@ -309,29 +352,22 @@ export default function TournamentsIndex() {
 
               <Text style={styles.sub}>
                 Entry: <Text style={{ color: GOLD }}>{fmtMoney(fee)}</Text>{" "}
-                · Closes: {new Date(t.close_at).toLocaleString()}
+                · Join Window:{" "}
+                {openIso ? new Date(openIso).toLocaleString() : "—"} → {closeIso ? new Date(closeIso).toLocaleString() : "—"}
               </Text>
-              <Text style={styles.countdown}>{locked ? "Locked" : `Closes in ${timeLeft(closeMs)}`}</Text>
+              <Text style={styles.countdown}>{statusLine}</Text>
 
               <View style={styles.actionsRow}>
                 <TouchableOpacity
-                  disabled={locked || alreadyIn}
+                  disabled={joinDisabled}
                   onPress={() => openJoin(t)}
-                  style={[styles.joinBtn, (locked || alreadyIn) && { backgroundColor: "#555" }]}
+                  style={[styles.joinBtn, joinDisabled && { backgroundColor: "#555" }]}
                 >
-                  <Text style={styles.joinTxt}>{alreadyIn ? "Joined ✓" : "Join"}</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={() => router.push("/entries")}
-                  style={styles.entriesBtn}
-                >
-                  <Ionicons name="clipboard-outline" size={RFValue(16)} color="#fff" />
-                  <Text style={styles.entriesTxt}>Current Entries</Text>
+                  <Text style={styles.joinTxt}>{alreadyIn ? "Joined ✓" : isOpen ? "Join" : "Join Closed"}</Text>
                 </TouchableOpacity>
               </View>
 
-              <Text style={styles.houseNote}>* 25% to house · last person standing wins.</Text>
+              <Text style={styles.houseNote}>* 25% to house · last person standing splits the pot.</Text>
             </View>
           );
         }) : (
@@ -340,11 +376,11 @@ export default function TournamentsIndex() {
       </ScrollView>
 
       {/* JOIN MODAL */}
-      <Modal visible={joinOpen} animationType="slide" transparent>
+      <Modal visible={joinOpen} animationType="slide" transparent onRequestClose={() => setJoinOpen(false)}>
         <ScrollView contentContainerStyle={styles.overlay} keyboardShouldPersistTaps="handled">
           <View style={styles.modal}>
             <Text style={styles.modalTitle}>
-              Join {TIER_TO_PLANET[selectedT?.tier] || selectedT?.name} ({String(selectedT?.sport || "").toUpperCase()})
+              Join {TIER_TO_PLANET[selectedT?.tier] || selectedT?.displayName} ({String(selectedT?.sport || "").toUpperCase()})
             </Text>
 
             <Row label="Entry Fee" value={fmtMoney(entryFee)} />
@@ -389,13 +425,13 @@ export default function TournamentsIndex() {
               <Text style={styles.cancelTxt}>Cancel</Text>
             </TouchableOpacity>
 
-            <Text style={styles.lockNote}>Closes 30m before first game.</Text>
+            <Text style={styles.lockNote}>Closes 30m before first game (daily picks).</Text>
           </View>
         </ScrollView>
       </Modal>
 
       {/* JOINED CONFIRM */}
-      <Modal visible={joinedConfirmOpen} animationType="fade" transparent>
+      <Modal visible={joinedConfirmOpen} animationType="fade" transparent onRequestClose={() => setJoinedConfirmOpen(false)}>
         <View style={styles.overlay}>
           <View style={styles.confirmCard}>
             <Text style={styles.confirmTitle}>You’re in! 🎉</Text>
@@ -412,7 +448,7 @@ export default function TournamentsIndex() {
         </View>
       </Modal>
 
-      {/* STATUS MODAL (per tournament) */}
+      {/* STATUS MODAL */}
       <Modal visible={statusOpen} animationType="slide" transparent onRequestClose={() => setStatusOpen(false)}>
         <View style={styles.overlay}>
           <View style={styles.statusCard}>
@@ -425,15 +461,13 @@ export default function TournamentsIndex() {
                 </Text>
                 <Row label="Status" value={statusData.status} />
                 <Row label="Entry Fee" value={fmtMoney(statusData.entryFee)} />
-                <Row label="Closes" value={`${new Date(statusData.closesAt).toLocaleString()} (${statusData.closesIn})`} />
+                <Row label="Join Opens" value={`${statusData.opensAt ? new Date(statusData.opensAt).toLocaleString() : "—"} (${statusData.opensIn})`} />
+                <Row label="Join Closes" value={`${statusData.closesAt ? new Date(statusData.closesAt).toLocaleString() : "—"} (${statusData.closesIn})`} />
                 <View style={styles.hr} />
                 <Row label="Entrants" value={statusData.entrants ?? "—"} />
                 <Row label="Prize Pool" value={statusData.prizePool != null ? fmtMoney(statusData.prizePool) : "—"} />
                 <Row label="House (25%)" value={statusData.house != null ? fmtMoney(statusData.house) : "—"} />
-                <Row label="Winner Take" value={statusData.winnerTake != null ? fmtMoney(statusData.winnerTake) : "—"} />
-                {statusData.entrants == null && (
-                  <Text style={styles.rlsNote}>Entrant count may be hidden by RLS in dev.</Text>
-                )}
+                <Row label="Winner Split" value={statusData.winnerTake != null ? fmtMoney(statusData.winnerTake) : "—"} />
                 <TouchableOpacity onPress={() => setStatusOpen(false)} style={styles.closeBig}>
                   <Text style={styles.closeBigTxt}>Close</Text>
                 </TouchableOpacity>
@@ -446,7 +480,6 @@ export default function TournamentsIndex() {
   );
 }
 
-/** Small row helper */
 function Row({ label, value, valueNode, valueElStyle }) {
   return (
     <View style={rowStyles.row}>
@@ -468,12 +501,38 @@ const styles = StyleSheet.create({
   dropdownMenu: { position: "absolute", top: RFValue(32), right: 0, backgroundColor: "#222", borderRadius: RFValue(12), padding: RFValue(8), zIndex: 10 },
   dropdownItem: { color: "#fff", paddingVertical: RFValue(6), fontSize: RFValue(14), width: RFValue(190) },
 
+  /* Centered badges row */
+  badgesRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: RFValue(10),
+    marginTop: RFValue(10),
+    marginBottom: RFValue(4),
+  },
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: RFValue(6),
+    paddingHorizontal: RFValue(12),
+    paddingVertical: RFValue(6),
+    borderRadius: RFValue(999),
+    borderWidth: 1,
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 4,
+  },
+  badgeGold: { borderColor: "rgba(0,0,0,0.08)" },
+  badgePurple: { borderColor: "rgba(255,255,255,0.18)" },
+  badgeGoldText: { color: "#111", fontWeight: "900", fontSize: RFValue(12) },
+  badgePurpleText: { color: "#fff", fontWeight: "900", fontSize: RFValue(12) },
+
   infoBanner: { backgroundColor: "rgba(0,0,0,0.55)", padding: RFValue(12), borderRadius: RFValue(12), marginTop: RFValue(12), borderColor: "rgba(255,255,255,0.08)", borderWidth: 1 },
   infoText: { color: "#fff", fontSize: RFValue(12), lineHeight: RFValue(16) },
 
   card: { backgroundColor: "rgba(0,0,0,0.6)", padding: RFValue(16), marginVertical: RFValue(10), borderRadius: RFValue(16), borderColor: "rgba(255,255,255,0.08)", borderWidth: 1 },
-  cardHighlight: { borderColor: GOLD, shadowColor: GOLD, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
-
   cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   cardTitle: { fontSize: RFValue(18), fontWeight: "800", color: "#fff" },
   iconBtnSmall: { height: RFValue(28), width: RFValue(28), alignItems: "center", justifyContent: "center" },
@@ -484,9 +543,6 @@ const styles = StyleSheet.create({
   actionsRow: { flexDirection: "row", gap: RFValue(10), marginTop: RFValue(10) },
   joinBtn: { flex: 1, backgroundColor: PURPLE, padding: RFValue(10), borderRadius: RFValue(12), alignItems: "center" },
   joinTxt: { color: "#fff", fontWeight: "800" },
-
-  entriesBtn: { flexDirection: "row", alignItems: "center", gap: RFValue(6), paddingHorizontal: RFValue(12), backgroundColor: "#2c91a1", borderRadius: RFValue(12), justifyContent: "center" },
-  entriesTxt: { color: "#fff", fontWeight: "800" },
 
   houseNote: { marginTop: RFValue(6), color: "#bbb", fontSize: RFValue(11), fontStyle: "italic" },
   empty: { color: "#fff", textAlign: "center", marginTop: RFValue(24), opacity: 0.8 },
@@ -522,7 +578,6 @@ const styles = StyleSheet.create({
   statusCard: { width: "92%", backgroundColor: DARK, borderRadius: RFValue(16), padding: RFValue(16), borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
   statusTitle: { color: "#fff", fontSize: RFValue(18), fontWeight: "900", textAlign: "center", marginBottom: RFValue(10) },
   hr: { height: 1, backgroundColor: "rgba(255,255,255,0.08)", marginVertical: RFValue(8) },
-  rlsNote: { color: "#aaa", fontSize: RFValue(11), marginTop: RFValue(6), textAlign: "center" },
   closeBig: { backgroundColor: PURPLE, paddingVertical: RFValue(10), borderRadius: RFValue(12), marginTop: RFValue(12), alignItems: "center" },
   closeBigTxt: { color: "#fff", fontWeight: "900" },
 });

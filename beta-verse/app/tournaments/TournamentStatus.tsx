@@ -1,119 +1,101 @@
 // app/tournaments/TournamentStatus.js
 import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ImageBackground, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ImageBackground, ActivityIndicator, RefreshControl } from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
 import { useRouter } from "expo-router";
 import { supabase } from "@/lib/supabase";
-import Constants from "expo-constants";
+import { Ionicons } from "@expo/vector-icons";
 
 const PURPLE = "#613DC1";
 const GOLD = "#FFD700";
 
-const SPORT_CFG = {
-  nba:  { base: "https://api.sportsdata.io/v3/nba/scores/json",  gamesByDate: "GamesByDate" },
-  wnba: { base: "https://api.sportsdata.io/v3/wnba/scores/json", gamesByDate: "GamesByDate" },
-  mlb:  { base: "https://api.sportsdata.io/v3/mlb/scores/json",  gamesByDate: "GamesByDate" },
-  nfl:  { base: "https://api.sportsdata.io/v3/nfl/scores/json",  gamesByDate: "ScoresByDate" },
-  nhl:  { base: "https://api.sportsdata.io/v3/nhl/scores/json",  gamesByDate: "GamesByDate" },
-};
-const SDIO_KEY =
-  process.env.EXPO_PUBLIC_SPORTSDATAIO_KEY ||
-  Constants?.expoConfig?.extra?.SPORTSDATAIO_KEY ||
-  "";
-
-function toSDIODate(d) {
-  const MONTHS_ABBR = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
-  const yy = d.getFullYear(), mm = MONTHS_ABBR[d.getMonth()], dd = String(d.getDate()).padStart(2, "0");
-  return `${yy}-${mm}-${dd}`;
-}
+const TIER_TO_PLANET = { "20": "Tournament of Mars", "50": "Tournament of Jupiter", "100": "Tournament of Saturn" };
+const fmtMoney = (n) => `$${Number(n || 0).toFixed(2)}`;
 
 export default function TournamentStatus() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [cards, setCards] = useState([]);
 
-  useEffect(() => {
-    let on = true;
-    (async () => {
-      try {
-        setLoading(true);
+  const loadData = async (showSpinner = true) => {
+    try {
+      if (showSpinner) setLoading(true);
+      setRefreshing(true);
 
-        // Your entries with tournaments
-        const { data: entries, error } = await supabase
-          .from("tournament_entries")
-          .select("id, status, tournament_id, tournaments(*)")
-          .order("joined_at", { ascending: false });
-        if (error) throw error;
-
-        const enriched = [];
-        for (const e of entries || []) {
-          const t = e.tournaments;
-          const slate = await loadSlateGames(t.sport, t.window_start, t.window_end);
-          // load your picks
-          const { data: p, error: pErr } = await supabase.from("picks").select("game_id, pick_side").eq("entry_id", e.id);
-          if (pErr) throw pErr;
-          const pickMap = {}; (p || []).forEach((r) => { pickMap[r.game_id] = r.pick_side; });
-
-          // evaluate
-          let correct = 0, wrong = 0, pending = 0;
-          for (const g of slate) {
-            const side = pickMap[g.id];
-            if (!side) { pending++; continue; }
-            if (!g.done) { pending++; continue; }
-            if (g.winner && side === g.winner) correct++; else wrong++;
-          }
-          const eliminated = wrong > 0; // sudden death
-          const status = Date.now() >= new Date(t.close_at).getTime() ? "Locked" : "Open";
-          enriched.push({
-            entryId: e.id,
-            name: t.name,
-            sport: String(t.sport || "").toUpperCase(),
-            closes: new Date(t.close_at).toLocaleString(),
-            status,
-            correct, wrong, pending,
-            eliminated,
-          });
-        }
-
-        if (on) setCards(enriched);
-      } catch (e) {
-        console.warn(e);
-      } finally {
-        if (on) setLoading(false);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setCards([]);
+        return;
       }
-    })();
-    return () => { on = false; };
-  }, []);
 
-  async function loadSlateGames(sport, startDate, endDate) {
-    if (!SDIO_KEY) return [];
-    const cfg = SPORT_CFG[sport]; if (!cfg) return [];
-    const headers = { "Ocp-Apim-Subscription-Key": SDIO_KEY };
-    const start = new Date(startDate), end = new Date(endDate);
-    const days = []; for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) days.push(new Date(d));
+      // My entries with tournament info (show open/running + most recent)
+      const { data: ents, error: e1 } = await supabase
+        .from("entrants")
+        .select(`
+          id, status, joined_at, tournament_id,
+          tournaments (
+            id, entry_fee, day_date, status, join_open_at, join_close_at, start_at
+          )
+        `)
+        .order("joined_at", { ascending: false });
+      if (e1) throw e1;
 
-    const all = [];
-    for (const d of days) {
-      const url = `${cfg.base}/${cfg.gamesByDate}/${encodeURIComponent(toSDIODate(d))}?key=${encodeURIComponent(SDIO_KEY)}`;
-      const resp = await fetch(url, { headers }).catch(() => null);
-      if (!resp || !resp.ok) continue;
-      const arr = await resp.json();
-      if (Array.isArray(arr)) all.push(...arr);
+      const relevant = (ents || []).filter((r) => {
+        const t = r.tournaments || {};
+        return ["open","running"].includes(t.status) || (t.day_date && t.day_date >= new Date().toISOString().slice(0,10));
+      });
+
+      const ids = relevant.map((r) => r.tournament_id);
+      let pickMap = {};
+      if (ids.length) {
+        const { data: picks, error: e2 } = await supabase
+          .from("picks")
+          .select("tournament_id,status")
+          .in("tournament_id", ids)
+          .eq("user_id", user.id);
+        if (e2) throw e2;
+        pickMap = (picks || []).reduce((acc, p) => {
+          const key = String(p.tournament_id);
+          if (!acc[key]) acc[key] = { WIN: 0, LOSS: 0, PENDING: 0, PUSH: 0, VOID: 0 };
+          const s = (p.status || "PENDING").toUpperCase();
+          if (acc[key][s] != null) acc[key][s] += 1;
+          return acc;
+        }, {});
+      }
+
+      const cardsOut = relevant.map((r) => {
+        const t = r.tournaments || {};
+        const fee = Number(t.entry_fee || 0);
+        const agg = pickMap[String(r.tournament_id)] || { WIN:0, LOSS:0, PENDING:0, PUSH:0, VOID:0 };
+        const eliminated = r.status === "ELIMINATED" || agg.LOSS > 0;
+
+        const openIso = t.join_open_at, closeIso = t.join_close_at;
+        const closeText = closeIso ? new Date(closeIso).toLocaleString() : "—";
+        const statusLabel = t.status === "open" ? "Open" : t.status === "running" ? "Running" : t.status;
+
+        return {
+          entryId: r.id,
+          tournamentId: t.id,
+          name: TIER_TO_PLANET[String(fee)] || `Tournament $${fee}`,
+          fee,
+          closes: closeText,
+          statusLabel,
+          wins: agg.WIN, losses: agg.LOSS, pending: agg.PENDING,
+          eliminated,
+        };
+      });
+
+      setCards(cardsOut);
+    } catch (e) {
+      console.warn(e);
+    } finally {
+      setRefreshing(false);
+      setLoading(false);
     }
+  };
 
-    return all.map((g) => {
-      const id = g.GameID || g.GameId || g.GlobalGameID || `${g.HomeTeam}-${g.AwayTeam}-${g.DateTime || g.Day}`;
-      const home = g.HomeTeamName || g.HomeTeam || g.HomeTeamKey || g.HomeTeamAbbreviation;
-      const away = g.AwayTeamName || g.AwayTeam || g.AwayTeamKey || g.AwayTeamAbbreviation;
-      const dt = new Date(g.DateTime || g.Day);
-      const status = String(g.Status || "").toLowerCase();
-      const done = status.includes("final") || status.startsWith("f/");
-      const hs = g.HomeTeamScore ?? g.HomeScore ?? g.HomeTeamRuns ?? g.HomeTeamGoals ?? null;
-      const as = g.AwayTeamScore ?? g.AwayScore ?? g.AwayTeamRuns ?? g.AwayTeamGoals ?? null;
-      const winner = done && hs != null && as != null ? (hs > as ? "home" : (as > hs ? "away" : null)) : null;
-      return { id: String(id), home, away, when: dt, done, winner };
-    });
-  }
+  useEffect(() => { loadData(true); }, []);
 
   if (loading) {
     return <View style={styles.center}><ActivityIndicator color={PURPLE} size="large" /></View>;
@@ -121,22 +103,39 @@ export default function TournamentStatus() {
 
   return (
     <ImageBackground source={require("@/assets/images/bgDash.png")} style={{ flex: 1 }} resizeMode="cover">
-      <ScrollView contentContainerStyle={{ padding: RFValue(16), paddingTop: RFValue(44), paddingBottom: RFValue(50) }}>
+      <ScrollView
+        contentContainerStyle={{ padding: RFValue(16), paddingTop: RFValue(44), paddingBottom: RFValue(50) }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => loadData(false)}
+            tintColor="#fff"
+            colors={["#613DC1"]}
+          />
+        }
+      >
         <TouchableOpacity onPress={() => router.back()}><Text style={styles.back}>← Back</Text></TouchableOpacity>
-        <Text style={styles.title}>Your Tournament Status</Text>
+        <View style={styles.headerRow}>
+          <Text style={styles.title}>Your Tournament Status</Text>
+          <TouchableOpacity onPress={() => loadData(false)} style={styles.refreshBtn} activeOpacity={0.85}>
+            <Ionicons name="refresh" size={RFValue(16)} color="#fff" />
+            <Text style={styles.refreshTxt}>Refresh</Text>
+          </TouchableOpacity>
+        </View>
 
         {cards.length === 0 && <Text style={styles.empty}>No active entries.</Text>}
 
         {cards.map((c) => (
           <View key={c.entryId} style={styles.card}>
-            <Text style={styles.name}>{c.name} • {c.sport}</Text>
-            <Text style={styles.sub}>Closes: {c.closes} • Status: <Text style={{ color: GOLD }}>{c.status}</Text></Text>
+            <Text style={styles.name}>{c.name}</Text>
+            <Text style={styles.sub}>Entry: <Text style={{ color: GOLD }}>{fmtMoney(c.fee)}</Text></Text>
+            <Text style={styles.sub}>Join Closes: {c.closes} • Status: <Text style={{ color: GOLD }}>{c.statusLabel}</Text></Text>
 
             {/* Progress pills */}
             <View style={styles.pills}>
-              <Pill color="#22c55e" label="Correct" value={c.correct} />
+              <Pill color="#22c55e" label="Correct" value={c.wins} />
               <Pill color="#f59e0b" label="Pending" value={c.pending} />
-              <Pill color="#ef4444" label="Wrong" value={c.wrong} />
+              <Pill color="#ef4444" label="Wrong" value={c.losses} />
             </View>
 
             {/* Elimination banner */}
@@ -150,7 +149,7 @@ export default function TournamentStatus() {
               </View>
             )}
 
-            <TouchableOpacity onPress={() => router.push(`/entries/${c.entryId}`)} style={styles.manageBtn}>
+            <TouchableOpacity onPress={() => router.push("/entries")} style={styles.manageBtn}>
               <Text style={styles.manageTxt}>Manage Picks</Text>
             </TouchableOpacity>
           </View>
@@ -172,7 +171,10 @@ function Pill({ color, label, value }) {
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   back: { color: "#613DC1", fontWeight: "700", fontSize: RFValue(16) },
-  title: { fontSize: RFValue(22), fontWeight: "900", color: "#fff", marginTop: RFValue(6), marginBottom: RFValue(12) },
+  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: RFValue(12) },
+  title: { fontSize: RFValue(22), fontWeight: "900", color: "#fff" },
+  refreshBtn: { flexDirection: "row", alignItems: "center", gap: RFValue(6), backgroundColor: "#613DC1", paddingHorizontal: RFValue(12), paddingVertical: RFValue(6), borderRadius: RFValue(10) },
+  refreshTxt: { color: "#fff", fontWeight: "800", fontSize: RFValue(12) },
   empty: { color: "#ddd", marginTop: RFValue(8) },
 
   card: { backgroundColor: "rgba(0,0,0,0.6)", borderRadius: RFValue(16), padding: RFValue(16), marginBottom: RFValue(12), borderColor: "rgba(255,255,255,0.08)", borderWidth: 1 },

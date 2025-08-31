@@ -36,8 +36,8 @@ export default function SignUp() {
     const handleSignUp = async () => {
     try {
       await signUp(email, password);
-      alert('Signned Up completed!');
-      router.push("/user/confirm");
+      alert('Successful! Verify email to continue!');
+      router.push("/user");
     } catch (error) {
       alert(error.message);
     }
