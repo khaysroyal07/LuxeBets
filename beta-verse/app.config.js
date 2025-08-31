@@ -1,34 +1,46 @@
-import "dotenv/config";
+// app.config.js
+import 'dotenv/config';
 
 export default {
   expo: {
-    name: "luxebets",
-    slug: "luxebets",
+    name: "betaverse",
+    slug: "betaverse",
     owner: "betaverse",
-    privacy: "unlisted", // or "public"
-    // IMPORTANT for EAS Update:
-    version: "0.1.0", // bump this when you want a new runtime
-    runtimeVersion: { policy: "appVersion" },
+    scheme: "luxebets",
+    platforms: ["ios", "android", "web"],           // <- helps the “platform constraints” check
+    runtimeVersion: { policy: "sdkVersion" },       // Expo Go compatible
     updates: {
-      // <-- this URL is tied to your projectId from EAS (yours below)
-      url: "https://u.expo.dev/04856fd0-e267-439d-b824-a18348901d7f",
+      url: "https://u.expo.dev/538a1d74-068e-425d-817d-692eff7a3423"
     },
-
-    ios: { buildNumber: "1" },
-    android: { versionCode: 1 },
-
-    plugins: ["expo-router"],
+    splash: {
+      image: "./assets/images/logo.png",
+      backgroundColor: "#401c45ff",
+      resizeMode: "contain"
+    },
+    ios: { bundleIdentifier: "com.betaverse.betaverse", supportsTablet: true },
+    android: {
+      package: "com.betaverse.betaverse",
+      adaptiveIcon: {
+        foregroundImage: "./assets/images/logo.png",
+        backgroundColor: "#401c45ff"
+      },
+      edgeToEdgeEnabled: true
+    },
+    web: {
+      bundler: "metro",
+      output: "static",
+      favicon: "./assets/images/favicon.png"
+    },
+    plugins: ["expo-router", "expo-font", "expo-web-browser"],
+    experiments: { typedRoutes: true },
     extra: {
       SUPABASE_URL: process.env.SUPABASE_URL,
       SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
-      PROJECT_URL: process.env.PROJECT_URL,
-      ANON_KEY: process.env.ANON_KEY,
-      FUNCTIONS_URL: `https://${process.env.SUPABASE_REF}.functions.supabase.co`,
-      SPORTSDATAIO_KEY: process.env.EXPO_PUBLIC_SPORTSDATAIO_KEY, // optional client usage
+      FUNCTIONS_URL: process.env.FUNCTIONS_URL,
       SPORTSDATAIO_KEY: process.env.SPORTSDATAIO_KEY,
-      eas: {
-        projectId: "04856fd0-e267-439d-b824-a18348901d7f",
-      },
-    },
-  },
+      STREAKS_URL: process.env.STREAKS_URL,
+      STREAKS_API_KEY: process.env.STREAKS_API_KEY,
+      eas: { projectId: "538a1d74-068e-425d-817d-692eff7a3423" }
+    }
+  }
 };
