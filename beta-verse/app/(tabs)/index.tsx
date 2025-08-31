@@ -1,8 +1,9 @@
-// app/(tabs)/Dash.js — SportsDataIO feed, original colorway, centered pill + locked alignment
+// app/(tabs)/Dash.js — SportsDataIO feed + profile dropdown + streaks modal
 import React, { useEffect, useMemo, useState } from "react";
 import {
   View, Text, Image, TouchableOpacity, StyleSheet, FlatList, Dimensions,
   ActivityIndicator, ImageBackground, LayoutAnimation, Platform, UIManager,
+  Pressable, Modal, RefreshControl
 } from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
 import { LinearGradient } from "expo-linear-gradient";
@@ -19,6 +20,16 @@ if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental
 const SDIO_KEY =
   process.env.EXPO_PUBLIC_SPORTSDATAIO_KEY ||
   Constants?.expoConfig?.extra?.SPORTSDATAIO_KEY ||
+  "";
+
+/* ---------- Streaks (leaderboard) config ---------- */
+const STREAKS_URL =
+  process.env.EXPO_PUBLIC_STREAKS_URL ||
+  Constants?.expoConfig?.extra?.STREAKS_URL ||
+  "";
+const STREAKS_API_KEY =
+  process.env.EXPO_PUBLIC_STREAKS_API_KEY ||
+  Constants?.expoConfig?.extra?.STREAKS_API_KEY ||
   "";
 
 /* ---------------- Sports config (SportsDataIO) ---------------- */
@@ -66,6 +77,21 @@ function Chip({ label, selected, onPress, style }) {
   );
 }
 
+/* ---------- Player streaks helpers ---------- */
+const MOCK_STREAKS = [
+  { id: "1", name: "Ava King",  streak: 8, avatarUrl: "https://i.pravatar.cc/100?img=5" },
+  { id: "2", name: "Noah Lee",  streak: 6, avatarUrl: "https://i.pravatar.cc/100?img=12" },
+  { id: "3", name: "Maya Cruz", streak: 5, avatarUrl: "https://i.pravatar.cc/100?img=32" },
+  { id: "4", name: "Owen Kim",  streak: 4, avatarUrl: "https://i.pravatar.cc/100?img=44" },
+  { id: "5", name: "Liam Fox",  streak: 3, avatarUrl: "https://i.pravatar.cc/100?img=14" },
+];
+function trophyForRank(rank){
+  if(rank===1) return { uri:"https://img.icons8.com/fluency/96/trophy.png" };
+  if(rank===2) return { uri:"https://img.icons8.com/color/96/silver-medal.png" };
+  if(rank===3) return { uri:"https://img.icons8.com/color/96/bronze-medal.png" };
+  return null;
+}
+
 /* ---------------- Screen ---------------- */
 export default function Dash(){
   const [selectedSportIndex,setSelectedSportIndex]=useState(0);
@@ -84,6 +110,13 @@ export default function Dash(){
   const [quickFilter,setQuickFilter]=useState("ALL");
   const [todayOnly,setTodayOnly]=useState(false);
   const [sortMode,setSortMode]=useState("smart");
+
+  // profile dropdown + streaks modal
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [streakOpen, setStreakOpen] = useState(false);
+  const [streaks, setStreaks] = useState([]);
+  const [streakLoading, setStreakLoading] = useState(false);
+  const [streakError, setStreakError] = useState("");
 
   const router=useRouter();
   const [fontsLoaded]=useFonts({
@@ -161,7 +194,6 @@ export default function Dash(){
       const homeId = g.HomeTeamID ?? g.HomeTeamId ?? null;
       const awayId = g.AwayTeamID ?? g.AwayTeamId ?? null;
 
-      // prefer canonical key from TeamID map, else fall back to fields in game
       const hkFromId = homeId!=null && teamIdMap[homeId]?.key ? teamIdMap[homeId].key : null;
       const akFromId = awayId!=null && teamIdMap[awayId]?.key ? teamIdMap[awayId].key : null;
 
@@ -327,6 +359,37 @@ export default function Dash(){
     );
   };
 
+  /* ---------- Streaks load ---------- */
+  const loadStreaks = async () => {
+    setStreakLoading(true);
+    setStreakError("");
+    try {
+      let rows = [];
+      if (STREAKS_URL) {
+        const r = await fetch(STREAKS_URL, {
+          headers: {
+            "Content-Type": "application/json",
+            ...(STREAKS_API_KEY ? { apikey: STREAKS_API_KEY, Authorization: `Bearer ${STREAKS_API_KEY}` } : {})
+          }
+        });
+        if (r.ok) {
+          const j = await r.json();
+          rows = Array.isArray(j) ? j : (j?.streaks || []);
+        }
+      }
+      if (!rows.length) rows = MOCK_STREAKS;
+      rows.sort((a,b)=> (b.streak||0)-(a.streak||0));
+      setStreaks(rows);
+    } catch (e) {
+      console.warn("streaks error", e);
+      setStreaks(MOCK_STREAKS);
+      setStreakError("Using sample data.");
+    } finally {
+      setStreakLoading(false);
+    }
+  };
+
+  /* ---------- UI ---------- */
   return (
     <ImageBackground source={require("@/assets/images/bgDash.png")} style={styles.container}>
       {/* Top bar */}
@@ -337,10 +400,22 @@ export default function Dash(){
             <Text style={styles.filterTopBtnText} numberOfLines={1}>Filters</Text>
           </View>
         </TouchableOpacity>
+
         <Text style={styles.appTitle}>LuxeBETS</Text>
+
         <View style={{ flexDirection: "row", gap: RFValue(12) }}>
-          <Image source={{ uri: "https://img.icons8.com/ios-filled/50/leaderboard.png" }} style={[styles.iconSmall, { tintColor: GOLD }]} />
-          <Image source={{ uri: "https://img.icons8.com/ios-filled/50/user.png" }} style={[styles.iconSmall, { tintColor: "#fff" }]} />
+          {/* Standings / streaks */}
+          <TouchableOpacity
+            onPress={() => { setStreakOpen(true); loadStreaks(); }}
+            activeOpacity={0.85}
+          >
+            <Image source={{ uri: "https://img.icons8.com/ios-filled/50/leaderboard.png" }} style={[styles.iconSmall, { tintColor: GOLD }]} />
+          </TouchableOpacity>
+
+          {/* Profile dropdown */}
+          <TouchableOpacity onPress={() => setProfileOpen((v)=>!v)} activeOpacity={0.85}>
+            <Image source={{ uri: "https://img.icons8.com/ios-filled/50/user.png" }} style={[styles.iconSmall, { tintColor: "#fff" }]} />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -384,11 +459,91 @@ export default function Dash(){
         </View>
       )}
 
+      {/* Profile dropdown menu */}
+      {profileOpen && (
+        <View style={[StyleSheet.absoluteFill, { zIndex: 20 }]} pointerEvents="box-none">
+          <Pressable style={styles.overlayTap} onPress={()=>setProfileOpen(false)} />
+          <BlurView intensity={70} tint="dark" style={styles.profileMenu}>
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => { setProfileOpen(false); router.push("/user/profile"); }}
+            >
+              <Image source={{ uri: "https://img.icons8.com/ios-glyphs/30/user--v1.png" }} style={styles.menuIcon} />
+              <Text style={styles.menuText}>Profile</Text>
+            </Pressable>
+            <View style={styles.menuDivider} />
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => { setProfileOpen(false); router.push("/user/settings"); }}
+            >
+              <Image source={{ uri: "https://img.icons8.com/ios-glyphs/30/settings.png" }} style={styles.menuIcon} />
+              <Text style={styles.menuText}>Settings</Text>
+            </Pressable>
+          </BlurView>
+        </View>
+      )}
+
+      {/* Streaks modal */}
+      <Modal transparent animationType="fade" visible={streakOpen} onRequestClose={()=>setStreakOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <BlurView intensity={80} tint="dark" style={styles.modalCard}>
+            <LinearGradient
+              colors={["rgba(97,61,193,0.25)", "rgba(44,7,53,0.25)"]}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+              style={StyleSheet.absoluteFill}
+            />
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Winning Streaks</Text>
+              <TouchableOpacity onPress={()=>setStreakOpen(false)} style={styles.modalClose}>
+                <Text style={styles.modalCloseText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            {!!streakError && <Text style={styles.modalNote}>{streakError}</Text>}
+
+            <FlatList
+              data={streaks}
+              keyExtractor={(it, idx)=>String(it.id ?? idx)}
+              refreshControl={
+                <RefreshControl
+                  refreshing={streakLoading}
+                  onRefresh={loadStreaks}
+                  tintColor="#fff"
+                />
+              }
+              renderItem={({ item, index }) => {
+                const trophy = trophyForRank(index+1);
+                const max = Math.max(1, streaks[0]?.streak || 1);
+                const barW = Math.max(10, (item.streak / max) * (width * 0.5));
+                return (
+                  <View style={styles.rankRow}>
+                    <Text style={styles.rankNum}>{index+1}</Text>
+                    {trophy ? <Image source={trophy} style={styles.trophy} /> : <View style={{ width: RFValue(24) }} />}
+                    <Image source={{ uri: item.avatarUrl || defaultTeamLogo }} style={styles.userAvatar} />
+                    <View style={{ flex:1 }}>
+                      <Text style={styles.rankName} numberOfLines={1}>{item.name}</Text>
+                      <View style={styles.progressTrack}>
+                        <View style={[styles.progressBar, { width: barW }]} />
+                      </View>
+                    </View>
+                    <Text style={styles.rankStreak}>W{item.streak}</Text>
+                  </View>
+                );
+              }}
+              ListEmptyComponent={!streakLoading ? (
+                <Text style={styles.modalNote}>No players yet.</Text>
+              ) : null}
+              contentContainerStyle={{ paddingBottom: RFValue(8) }}
+              showsVerticalScrollIndicator={false}
+            />
+          </BlurView>
+        </View>
+      </Modal>
+
       <FlatList
         data={shownEvents}
         keyExtractor={(item)=>String(item.id)}
         renderItem={({item})=>(
-          <TouchableOpacity activeOpacity={0.9} onPress={()=>router.push({ pathname:"/tournament", params:{ eventId:item.id, sport:sportKey } })}>
+          <TouchableOpacity activeOpacity={0.9} onPress={()=>router.push({ pathname: "/tournaments", params: { openJoin: theTournamentId } })}>
             <EventCard item={item} />
           </TouchableOpacity>
         )}
@@ -407,14 +562,14 @@ export default function Dash(){
           <Text style={{ color:"#fff", fontFamily:"Poppins", textAlign:"center", marginTop:RFValue(24), opacity:0.7 }}>No events to show.</Text>
         ) : null}
         ListFooterComponent={<View style={{ height: RFValue(40) }} />}
-        contentContainerStyle={{ paddingBottom: RFValue(96) }}  // keeps last card clear of bottom nav
+        contentContainerStyle={{ paddingBottom: RFValue(96) }}
         showsVerticalScrollIndicator={false}
       />
     </ImageBackground>
   );
 }
 
-/* ---------------- Styles (original colors, centered pill) ---------------- */
+/* ---------------- Styles (original colors + dropdown + modal) ---------------- */
 const styles = StyleSheet.create({
   container:{ flex:1, width:"100%", height:"100%" },
 
@@ -485,4 +640,35 @@ const styles = StyleSheet.create({
   avatarFallback:{ width:RFValue(56), height:RFValue(56), borderRadius:999, alignItems:"center", justifyContent:"center",
     borderWidth:1, borderColor:"#fff", backgroundColor:"rgba(255,215,0,0.15)" },
   avatarInitials:{ fontFamily:"PoppinsSemiBold", color:"#FFD700", fontSize:RFValue(15) },
+
+  /* Dropdown menu */
+  overlayTap:{ ...StyleSheet.absoluteFillObject , zIndex:2},
+  profileMenu:{
+    position:"absolute", top:RFValue(92), right:RFValue(14),
+    width:RFValue(170), borderRadius:RFValue(14), overflow:"hidden",
+    backgroundColor:"rgba(30,30,30,0.9)", borderWidth:1, borderColor:"rgba(255,255,255,0.08)"
+  },
+  menuItem:{ flexDirection:"row", alignItems:"center", paddingVertical:RFValue(10), paddingHorizontal:RFValue(12) },
+  menuIcon:{ width:RFValue(18), height:RFValue(18), tintColor:"#fff", marginRight:RFValue(8) },
+  menuText:{ color:"#fff", fontFamily:"PoppinsMedium", fontSize:RFValue(14) },
+  menuDivider:{ height:1, backgroundColor:"rgba(255,255,255,0.08)" },
+
+  /* Streaks modal */
+  modalBackdrop:{ flex:1, backgroundColor:"rgba(0,0,0,0.45)", justifyContent:"center", alignItems:"center", padding:RFValue(16) },
+  modalCard:{ width:"100%", maxWidth:600, maxHeight:"80%", borderRadius:RFValue(18), overflow:"hidden",
+    backgroundColor:"rgba(25,25,25,0.95)", borderWidth:1, borderColor:"rgba(255,255,255,0.08)", padding:RFValue(12) },
+  modalHeader:{ flexDirection:"row", alignItems:"center", justifyContent:"space-between", marginBottom:RFValue(6) },
+  modalTitle:{ color:"#fff", fontFamily:"PoppinsBold", fontSize:RFValue(18) },
+  modalClose:{ width:RFValue(32), height:RFValue(32), borderRadius:999, alignItems:"center", justifyContent:"center", backgroundColor:"rgba(255,255,255,0.08)" },
+  modalCloseText:{ color:"#fff", fontSize:RFValue(16), fontFamily:"PoppinsSemiBold" },
+  modalNote:{ color:"#fff", opacity:0.75, fontFamily:"Poppins", marginBottom:RFValue(6) },
+
+  rankRow:{ flexDirection:"row", alignItems:"center", paddingVertical:RFValue(8), gap:RFValue(8) },
+  rankNum:{ width:RFValue(22), textAlign:"center", color:"#fff", fontFamily:"PoppinsSemiBold" },
+  trophy:{ width:RFValue(24), height:RFValue(24) },
+  userAvatar:{ width:RFValue(36), height:RFValue(36), borderRadius:999, borderWidth:1, borderColor:"rgba(255,255,255,0.2)" },
+  rankName:{ color:"#fff", fontFamily:"PoppinsMedium", fontSize:RFValue(13) },
+  progressTrack:{ height:RFValue(6), backgroundColor:"rgba(255,255,255,0.1)", borderRadius:RFValue(999), marginTop:RFValue(4), overflow:"hidden" },
+  progressBar:{ height:"100%", backgroundColor:GOLD },
+
 });
