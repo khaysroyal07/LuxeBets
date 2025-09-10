@@ -37,9 +37,10 @@ export default {
       SUPABASE_URL: process.env.SUPABASE_URL,
       SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
       FUNCTIONS_URL: process.env.FUNCTIONS_URL,
-      SPORTSDATAIO_KEY: process.env.SPORTSDATAIO_KEY,
       STREAKS_URL: process.env.STREAKS_URL,
       STREAKS_API_KEY: process.env.STREAKS_API_KEY,
+      SPORTSDATAIO_KEY: process.env.EXPO_PUBLIC_SPORTSDATAIO_KEY,
+      SPORTSDB_KEY: process.env.EXPO_PUBLIC_SPORTSDB_KEY ?? "3",
       eas: { projectId: "538a1d74-068e-425d-817d-692eff7a3423" }
     }
   }

@@ -1,107 +1,116 @@
-// supabase/functions/join_tournament/index.ts
+// deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-const cors = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+const ok = (p: any) =>
+  new Response(JSON.stringify(p), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+const ms = () => Date.now();
+const iso = (d?: number) => new Date(d ?? ms()).toISOString();
+const mask = (s: string, head = 12) => (s?.length ? `${s.slice(0, head)}…(${s.length})` : "");
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: cors });
-  if (req.method !== "POST") {
-    return new Response(JSON.stringify({ error: "Method not allowed" }), {
-      status: 405,
-      headers: { ...cors, "Content-Type": "application/json" },
-    });
-  }
-
-  const auth = req.headers.get("authorization") || req.headers.get("Authorization");
-  if (!auth) {
-    return new Response(JSON.stringify({ error: "Missing authorization header" }), {
-      status: 401,
-      headers: { ...cors, "Content-Type": "application/json" },
-    });
-  }
-
-  // Supabase client acting AS THE USER (RLS enforced)
-  const sb = createClient(SUPABASE_URL, ANON, { global: { headers: { Authorization: auth } } });
+  const t0 = ms();
+  const debug: Record<string, any> = { at: iso(), steps: [] };
+  const push = (k: string, v: any) => {
+    const row = { k, v, at: iso() };
+    debug.steps.push(row);
+    // Also print to function logs
+    console.log("DBG", k, JSON.stringify(v));
+  };
 
   try {
-    const { tournament_id } = await req.json().catch(() => ({}));
-    if (!tournament_id) {
-      return new Response(JSON.stringify({ error: "tournament_id required" }), {
-        status: 400,
-        headers: { ...cors, "Content-Type": "application/json" },
-      });
+    const auth = req.headers.get("Authorization") || "";
+    push("auth_header_present", { present: auth.startsWith("Bearer "), token: mask(auth.replace("Bearer ", "")) });
+    if (!auth.startsWith("Bearer ")) {
+      return ok({ ok:false, code:"AUTH_MISSING", message:"Missing Authorization header", debug });
     }
 
-    // Identify user
-    const { data: userData, error: uErr } = await sb.auth.getUser();
-    if (uErr || !userData?.user) {
-      return new Response(JSON.stringify({ error: "Invalid user" }), {
-        status: 401,
-        headers: { ...cors, "Content-Type": "application/json" },
-      });
-    }
-    const userId = userData.user.id;
+    const sb = createClient(SUPABASE_URL, ANON, { global: { headers: { Authorization: auth } } });
+    const { data: ures, error: uerr } = await sb.auth.getUser();
+    push("auth_getUser", { error: uerr?.message, user_id: ures?.user?.id });
+    if (uerr) return ok({ ok:false, code:"AUTH_ERROR", message:uerr.message, debug });
+    const user = ures?.user;
+    if (!user) return ok({ ok:false, code:"NOT_SIGNED_IN", message:"Not signed in", debug });
 
-    // Load tournament + ensure join window open (defense-in-depth; RLS also enforces)
-    const { data: tRow, error: tErr } = await sb
+    const body = await req.json().catch(() => ({}));
+    const tournament_id = Number(body?.tournament_id);
+    const wantDebug = !!body?.debug;
+    push("request_body", { body, parsed_tournament_id: tournament_id });
+
+    if (!Number.isFinite(tournament_id)) {
+      return ok({ ok:false, code:"BAD_REQUEST", message:"tournament_id required (number)", debug });
+    }
+
+    // Load tournament and compute window
+    const { data: t, error: tErr } = await sb
       .from("tournaments")
-      .select("id, status, join_close_at, end_at")
+      .select("id,status,join_open_at,join_close_at")
       .eq("id", tournament_id)
-      .single();
+      .maybeSingle();
+    push("load_tournament", { error: tErr?.message, t });
 
-    if (tErr || !tRow) {
-      return new Response(JSON.stringify({ error: "Tournament not found" }), {
-        status: 404,
-        headers: { ...cors, "Content-Type": "application/json" },
+    if (tErr) return ok({ ok:false, code:"DB_TOURNAMENT", message:tErr.message, debug });
+    if (!t)  return ok({ ok:false, code:"NOT_FOUND", message:"Tournament not found", debug });
+
+    const now = ms();
+    const openAt  = t.join_open_at  ? new Date(t.join_open_at).getTime()  : 0;
+    const closeAt = t.join_close_at ? new Date(t.join_close_at).getTime() : Number.MAX_SAFE_INTEGER;
+    const windowOpen = t.status === "open" && now >= openAt && now < closeAt;
+    push("join_window_check", {
+      status: t.status,
+      now_iso: iso(now),
+      open_iso: t.join_open_at,
+      close_iso: t.join_close_at,
+      openAt_ms: openAt, closeAt_ms: closeAt, windowOpen
+    });
+
+    if (!windowOpen) {
+      return ok({
+        ok:false, code:"JOIN_CLOSED", message:"Join window closed",
+        status:t.status, join_open_at:t.join_open_at, join_close_at:t.join_close_at,
+        debug
       });
     }
 
-    const now = Date.now();
-    const lockAt = new Date(tRow.join_close_at ?? tRow.end_at).getTime();
-    if (tRow.status !== "open" || !(lockAt > now)) {
-      return new Response(JSON.stringify({ error: "Tournament is locked" }), {
-        status: 403,
-        headers: { ...cors, "Content-Type": "application/json" },
-      });
-    }
-
-    // Insert entrant (unique constraint prevents duplicates)
-    const { error: iErr } = await sb
+    // Upsert entrant (lowercase status)
+    push("upsert_attempt", { tournament_id, user_id: user.id });
+    const { data: ins, error: insErr } = await sb
       .from("entrants")
-      .insert({ tournament_id, user_id: userId, status: "ALIVE" });
-    if (iErr) {
-      // If duplicate, surface a friendly message
-      const msg = (iErr as any)?.message || "";
-      if (/duplicate key value|unique constraint/i.test(msg)) {
-        return new Response(JSON.stringify({ ok: true, alreadyJoined: true }), {
-          status: 200,
-          headers: { ...cors, "Content-Type": "application/json" },
-        });
-      }
-      return new Response(JSON.stringify({ error: msg || "Failed to join" }), {
-        status: 400,
-        headers: { ...cors, "Content-Type": "application/json" },
+      .upsert({ tournament_id, user_id: user.id, status: "active" }, { onConflict: "tournament_id,user_id" })
+      .select("id,tournament_id,user_id,status")
+      .maybeSingle();
+
+    if (insErr) {
+      console.error("JOIN_FAILED", {
+        msg: insErr.message,
+        details: (insErr as any).details,
+        hint: (insErr as any).hint,
+        code: (insErr as any).code
+      });
+      push("upsert_error", {
+        msg: insErr.message,
+        details: (insErr as any).details,
+        hint: (insErr as any).hint,
+        code: (insErr as any).code
+      });
+      return ok({
+        ok:false, code:"JOIN_FAILED", message:insErr.message,
+        details:(insErr as any).details, hint:(insErr as any).hint, pgcode:(insErr as any).code,
+        debug: wantDebug ? debug : undefined
       });
     }
 
-    // TODO: payment capture / wallet debit (left as a separate flow)
-
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { ...cors, "Content-Type": "application/json" },
-    });
+    push("upsert_success", ins);
+    return ok({ ok:true, entrant: ins, took_ms: ms() - t0, debug: wantDebug ? debug : undefined });
   } catch (e) {
-    return new Response(JSON.stringify({ error: String(e?.message || e) }), {
-      status: 500,
-      headers: { ...cors, "Content-Type": "application/json" },
-    });
+    console.error("UNHANDLED", e);
+    debug.steps.push({ k:"UNHANDLED", v: String(e?.message || e), at: iso() });
+    return ok({ ok:false, code:"UNHANDLED", message:String(e?.message || e), debug });
   }
 });

@@ -1,27 +1,32 @@
-// app/tournaments/index.js
+// app/(tabs)/tournaments.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView,
   ImageBackground, ActivityIndicator, Alert, TextInput, Platform,
-  RefreshControl,
+  RefreshControl, FlatList
 } from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
 import { useRouter } from "expo-router";
-import Constants from "expo-constants";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { supabase, FUNCTIONS_BASE } from "@/lib/supabase";
+import Constants from "expo-constants";
+import { supabase } from "@/lib/supabase";
 
-/* ---------- Config / theme ---------- */
 const GOLD = "#FFD700";
 const PURPLE = "#613DC1";
 const DARK = "#1a1a1a";
-const JOIN_FN_PATHS = ["/join_tournament", "/join-tournament"];
-const TIER_TO_PLANET = { "20": "Tournament of Mars", "50": "Tournament of Jupiter", "100": "Tournament of Saturn" };
-const PROMO_CODES = { LUXE10: 10, VIP20: 20, BETA30: 30 };
+const TIER_TO_PLANET: Record<string, string> = {
+  "20": "Tournament of Mars",
+  "50": "Tournament of Jupiter",
+  "100": "Tournament of Saturn",
+};
+const PROMO_CODES: Record<string, number> = { LUXE10: 10, VIP20: 20, BETA30: 30 };
 
-const fmtMoney = (n) => `$${Number(n || 0).toFixed(2)}`;
-const timeUntil = (ms) => {
+const SDIO_KEY = (Constants?.expoConfig?.extra as any)?.SPORTSDATAIO_KEY as string | undefined;
+const SPORTSDB_KEY = (Constants?.expoConfig?.extra as any)?.SPORTSDB_KEY as string | undefined;
+
+const fmtMoney = (n: any) => `$${Number(n || 0).toFixed(2)}`;
+const timeUntil = (ms: number) => {
   const diff = ms - Date.now();
   if (diff <= 0) return "now";
   const m = Math.floor(diff / 60000);
@@ -30,26 +35,77 @@ const timeUntil = (ms) => {
   if (h >= 1) return `${h}h ${mm}m`;
   return `${mm}m`;
 };
-const displayNameForTournament = (t) => {
-  const fee = Number(t?.entry_fee || 0);
+const displayNameForTournament = (t: any) => {
+  const fee = Number(t?.entry_fee || t?.entry_amount || 0);
   return t?.week_label || TIER_TO_PLANET[String(fee)] || (fee ? `Tournament $${fee}` : "Tournament");
 };
 
-export default function TournamentsIndex() {
+// ---- helpers for slate preview (NFL first) ----
+const toSDioDate = (d: string | Date) => {
+  const dt = new Date(d);
+  const M = dt.toLocaleString("en-US", { month: "short" }).toUpperCase();
+  const DD = String(dt.getDate()).padStart(2, "0");
+  return `${dt.getFullYear()}-${M}-${DD}`;
+};
+
+type GameRow = {
+  id: string;
+  start: string;
+  home: { key: string; name: string; short: string };
+  away: { key: string; name: string; short: string };
+};
+
+async function fetchNFLSlate(dayISO: string): Promise<GameRow[]> {
+  // 1) SportsDataIO NFL (if authorized on the new key)
+  if (SDIO_KEY) {
+    try {
+      const url = `https://api.sportsdata.io/v3/nfl/scores/json/GamesByDate/${toSDioDate(dayISO)}?key=${SDIO_KEY}`;
+      const r = await fetch(url);
+      if (r.ok) {
+        const rows = await r.json();
+        if (Array.isArray(rows)) {
+          return rows.map((g: any) => ({
+            id: String(g?.GameKey ?? g?.GameID ?? `${g?.HomeTeam}-${g?.AwayTeam}-${g?.Date}`),
+            start: g?.Date ?? g?.DateTime ?? new Date().toISOString(),
+            home: { key: g?.HomeTeam, name: g?.HomeTeam ?? "Home", short: g?.HomeTeam ?? "H" },
+            away: { key: g?.AwayTeam, name: g?.AwayTeam ?? "Away", short: g?.AwayTeam ?? "A" },
+          }));
+        }
+      }
+    } catch {}
+  }
+  // 2) Fallback: TheSportsDB NFL
+  try {
+    const ymd = new Date(dayISO).toISOString().slice(0, 10);
+    const url = `https://www.thesportsdb.com/api/v1/json/${SPORTSDB_KEY || "3"}/eventsday.php?d=${ymd}&l=NFL`;
+    const r = await fetch(url);
+    const js = await r.json();
+    const arr = js?.events || [];
+    return (arr as any[]).map((g) => ({
+      id: String(g?.idEvent),
+      start: g?.dateEvent ? `${g.dateEvent}T${g.strTime || "00:00:00"}Z` : new Date().toISOString(),
+      home: { key: g?.idHomeTeam, name: g?.strHomeTeam, short: g?.strHomeTeam?.slice(0, 3)?.toUpperCase() || "H" },
+      away: { key: g?.idAwayTeam, name: g?.strAwayTeam, short: g?.strAwayTeam?.slice(0, 3)?.toUpperCase() || "A" },
+    }));
+  } catch {}
+  return [];
+}
+
+export default function TournamentsTab() {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [tournaments, setTournaments] = useState([]);
-  const [joinedIds, setJoinedIds] = useState(new Set());
+  const [tournaments, setTournaments] = useState<any[]>([]);
+  const [joinedIds, setJoinedIds] = useState<Set<number | string>>(new Set());
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Join modal
   const [joinOpen, setJoinOpen] = useState(false);
   const [busyJoin, setBusyJoin] = useState(false);
-  const [selectedT, setSelectedT] = useState(null);
+  const [selectedT, setSelectedT] = useState<any>(null);
   const [promoInput, setPromoInput] = useState("");
-  const [appliedPromo, setAppliedPromo] = useState(null);
+  const [appliedPromo, setAppliedPromo] = useState<string | null>(null);
 
   // Joined confirmation
   const [joinedConfirmOpen, setJoinedConfirmOpen] = useState(false);
@@ -57,55 +113,48 @@ export default function TournamentsIndex() {
   // Status modal
   const [statusOpen, setStatusOpen] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
-  const [statusData, setStatusData] = useState(null);
+  const [statusData, setStatusData] = useState<any>(null);
 
-  // ticker to refresh countdown labels (no extra fetch)
-  const tickRef = useRef(null);
+  // SLATE PREVIEW modal
+  const [slateOpen, setSlateOpen] = useState(false);
+  const [slateBusy, setSlateBusy] = useState(false);
+  const [slateRows, setSlateRows] = useState<GameRow[]>([]);
+  const [slateMsg, setSlateMsg] = useState<string>("");
 
-  /* ---------- Load tournaments straight from Supabase ---------- */
+  const tickRef = useRef<any>(null);
+
   const loadTournaments = async (showSpinner = true) => {
     try {
       if (showSpinner) setLoading(true);
       setRefreshing(true);
 
-      // tournaments list
-      const { data: tourneys, error: tErr } = await supabase
+      const { data: list, error: tErr } = await supabase
         .from("tournaments")
         .select("*")
         .order("join_open_at", { ascending: true });
       if (tErr) throw tErr;
 
-      // entrants totals (try view if exists, else count locally)
-      const ids = (tourneys || []).map((t) => t.id);
-      let countsMap = {};
+      const ids = (list || []).map((t: any) => t.id);
+      const counts: Record<string, number> = {};
       if (ids.length) {
-        const { data: countRows, error: vErr } = await supabase
-          .from("v_tournament_counts")
-          .select("tournament_id,entrants_total")
+        const { data: entrantRows } = await supabase
+          .from("entrants")
+          .select("tournament_id")
           .in("tournament_id", ids);
-        if (!vErr && Array.isArray(countRows)) {
-          countRows.forEach((r) => { countsMap[r.tournament_id] = Number(r.entrants_total || 0); });
-        } else {
-          const { data: entrantRows } = await supabase
-            .from("entrants")
-            .select("tournament_id")
-            .in("tournament_id", ids);
-          (entrantRows || []).forEach((r) => {
-            countsMap[r.tournament_id] = (countsMap[r.tournament_id] || 0) + 1;
-          });
-        }
+        (entrantRows || []).forEach((r: any) => {
+          counts[r.tournament_id] = (counts[r.tournament_id] || 0) + 1;
+        });
       }
-      const merged = (tourneys || []).map((t) => ({ ...t, entrants_total: countsMap[t.id] ?? 0 }));
+      const merged = (list || []).map((t: any) => ({ ...t, entrants_total: counts[t.id] ?? 0 }));
 
-      // which I joined (RLS keeps this to me)
       const { data: mine, error: mErr } = await supabase
         .from("entrants")
         .select("tournament_id");
       if (mErr) throw mErr;
 
       setTournaments(merged);
-      setJoinedIds(new Set((mine || []).map((r) => r.tournament_id)));
-    } catch (e) {
+      setJoinedIds(new Set((mine || []).map((r: any) => r.tournament_id)));
+    } catch (e: any) {
       Alert.alert("Error", e.message || "Failed to load tournaments");
     } finally {
       setRefreshing(false);
@@ -120,9 +169,8 @@ export default function TournamentsIndex() {
     return () => clearInterval(tickRef.current);
   }, []);
 
-  /* ---------- Join flow ---------- */
-  const openJoin = (t) => {
-    const fee = Number(t.entry_fee || 0);
+  const openJoin = (t: any) => {
+    const fee = Number(t.entry_fee || t.entry_amount || 0);
     setSelectedT({ ...t, fee, displayName: displayNameForTournament(t) });
     setPromoInput(""); setAppliedPromo(null);
     setJoinOpen(true);
@@ -138,66 +186,48 @@ export default function TournamentsIndex() {
     setAppliedPromo(code);
   };
   const removePromo = () => { setAppliedPromo(null); setPromoInput(""); };
-// REPLACE your current confirmJoin with this version
-const confirmJoin = async () => {
-  try {
-    setBusyJoin(true);
 
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
+  // ---- join with robust parse (handles string or object from Edge) ----
+  const confirmJoin = async () => {
+    try {
+      setBusyJoin(true);
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) return Alert.alert("Sign in required", "Please log in to join tournaments.");
+
+      const invokeJoin = async (name: string) => {
+        const r = await supabase.functions.invoke(name, {
+          body: { tournament_id: selectedT.id, debug: true },
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (r.error) throw r.error;
+        return typeof r.data === "string" ? JSON.parse(r.data as any) : (r.data as any);
+      };
+
+      let resp = null as any;
+      try { resp = await invokeJoin("join_tournament"); }
+      catch { resp = await invokeJoin("join-tournament"); }
+
+      if (!resp?.ok && !resp?.alreadyJoined) {
+        throw new Error(resp?.message || resp?.code || "Join failed");
+      }
+
+      setJoinOpen(false);
+      setJoinedConfirmOpen(true);
+      setJoinedIds(prev => new Set([...Array.from(prev), selectedT.id]));
+    } catch (e: any) {
+      Alert.alert("Unable to join", e.message || String(e));
+    } finally {
       setBusyJoin(false);
-      return Alert.alert("Sign in required", "Please log in to join tournaments.");
     }
+  };
 
-    // helper to try one function name
-    const invokeJoin = async (name) => {
-      const { data, error } = await supabase.functions.invoke(name, {
-        body: { tournament_id: selectedT.id },
-        headers: { Authorization: `Bearer ${session.access_token}` }, // safe for verify_jwt = true
-      });
-      if (error) throw error;
-      return data;
-    };
-
-    // try both names: join_tournament (underscore) then join-tournament (hyphen)
-    let resp = null;
-    try { resp = await invokeJoin("join_tournament"); }
-    catch (e1) {
-      try { resp = await invokeJoin("join-tournament"); }
-      catch (e2) { throw e2; }
-    }
-
-    if (!resp?.ok && !resp?.alreadyJoined) {
-      throw new Error(resp?.error || resp?.message || "Join failed");
-    }
-
-    setJoinOpen(false);
-    setJoinedConfirmOpen(true);
-    setJoinedIds((prev) => new Set([...Array.from(prev), selectedT.id]));
-  } catch (e) {
-    const msg = String(e?.message || e);
-    if (msg.includes("Network request failed") || msg.includes("TypeError")) {
-      Alert.alert(
-        "Network error",
-        "Couldn’t reach the join function. Using the SDK avoids base URL/CORS issues — if this persists, confirm the Edge function is deployed and named `join_tournament` or `join-tournament`."
-      );
-    } else {
-      Alert.alert("Unable to join", msg);
-    }
-  } finally {
-    setBusyJoin(false);
-  }
-};
-
-
-  /* ---------- Status modal ---------- */
-  const openStatus = async (t) => {
+  const openStatus = async (t: any) => {
     try {
       setStatusOpen(true);
       setStatusBusy(true);
-
       const entrants = typeof t.entrants_total === "number" ? t.entrants_total : null;
-      const fee = Number(t.entry_fee || 0);
+      const fee = Number(t.entry_fee || t.entry_amount || 0);
       const prizePool = entrants != null ? entrants * fee : null;
 
       const openMs  = t.join_open_at  ? new Date(t.join_open_at).getTime()  : null;
@@ -223,6 +253,34 @@ const confirmJoin = async () => {
       });
     } finally {
       setStatusBusy(false);
+    }
+  };
+
+  // --- PREVIEW GAMES ---
+  const previewGames = async (t: any) => {
+    setSlateOpen(true);
+    setSlateBusy(true);
+    setSlateRows([]);
+    setSlateMsg("");
+
+    // decide date to use
+    const dayISO =
+      t?.day_date ||
+      (t?.start_date ? new Date(t.start_date).toISOString().slice(0, 10) : null) ||
+      (t?.join_open_at ? new Date(t.join_open_at).toISOString().slice(0, 10) : null) ||
+      new Date().toISOString().slice(0, 10);
+
+    try {
+      const rows = await fetchNFLSlate(dayISO);
+      if (rows.length === 0) {
+        setSlateMsg("No games found for this date (NFL). If you just created the tournament, try another day or check provider limits.");
+      } else {
+        setSlateRows(rows);
+      }
+    } catch (e: any) {
+      setSlateMsg(e?.message || "Could not load games.");
+    } finally {
+      setSlateBusy(false);
     }
   };
 
@@ -264,7 +322,7 @@ const confirmJoin = async () => {
           </Text>
         </View>
 
-        {/* Centered badges */}
+        {/* Centered badges (Refresh is back) */}
         <View style={styles.badgesRow}>
           <TouchableOpacity onPress={() => router.push("/entries")} activeOpacity={0.9}>
             <LinearGradient colors={["#FFE98B", "#FFD700"]} start={{x:0,y:0}} end={{x:1,y:1}} style={[styles.badge, styles.badgeGold]}>
@@ -283,7 +341,7 @@ const confirmJoin = async () => {
 
         {/* Cards */}
         {tournaments?.length ? tournaments.map((t) => {
-          const fee = Number(t.entry_fee || 0);
+          const fee = Number((t as any).entry_fee || (t as any).entry_amount || 0);
           const title = displayNameForTournament(t);
           const openMs  = t.join_open_at  ? new Date(t.join_open_at).getTime()  : null;
           const closeMs = t.join_close_at ? new Date(t.join_close_at).getTime() : null;
@@ -300,20 +358,34 @@ const confirmJoin = async () => {
           else if (!isOpen && openMs && now < openMs) statusLine = `Opens in ${timeUntil(openMs)}`;
           else statusLine = "Locked";
 
+          const dayISO =
+            t?.day_date ||
+            (t?.start_date ? new Date(t.start_date).toISOString().slice(0, 10) : null) ||
+            (t?.join_open_at ? new Date(t.join_open_at).toISOString().slice(0, 10) : null) ||
+            new Date().toISOString().slice(0, 10);
+
           return (
             <View key={t.id} style={styles.card}>
               <View style={styles.cardHeader}>
-                <Text style={styles.cardTitle}>{title} • ANY</Text>
-                <TouchableOpacity onPress={() => openStatus(t)} style={styles.iconBtnSmall}>
-                  <Ionicons name="stats-chart" size={RFValue(18)} color={GOLD} />
-                </TouchableOpacity>
+                <Text style={styles.cardTitle} numberOfLines={1}>{title} • ANY</Text>
+                <View style={{ flexDirection: "row", alignItems: "center" }}>
+                  <TouchableOpacity onPress={() => previewGames(t)} style={styles.iconBtnSmall}>
+                    <Ionicons name="eye-outline" size={RFValue(18)} color={GOLD} />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => openStatus(t)} style={styles.iconBtnSmall}>
+                    <Ionicons name="stats-chart" size={RFValue(18)} color={GOLD} />
+                  </TouchableOpacity>
+                </View>
               </View>
 
-              <Text style={styles.sub}>
+              <Text style={styles.sub} numberOfLines={2}>
                 Entry: <Text style={{ color: GOLD }}>{fmtMoney(fee)}</Text>{" "}
                 · Join Window: {t.join_open_at ? new Date(t.join_open_at).toLocaleString() : "—"} → {t.join_close_at ? new Date(t.join_close_at).toLocaleString() : "—"}
               </Text>
-              <Text style={styles.countdown}>{statusLine}</Text>
+              <Text style={styles.sub} numberOfLines={1}>
+                Day: <Text style={{ color: "#fff" }}>{dayISO}</Text>
+              </Text>
+              <Text style={styles.countdown} numberOfLines={1}>{statusLine}</Text>
 
               <View style={styles.actionsRow}>
                 <TouchableOpacity disabled={joinDisabled} onPress={() => openJoin(t)} style={[styles.joinBtn, joinDisabled && { backgroundColor: "#555" }]}>
@@ -321,7 +393,7 @@ const confirmJoin = async () => {
                 </TouchableOpacity>
               </View>
 
-              <Text style={styles.houseNote}>* 25% to house · last person standing splits the pot.</Text>
+              <Text style={styles.houseNote} numberOfLines={2}>* 25% to house · last person standing splits the pot.</Text>
             </View>
           );
         }) : (
@@ -333,9 +405,7 @@ const confirmJoin = async () => {
       <Modal visible={joinOpen} animationType="slide" transparent onRequestClose={() => setJoinOpen(false)}>
         <ScrollView contentContainerStyle={styles.overlay} keyboardShouldPersistTaps="handled">
           <View style={styles.modal}>
-            <Text style={styles.modalTitle}>
-              Join {displayNameForTournament(selectedT)} (ANY)
-            </Text>
+            <Text style={styles.modalTitle}>Join {displayNameForTournament(selectedT)} (ANY)</Text>
 
             <Row label="Entry Fee" value={fmtMoney(entryFee)} />
             <Row
@@ -343,9 +413,7 @@ const confirmJoin = async () => {
               valueNode={
                 appliedPromo ? (
                   <View style={styles.promoPill}>
-                    <Text style={styles.promoText}>
-                      {appliedPromo} • {PROMO_CODES[appliedPromo]}% off
-                    </Text>
+                    <Text style={styles.promoText}>{appliedPromo} • {PROMO_CODES[appliedPromo]}% off</Text>
                     <TouchableOpacity onPress={removePromo}><Text style={styles.promoRemove}>✕</Text></TouchableOpacity>
                   </View>
                 ) : (
@@ -407,9 +475,7 @@ const confirmJoin = async () => {
               <ActivityIndicator color={GOLD} />
             ) : (
               <>
-                <Text style={styles.statusTitle}>
-                  {statusData.name} • ANY
-                </Text>
+                <Text style={styles.statusTitle}>{statusData.name} • ANY</Text>
                 <Row label="Status" value={statusData.status} />
                 <Row label="Entry Fee" value={fmtMoney(statusData.entryFee)} />
                 <Row label="Join Opens" value={`${statusData.opensAt ? new Date(statusData.opensAt).toLocaleString() : "—"} (${statusData.opensIn})`} />
@@ -427,15 +493,51 @@ const confirmJoin = async () => {
           </View>
         </View>
       </Modal>
+
+      {/* SLATE PREVIEW MODAL */}
+      <Modal visible={slateOpen} animationType="slide" transparent onRequestClose={() => setSlateOpen(false)}>
+        <View style={styles.overlay}>
+          <View style={styles.slateCard}>
+            <Text style={styles.slateTitle}>Preview Games (NFL)</Text>
+            {slateBusy ? (
+              <ActivityIndicator color={GOLD} />
+            ) : slateRows.length ? (
+              <FlatList
+                data={slateRows}
+                keyExtractor={(g) => g.id}
+                style={{ maxHeight: RFValue(340) }}
+                ItemSeparatorComponent={() => <View style={{ height: RFValue(8) }} />}
+                renderItem={({ item }) => (
+                  <View style={styles.slateRow}>
+                    <Text style={styles.slateTime} numberOfLines={1}>
+                      {new Date(item.start).toLocaleString()}
+                    </Text>
+                    <Text style={styles.slateTeams} numberOfLines={1} ellipsizeMode="tail">
+                      {item.away.short} {item.away.name} @ {item.home.short} {item.home.name}
+                    </Text>
+                  </View>
+                )}
+                ListFooterComponent={<View style={{ height: RFValue(6) }} />}
+              />
+            ) : (
+              <Text style={styles.slateEmpty}>{slateMsg || "No games found."}</Text>
+            )}
+
+            <TouchableOpacity onPress={() => setSlateOpen(false)} style={styles.closeBig}>
+              <Text style={styles.closeBigTxt}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ImageBackground>
   );
 }
 
-function Row({ label, value, valueNode, valueElStyle }) {
+function Row({ label, value, valueNode, valueElStyle }: any) {
   return (
     <View style={rowStyles.row}>
       <Text style={rowStyles.lab}>{label}</Text>
-      {valueNode ? valueNode : <Text style={[rowStyles.val, valueElStyle]}>{value}</Text>}
+      {valueNode ? valueNode : <Text style={[rowStyles.val, valueElStyle]} numberOfLines={1} ellipsizeMode="tail">{value}</Text>}
     </View>
   );
 }
@@ -462,7 +564,7 @@ const styles = StyleSheet.create({
 
   card: { backgroundColor: "rgba(0,0,0,0.6)", padding: RFValue(16), marginVertical: RFValue(10), borderRadius: RFValue(16), borderColor: "rgba(255,255,255,0.08)", borderWidth: 1 },
   cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  cardTitle: { fontSize: RFValue(18), fontWeight: "800", color: "#fff" },
+  cardTitle: { flex: 1, fontSize: RFValue(18), fontWeight: "800", color: "#fff" },
   iconBtnSmall: { height: RFValue(28), width: RFValue(28), alignItems: "center", justifyContent: "center" },
   sub: { color: "#ddd", marginTop: RFValue(4), fontSize: RFValue(12) },
   countdown: { color: GOLD, fontWeight: "700", marginTop: RFValue(6) },
@@ -504,10 +606,21 @@ const styles = StyleSheet.create({
   hr: { height: 1, backgroundColor: "rgba(255,255,255,0.08)", marginVertical: RFValue(8) },
   closeBig: { backgroundColor: PURPLE, paddingVertical: RFValue(10), borderRadius: RFValue(12), marginTop: RFValue(12), alignItems: "center" },
   closeBigTxt: { color: "#fff", fontWeight: "900" },
+
+  slateCard: { width: "92%", backgroundColor: DARK, borderRadius: RFValue(16), padding: RFValue(16), borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
+  slateTitle: { color: "#fff", fontSize: RFValue(18), fontWeight: "900", textAlign: "center", marginBottom: RFValue(8) },
+  slateRow: {
+    backgroundColor: "rgba(0,0,0,0.5)",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.08)",
+    borderRadius: RFValue(10), padding: RFValue(10)
+  },
+  slateTime: { color: GOLD, fontWeight: "800", fontSize: RFValue(12), marginBottom: RFValue(4) },
+  slateTeams: { color: "#fff", fontWeight: "700", fontSize: RFValue(13) },
+  slateEmpty: { color: "#ddd", textAlign: "center", marginVertical: RFValue(10) },
 });
 
 const rowStyles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginVertical: RFValue(6) },
   lab: { color: "#ccc", fontSize: RFValue(13) },
-  val: { color: "#fff", fontSize: RFValue(14), fontWeight: "800" },
+  val: { color: "#fff", fontSize: RFValue(14), fontWeight: "800", maxWidth: "70%" },
 });

@@ -1,2 +1,90 @@
 [functions.create-weekly-tournaments]
 verify_jwt = false
+
+[functions.create_daily_tournaments]
+enabled = true
+verify_jwt = true
+import_map = "./functions/create_daily_tournaments/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/create_daily_tournaments/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/create_daily_tournaments/*.html" ]
+
+[functions.resolve_day]
+enabled = true
+verify_jwt = true
+import_map = "./functions/resolve_day/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/resolve_day/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/resolve_day/*.html" ]
+
+[functions.join_tournament]
+enabled = true
+verify_jwt = true
+import_map = "./functions/join_tournament/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/join_tournament/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/join_tournament/*.html" ]
+
+[functions.list_tournaments]
+enabled = true
+verify_jwt = true
+import_map = "./functions/list_tournaments/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/list_tournaments/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/list_tournaments/*.html" ]
+
+[functions.game_slate]
+enabled = true
+verify_jwt = true
+import_map = "./functions/game_slate/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/game_slate/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/game_slate/*.html" ]
+
+[functions.sports_meta]
+enabled = true
+verify_jwt = true
+import_map = "./functions/sports_meta/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/sports_meta/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/sports_meta/*.html" ]
+
+[functions.submit_pick]
+enabled = true
+verify_jwt = true
+import_map = "./functions/submit_pick/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/submit_pick/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/submit_pick/*.html" ]
+
+[functions.create_nfl_tournament]
+enabled = true
+verify_jwt = true
+import_map = "./functions/create_nfl_tournament/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/create_nfl_tournament/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/create_nfl_tournament/*.html" ]

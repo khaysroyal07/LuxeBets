@@ -479,8 +479,9 @@ export default function Dash(){
               onPress={() => go("/user/profile")}
             >
               <Image source={{ uri: "https://img.icons8.com/ios-glyphs/30/user--v1.png" }} style={styles.menuIcon} />
-              <Text style={styles.menuText}>Profile</Text>
-            </Pressable>
+<TouchableOpacity onPress={() => router.push("/profile")}>
+      <Text style={styles.menuText}>Profile</Text>
+    </TouchableOpacity>            </Pressable>
             <View style={styles.menuDivider} />
             <Pressable
               style={styles.menuItem}
