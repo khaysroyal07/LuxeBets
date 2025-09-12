@@ -15,11 +15,16 @@ import { supabase } from "@/lib/supabase";
 const GOLD = "#FFD700";
 const PURPLE = "#613DC1";
 const DARK = "#1a1a1a";
-const TIER_TO_PLANET: Record<string, string> = {
-  "20": "Tournament of Mars",
-  "50": "Tournament of Jupiter",
-  "100": "Tournament of Saturn",
+
+/** Planet labels by rank (cheapest→priciest) within the same week (day_date) */
+const PLANET_BY_RANK = ["Tournament of Mars", "Tournament of Jupiter", "Tournament of Saturn"];
+/** Fallback if we don’t have all three */
+const FEE_TO_PLANET: Record<string, string> = {
+  "20": PLANET_BY_RANK[0],
+  "50": PLANET_BY_RANK[1],
+  "100": PLANET_BY_RANK[2],
 };
+
 const PROMO_CODES: Record<string, number> = { LUXE10: 10, VIP20: 20, BETA30: 30 };
 
 const SDIO_KEY = (Constants?.expoConfig?.extra as any)?.SPORTSDATAIO_KEY as string | undefined;
@@ -34,10 +39,6 @@ const timeUntil = (ms: number) => {
   if (h >= 24) return `${Math.floor(h/24)}d ${h%24}h`;
   if (h >= 1) return `${h}h ${mm}m`;
   return `${mm}m`;
-};
-const displayNameForTournament = (t: any) => {
-  const fee = Number(t?.entry_fee || t?.entry_amount || 0);
-  return t?.week_label || TIER_TO_PLANET[String(fee)] || (fee ? `Tournament $${fee}` : "Tournament");
 };
 
 // ---- helpers for slate preview (NFL first) ----
@@ -56,7 +57,7 @@ type GameRow = {
 };
 
 async function fetchNFLSlate(dayISO: string): Promise<GameRow[]> {
-  // 1) SportsDataIO NFL (if authorized on the new key)
+  // 1) SportsDataIO NFL
   if (SDIO_KEY) {
     try {
       const url = `https://api.sportsdata.io/v3/nfl/scores/json/GamesByDate/${toSDioDate(dayISO)}?key=${SDIO_KEY}`;
@@ -91,12 +92,34 @@ async function fetchNFLSlate(dayISO: string): Promise<GameRow[]> {
   return [];
 }
 
+/** Build planet name map by week (group by day_date, sort by entry_fee asc). */
+function makePlanetNameMap(list: any[]): Map<number, string> {
+  const group = new Map<string, any[]>();
+  for (const t of list) {
+    const key = String(t.day_date);
+    const arr = group.get(key) || [];
+    arr.push(t);
+    group.set(key, arr);
+  }
+  const map = new Map<number, string>();
+  group.forEach((arr) => {
+    arr.sort((a, b) => Number(a.entry_fee) - Number(b.entry_fee));
+    arr.forEach((t, idx) => {
+      const fee = Number(t.entry_fee);
+      const fallback = FEE_TO_PLANET[String(fee)] || `Tournament $${fee}`;
+      map.set(t.id, PLANET_BY_RANK[idx] || fallback);
+    });
+  });
+  return map;
+}
+
 export default function TournamentsTab() {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [tournaments, setTournaments] = useState<any[]>([]);
+  const [planetById, setPlanetById] = useState<Map<number, string>>(new Map());
   const [joinedIds, setJoinedIds] = useState<Set<number | string>>(new Set());
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -110,7 +133,7 @@ export default function TournamentsTab() {
   // Joined confirmation
   const [joinedConfirmOpen, setJoinedConfirmOpen] = useState(false);
 
-  // Status modal
+  // Status modal (DECLARE ONCE)
   const [statusOpen, setStatusOpen] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusData, setStatusData] = useState<any>(null);
@@ -147,12 +170,15 @@ export default function TournamentsTab() {
       }
       const merged = (list || []).map((t: any) => ({ ...t, entrants_total: counts[t.id] ?? 0 }));
 
+      const pmap = makePlanetNameMap(merged);
+
       const { data: mine, error: mErr } = await supabase
         .from("entrants")
         .select("tournament_id");
       if (mErr) throw mErr;
 
       setTournaments(merged);
+      setPlanetById(pmap);
       setJoinedIds(new Set((mine || []).map((r: any) => r.tournament_id)));
     } catch (e: any) {
       Alert.alert("Error", e.message || "Failed to load tournaments");
@@ -169,9 +195,14 @@ export default function TournamentsTab() {
     return () => clearInterval(tickRef.current);
   }, []);
 
+  const planetTitle = (t: any) =>
+    planetById.get(t.id) ||
+    FEE_TO_PLANET[String(Number(t.entry_fee || 0))] ||
+    `Tournament $${Number(t.entry_fee || 0)}`;
+
   const openJoin = (t: any) => {
     const fee = Number(t.entry_fee || t.entry_amount || 0);
-    setSelectedT({ ...t, fee, displayName: displayNameForTournament(t) });
+    setSelectedT({ ...t, fee, displayName: planetTitle(t) });
     setPromoInput(""); setAppliedPromo(null);
     setJoinOpen(true);
   };
@@ -179,19 +210,12 @@ export default function TournamentsTab() {
   const entryFee = useMemo(() => selectedT?.fee || 0, [selectedT]);
   const discountPct = useMemo(() => (appliedPromo ? PROMO_CODES[appliedPromo] || 0 : 0), [appliedPromo]);
   const discounted = useMemo(() => Math.max(0, entryFee - entryFee * (discountPct / 100)), [entryFee, discountPct]);
-  const applyPromo = () => {
-    const code = (promoInput || "").trim().toUpperCase();
-    if (!code) return;
-    if (!PROMO_CODES[code]) return Alert.alert("Invalid Code", "That promo code isn’t recognized.");
-    setAppliedPromo(code);
-  };
-  const removePromo = () => { setAppliedPromo(null); setPromoInput(""); };
 
-  // ---- join with robust parse (handles string or object from Edge) ----
+  // ---- join with robust parse ----
   const confirmJoin = async () => {
     try {
       setBusyJoin(true);
-      const { data: { session } } = await supabase.auth.getSession();
+      const { data: { session} } = await supabase.auth.getSession();
       const token = session?.access_token;
       if (!token) return Alert.alert("Sign in required", "Please log in to join tournaments.");
 
@@ -204,7 +228,7 @@ export default function TournamentsTab() {
         return typeof r.data === "string" ? JSON.parse(r.data as any) : (r.data as any);
       };
 
-      let resp = null as any;
+      let resp: any = null;
       try { resp = await invokeJoin("join_tournament"); }
       catch { resp = await invokeJoin("join-tournament"); }
 
@@ -238,7 +262,7 @@ export default function TournamentsTab() {
 
       setStatusData({
         id: t.id,
-        name: displayNameForTournament(t),
+        name: planetTitle(t),
         sport: "ANY",
         entryFee: fee,
         status,
@@ -256,14 +280,13 @@ export default function TournamentsTab() {
     }
   };
 
-  // --- PREVIEW GAMES ---
+  // --- PREVIEW GAMES (NFL) ---
   const previewGames = async (t: any) => {
     setSlateOpen(true);
     setSlateBusy(true);
     setSlateRows([]);
     setSlateMsg("");
 
-    // decide date to use
     const dayISO =
       t?.day_date ||
       (t?.start_date ? new Date(t.start_date).toISOString().slice(0, 10) : null) ||
@@ -322,7 +345,7 @@ export default function TournamentsTab() {
           </Text>
         </View>
 
-        {/* Centered badges (Refresh is back) */}
+        {/* Centered badges */}
         <View style={styles.badgesRow}>
           <TouchableOpacity onPress={() => router.push("/entries")} activeOpacity={0.9}>
             <LinearGradient colors={["#FFE98B", "#FFD700"]} start={{x:0,y:0}} end={{x:1,y:1}} style={[styles.badge, styles.badgeGold]}>
@@ -342,7 +365,7 @@ export default function TournamentsTab() {
         {/* Cards */}
         {tournaments?.length ? tournaments.map((t) => {
           const fee = Number((t as any).entry_fee || (t as any).entry_amount || 0);
-          const title = displayNameForTournament(t);
+          const title = planetTitle(t);
           const openMs  = t.join_open_at  ? new Date(t.join_open_at).getTime()  : null;
           const closeMs = t.join_close_at ? new Date(t.join_close_at).getTime() : null;
           const now = Date.now();
@@ -405,7 +428,7 @@ export default function TournamentsTab() {
       <Modal visible={joinOpen} animationType="slide" transparent onRequestClose={() => setJoinOpen(false)}>
         <ScrollView contentContainerStyle={styles.overlay} keyboardShouldPersistTaps="handled">
           <View style={styles.modal}>
-            <Text style={styles.modalTitle}>Join {displayNameForTournament(selectedT)} (ANY)</Text>
+            <Text style={styles.modalTitle}>Join {selectedT?.displayName || ""} (ANY)</Text>
 
             <Row label="Entry Fee" value={fmtMoney(entryFee)} />
             <Row
@@ -414,7 +437,9 @@ export default function TournamentsTab() {
                 appliedPromo ? (
                   <View style={styles.promoPill}>
                     <Text style={styles.promoText}>{appliedPromo} • {PROMO_CODES[appliedPromo]}% off</Text>
-                    <TouchableOpacity onPress={removePromo}><Text style={styles.promoRemove}>✕</Text></TouchableOpacity>
+                    <TouchableOpacity onPress={() => { setAppliedPromo(null); setPromoInput(""); }}>
+                      <Text style={styles.promoRemove}>✕</Text>
+                    </TouchableOpacity>
                   </View>
                 ) : (
                   <View style={styles.promoRow}>
@@ -426,7 +451,12 @@ export default function TournamentsTab() {
                       style={styles.input}
                       autoCapitalize="characters"
                     />
-                    <TouchableOpacity style={styles.applyBtn} onPress={applyPromo}>
+                    <TouchableOpacity style={styles.applyBtn} onPress={() => {
+                      const code = (promoInput || "").trim().toUpperCase();
+                      if (!code) return;
+                      if (!PROMO_CODES[code]) return Alert.alert("Invalid Code", "That promo code isn’t recognized.");
+                      setAppliedPromo(code);
+                    }}>
                       <Text style={styles.applyTxt}>Apply</Text>
                     </TouchableOpacity>
                   </View>
@@ -434,7 +464,11 @@ export default function TournamentsTab() {
               }
             />
 
-            <Row label="Amount to Withdraw" valueElStyle={{ color: GOLD }} value={fmtMoney(discounted)} />
+            <Row
+              label="Amount to Withdraw"
+              valueElStyle={{ color: GOLD }}
+              value={fmtMoney(discounted)}
+            />
             <Text style={styles.disclaimer}>This will be withdrawn from your funds (payments wiring later).</Text>
 
             <TouchableOpacity disabled={busyJoin} onPress={confirmJoin} style={[styles.confirmBtn, busyJoin && { opacity: 0.7 }]}>
@@ -494,7 +528,7 @@ export default function TournamentsTab() {
         </View>
       </Modal>
 
-      {/* SLATE PREVIEW MODAL */}
+      {/* SLATE PREVIEW MODAL (NFL) */}
       <Modal visible={slateOpen} animationType="slide" transparent onRequestClose={() => setSlateOpen(false)}>
         <View style={styles.overlay}>
           <View style={styles.slateCard}>

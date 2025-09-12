@@ -1,250 +1,218 @@
-// app/(tabs)/settings.tsx
-import React, { useState } from "react";
+import React from "react";
 import {
   View,
   Text,
   StyleSheet,
-  Pressable,
-  Switch,
-  ScrollView,
+  ImageBackground,
+  TouchableOpacity,
   Platform,
 } from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
-import { BlurView } from "expo-blur";
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { RFValue } from "react-native-responsive-fontsize";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
-export default function SettingsScreen() {
-  const insets = useSafeAreaInsets();
+const PURPLE = "#613DC1";
+const GOLD = "#FFD700";
+const BORDER = "rgba(255,255,255,0.15)";
+const CARD_BG = "rgba(255,255,255,0.10)";
+
+const BG = require("@/assets/images/bgDash.png"); // starry background
+
+const Settings: React.FC = () => {
   const router = useRouter();
-  const [pushOn, setPushOn] = useState(true);
-
-  const go = (path: string) => router.push(path);
-
-  const handleLogout = async () => {
-    try {
-      // 🔐 plug in your auth here:
-      // Supabase: await supabase.auth.signOut();
-      // Amplify:  await signOut();
-      router.replace("/user/login");
-    } catch (e) {
-      console.log("Logout error:", e);
-    }
-  };
 
   return (
-    <LinearGradient
-      colors={["#5a0ba8", "#2b0b74", "#100a3a"]}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 0.8, y: 1 }}
-      style={[styles.container, { paddingTop: insets.top + 8 }]}
-    >
-      {/* Header */}
-      <View style={styles.headerRow}>
-        <Pressable
-          onPress={() => router.back()}
-          style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.7 }]}
-        >
-          <Ionicons name="chevron-back" size={24} color="#fff" />
-        </Pressable>
-        <Text style={styles.headerTitle}>Settings</Text>
-        <View style={{ width: 40 }} />
+    <ImageBackground source={BG} resizeMode="cover" style={styles.bg}>
+      {/* Top Bar */}
+      <View style={styles.topBar}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <Ionicons name="chevron-back" size={RFValue(18)} color="#fff" />
+        </TouchableOpacity>
+        <Text style={styles.title}>Settings</Text>
+        <View style={{ width: RFValue(32) }} />
       </View>
 
-      <ScrollView
-        contentContainerStyle={{ paddingBottom: 40 }}
-        showsVerticalScrollIndicator={false}
-      >
+      <View style={styles.content}>
         {/* Account */}
-        <Section title="Account">
-          <Row
-            icon={<Ionicons name="person-circle-outline" size={22} color="#fff" />}
-            label="Edit profile"
-            onPress={() => go("/user/edit-profile")}
+        <SettingsCard label="Account">
+          <SettingsItem
+            icon="person-circle-outline"
+            text="Edit profile"
+            onPress={() => router.push("/profile/edit")}
           />
-          <Row
-            icon={<Ionicons name="shield-checkmark-outline" size={22} color="#fff" />}
-            label="Security"
-            onPress={() => go("/user/security")}
+          <SettingsItem
+            icon="shield-checkmark-outline"
+            text="Security"
+            onPress={() => router.push("/user/security")}
           />
-          <Row
-            icon={<Ionicons name="notifications-outline" size={22} color="#fff" />}
-            label="Notifications"
-            right={
-              <Switch
-                value={pushOn}
-                onValueChange={setPushOn}
-                thumbColor={Platform.OS === "android" ? "#fff" : undefined}
-                trackColor={{ false: "rgba(255,255,255,0.25)", true: "#7c4dff" }}
-              />
-            }
+          <SettingsItem
+            icon="notifications-outline"
+            text="Notifications"
+            onPress={() => router.push("/user/notifications")}
           />
-          <Row
+          <SettingsItem
+            icon="lock-closed-outline"
+            text="Privacy"
+            onPress={() => router.push("/user/privacy")}
             isLast
-            icon={<Ionicons name="lock-closed-outline" size={22} color="#fff" />}
-            label="Privacy"
-            onPress={() => go("/legal/privacy")}
           />
-        </Section>
+        </SettingsCard>
 
         {/* Support */}
-        <Section title="Support">
-          <Row
-            icon={<MaterialCommunityIcons name="crown-outline" size={22} color="#fff" />}
-            label="My Subscription"
-            onPress={() => go("/billing/subscription")}
+        <SettingsCard label="Support">
+          <SettingsItem
+            icon="card-outline"
+            text="My Subscription"
+            onPress={() => router.push("/user/subscription")}
           />
-          <Row
-            icon={<Ionicons name="help-circle-outline" size={22} color="#fff" />}
-            label="Help & Support"
-            onPress={() => go("/support")}
+          <SettingsItem
+            icon="help-circle-outline"
+            text="Help & Support"
+            onPress={() => router.push("/user/help")}
           />
-          <Row
+          <SettingsItem
+            icon="document-text-outline"
+            text="Terms and Policies"
+            onPress={() => router.push("/user/terms")}
             isLast
-            icon={<Ionicons name="document-text-outline" size={22} color="#fff" />}
-            label="Terms and Policies"
-            onPress={() => go("/legal/terms")}
           />
-        </Section>
+        </SettingsCard>
 
         {/* Actions */}
-        <Section title="Actions">
-          <Row
-            icon={<Ionicons name="bug-outline" size={22} color="#fff" />}
-            label="Report a problem"
-            onPress={() => go("/support/report")}
+        <SettingsCard label="Actions">
+          <SettingsItem
+            icon="bug-outline"
+            text="Report a problem"
+            onPress={() => router.push("/user/report")}
           />
-          <Row
-            icon={<Ionicons name="person-add-outline" size={22} color="#fff" />}
-            label="Add account"
-            onPress={() => go("/user/add-account")}
+          <SettingsItem
+            icon="person-add-outline"
+            text="Add account"
+            onPress={() => router.push("/user/add-account")}
           />
-          <Row
+          <SettingsItem
+            icon="log-out-outline"
+            text="Log out"
+            onPress={() => router.push("/auth/logout")}
             isLast
-            icon={<Ionicons name="exit-outline" size={22} color="#ff6b6b" />}
-            label="Log out"
-            labelStyle={{ color: "#ff6b6b" }}
-            right={<Ionicons name="chevron-forward" size={18} color="#ff6b6b" />}
-            onPress={handleLogout}
           />
-        </Section>
-      </ScrollView>
-    </LinearGradient>
+        </SettingsCard>
+      </View>
+    </ImageBackground>
   );
-}
+};
 
-/* ---------- UI Bits ---------- */
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <View style={styles.sectionWrap}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-      <BlurView intensity={50} tint="dark" style={styles.card}>
-        {children}
-      </BlurView>
-    </View>
-  );
-}
+export default Settings;
 
-function Row({
-  icon,
-  label,
-  right,
-  onPress,
-  isLast,
-  labelStyle,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  right?: React.ReactNode;
-  onPress?: () => void;
+/* ---------- Subcomponents ---------- */
+
+type CardProps = { label: string; children: React.ReactNode };
+const SettingsCard: React.FC<CardProps> = ({ label, children }) => (
+  <View style={styles.card}>
+    <Text style={styles.cardLabel}>{label}</Text>
+    <View style={styles.cardBody}>{children}</View>
+  </View>
+);
+
+type ItemProps = {
+  icon: React.ComponentProps<typeof Ionicons>["name"];
+  text: string;
+  onPress: () => void;
   isLast?: boolean;
-  labelStyle?: any;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      android_ripple={{ color: "rgba(255,255,255,0.08)" }}
-      style={({ pressed }) => [
-        styles.row,
-        !isLast && styles.rowDivider,
-        pressed && { opacity: 0.85 },
-      ]}
-    >
-      <View style={styles.rowLeft}>
-        {icon}
-        <Text style={[styles.rowLabel, labelStyle]}>{label}</Text>
-      </View>
-      <View style={styles.rowRight}>
-        {right ?? <Ionicons name="chevron-forward" size={18} color="#fff" />}
-      </View>
-    </Pressable>
-  );
-}
+};
+const SettingsItem: React.FC<ItemProps> = ({ icon, text, onPress, isLast }) => (
+  <TouchableOpacity
+    activeOpacity={0.9}
+    onPress={onPress}
+    style={[styles.item, isLast && { borderBottomWidth: 0 }]}
+  >
+    <View style={styles.itemLeft}>
+      <Ionicons name={icon} size={RFValue(18)} color="#fff" style={{ marginRight: RFValue(10) }} />
+      <Text style={styles.itemText}>{text}</Text>
+    </View>
+    <Ionicons name="chevron-forward" size={RFValue(16)} color="rgba(255,255,255,0.7)" />
+  </TouchableOpacity>
+);
 
 /* ---------- Styles ---------- */
+
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 16 },
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 14,
-  },
-  backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.08)",
-  },
-  headerTitle: {
-    flex: 1,
-    textAlign: "center",
-    color: "#fff",
-    fontSize: RFValue(20),
-    fontWeight: "700",
-    letterSpacing: 0.3,
-  },
+  bg: { flex: 1, backgroundColor: "#0d0013" },
 
-  sectionWrap: { marginBottom: 18 },
-  sectionTitle: {
-    color: "rgba(255,255,255,0.9)",
-    fontSize: RFValue(12),
-    marginLeft: 6,
-    marginBottom: 8,
-  },
-  card: {
-    borderRadius: 16,
-    overflow: "hidden",
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.15)",
-  },
-
-  row: {
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+  topBar: {
+    paddingTop: RFValue(16),
+    paddingHorizontal: RFValue(12),
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  rowDivider: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(255,255,255,0.12)",
+  backBtn: {
+    width: RFValue(32),
+    height: RFValue(32),
+    borderRadius: RFValue(8),
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.35)",
+    borderWidth: 1,
+    borderColor: BORDER,
   },
-  rowLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
-  rowRight: { marginLeft: 10 },
-  rowLabel: {
+  title: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: RFValue(18),
+    letterSpacing: 0.3,
+  },
+
+  content: {
+    paddingHorizontal: RFValue(14),
+    paddingTop: RFValue(10),
+    paddingBottom: RFValue(20),
+  },
+
+  card: {
+    backgroundColor: CARD_BG,
+    borderRadius: RFValue(16),
+    borderWidth: 1,
+    borderColor: BORDER,
+    marginBottom: RFValue(14),
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOpacity: 0.25,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 6 },
+      },
+      android: { elevation: 6 },
+    }),
+  },
+  cardLabel: {
+    color: "#fff",
+    opacity: 0.85,
+    fontSize: RFValue(12),
+    fontWeight: "700",
+    paddingHorizontal: RFValue(14),
+    paddingTop: RFValue(12),
+  },
+  cardBody: {
+    marginTop: RFValue(8),
+    paddingHorizontal: RFValue(8),
+    paddingBottom: RFValue(8),
+  },
+
+  item: {
+    minHeight: RFValue(46),
+    paddingHorizontal: RFValue(8),
+    borderBottomWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  itemLeft: { flexDirection: "row", alignItems: "center" },
+  itemText: {
     color: "#fff",
     fontSize: RFValue(14),
     fontWeight: "600",
   },
 });
+
