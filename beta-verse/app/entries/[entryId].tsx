@@ -15,19 +15,10 @@ const CARD = "rgba(10,10,20,0.95)";
 
 const SDIO_KEY = (Constants?.expoConfig?.extra as any)?.SPORTSDATAIO_KEY as string | undefined;
 
-// Toggle which leagues actually fetch live data.
-// For UI testing: leave all here; only NFL returns data today.
-const ENABLED_LEAGUES = ["NFL"]; // change to ["NFL","NBA","MLB","NHL","WNBA"] when you wire others
+type LeagueKey = "NFL" | "NBA" | "MLB" | "NHL" | "WNBA";
+type GameRow = { id: string; start: string; league: LeagueKey; home: string; away: string };
 
-type GameRow = {
-  id: string;
-  start: string;   // ISO
-  league: string;
-  home: string;
-  away: string;
-};
-
-// SportsDataIO expects YYYY-MMM-DD (e.g., 2025-SEP-10)
+// SDIO date 2025-SEP-10
 const toSDioDate = (d: string | Date) => {
   const dt = new Date(d);
   const M = dt.toLocaleString("en-US", { month: "short" }).toUpperCase();
@@ -35,37 +26,49 @@ const toSDioDate = (d: string | Date) => {
   return `${dt.getFullYear()}-${M}-${DD}`;
 };
 
-// ---- APIs by league ----
-async function fetchGamesForLeague(league: string, dayISO: string): Promise<GameRow[]> {
-  // If this league isn't enabled yet, return an empty list (UI will show a friendly note).
-  if (!ENABLED_LEAGUES.includes(league)) return [];
-
-  if (!SDIO_KEY) throw new Error("Missing SPORTSDATAIO_KEY. Add it in app.json under expo.extra.");
-
-  const sdioFetch = async (base: string, path: string) => {
-    const url = `${base}/${path}/${toSDioDate(dayISO)}?key=${encodeURIComponent(SDIO_KEY!)}`;
-    const r = await fetch(url);
-    if (!r.ok) return [];
-    const arr = await r.json();
-    return Array.isArray(arr) ? arr : [];
-  };
-
-  switch (league) {
-    case "NFL": {
-      // NFL daily listing: ScoresByDate
-      const rows = await sdioFetch("https://api.sportsdata.io/v3/nfl/scores/json", "ScoresByDate");
-      return rows.map((g: any) => ({
-        id: String(g?.GameID ?? g?.GameKey ?? `${g?.HomeTeam}-${g?.AwayTeam}-${g?.Date}`),
-        start: g?.Date ?? g?.DateTime ?? new Date().toISOString(),
-        league,
-        home: g?.HomeTeam ?? "Home",
-        away: g?.AwayTeam ?? "Away",
-      }));
-    }
-    // When you wire others, add cases here and switch to their proper endpoints.
-    default:
-      return [];
+// ESPN (free)
+async function fetchESPN(league: Exclude<LeagueKey,"NFL">, dayISO: string): Promise<GameRow[]> {
+  const map: Record<Exclude<LeagueKey,"NFL">, string> = { NBA: "nba", MLB: "mlb", NHL: "nhl", WNBA: "wnba" };
+  const sport = map[league];
+  const yyyymmdd = dayISO.replace(/-/g, "");
+  const url = `https://site.api.espn.com/apis/v2/sports/${sport}/${sport}/scoreboard?dates=${yyyymmdd}`;
+  const r = await fetch(url);
+  if (!r.ok) return [];
+  const json = await r.json();
+  const events = Array.isArray(json?.events) ? json.events : [];
+  const rows: GameRow[] = [];
+  for (const ev of events) {
+    const c = ev?.competitions?.[0]; if (!c) continue;
+    const start = c?.date || ev?.date || new Date().toISOString();
+    const home = c?.competitors?.find((t: any) => t?.homeAway === "home");
+    const away = c?.competitors?.find((t: any) => t?.homeAway === "away");
+    rows.push({
+      id: String(ev?.id ?? c?.id ?? `${sport}-${start}`),
+      start,
+      league,
+      home: home?.team?.abbreviation || home?.team?.shortDisplayName || "Home",
+      away: away?.team?.abbreviation || away?.team?.shortDisplayName || "Away",
+    });
   }
+  return rows.sort((a,b)=>new Date(a.start).getTime()-new Date(b.start).getTime());
+}
+
+// NFL via SDIO
+async function fetchNFL_SDIO(dayISO: string): Promise<GameRow[]> {
+  if (!SDIO_KEY) return [];
+  const base = "https://api.sportsdata.io/v3/nfl/scores/json";
+  const url = `${base}/ScoresByDate/${toSDioDate(dayISO)}?key=${encodeURIComponent(SDIO_KEY)}`;
+  const r = await fetch(url);
+  if (!r.ok) return [];
+  const arr = await r.json();
+  if (!Array.isArray(arr)) return [];
+  return arr.map((g: any) => ({
+    id: String(g?.GameID ?? g?.GameKey ?? `${g?.HomeTeam}-${g?.AwayTeam}-${g?.Date}`),
+    start: g?.Date ?? g?.DateTime ?? new Date().toISOString(),
+    league: "NFL",
+    home: g?.HomeTeam ?? "HOME",
+    away: g?.AwayTeam ?? "AWAY",
+  })).sort((a,b)=>new Date(a.start).getTime()-new Date(b.start).getTime());
 }
 
 export default function ManagePick() {
@@ -75,27 +78,26 @@ export default function ManagePick() {
   const [loading, setLoading] = useState(true);
   const [tournament, setTournament] = useState<any>(null);
   const [dayISO, setDayISO] = useState<string>("");
-  const [league, setLeague] = useState<"NFL" | "NBA" | "MLB" | "NHL" | "WNBA">("NFL");
+  const [league, setLeague] = useState<LeagueKey>("NFL");
 
   const [gamesBusy, setGamesBusy] = useState(false);
   const [games, setGames] = useState<GameRow[]>([]);
   const [existing, setExisting] = useState<{ selection: "home"|"away"; game_id: string; team_picked?: string } | null>(null);
   const [locked, setLocked] = useState<boolean>(false);
 
-  // Load entrant/tournament + existing pick for the day
   useEffect(() => {
     let on = true;
     (async () => {
       try {
         setLoading(true);
         const { data: ent, error: entErr } = await supabase
-          .from("entrants")
+          .from("entries") // your table name is 'entries'
           .select("id, tournament_id, tournaments(*)")
           .eq("id", entryId)
           .maybeSingle();
         if (entErr) throw entErr;
         const t = ent?.tournaments;
-        if (!t) throw new Error("Missing tournament for entrant.");
+        if (!t) throw new Error("Missing tournament for entry.");
 
         const iso = typeof date === "string" ? date : (t.day_date as string);
 
@@ -116,13 +118,8 @@ export default function ManagePick() {
         if (on) {
           setTournament(t);
           setDayISO(iso);
-          if (curr) {
-            setExisting({ selection: curr.selection, game_id: String(curr.game_id), team_picked: curr.team_picked ?? undefined });
-            setLocked(true); // already submitted → lock
-          } else {
-            setExisting(null);
-            setLocked(false);
-          }
+          if (curr) { setExisting({ selection: curr.selection, game_id: String(curr.game_id), team_picked: curr.team_picked ?? undefined }); setLocked(true); }
+          else { setExisting(null); setLocked(false); }
         }
       } catch (e) {
         console.warn(e);
@@ -133,16 +130,14 @@ export default function ManagePick() {
     return () => { on = false; };
   }, [entryId, date]);
 
-  // Load games when league or day changes
   const loadGames = async () => {
     if (!dayISO) return;
     try {
       setGamesBusy(true);
-      const rows = await fetchGamesForLeague(league, dayISO);
-      setGames(rows);
+      if (league === "NFL") setGames(await fetchNFL_SDIO(dayISO));
+      else setGames(await fetchESPN(league as Exclude<LeagueKey,"NFL">, dayISO));
     } catch (e: any) {
-      setGames([]);
-      Alert.alert("Games Error", e?.message || "Could not load games.");
+      setGames([]); Alert.alert("Games Error", e?.message || "Could not load games.");
     } finally {
       setGamesBusy(false);
     }
@@ -180,7 +175,7 @@ export default function ManagePick() {
           user_id: user.id,
           tournament_id: tournament.id,
           day_date: dayISO,
-          game_id: String(game.id),  // schema uses text
+          game_id: String(game.id),
           selection,
           result: "pending",
           team_picked: team,
@@ -208,7 +203,7 @@ export default function ManagePick() {
     );
   }
 
-  const leagueEnabled = ENABLED_LEAGUES.includes(league);
+  const leagueEnabled = league === "NFL" ? Boolean(SDIO_KEY) : true;
 
   return (
     <ImageBackground source={BG} resizeMode="cover" style={styles.bg}>
@@ -233,16 +228,12 @@ export default function ManagePick() {
         )}
       </View>
 
-      {/* League filter tabs (all unlocked for UI testing) */}
+      {/* League filter tabs */}
       <View style={styles.tabsRow}>
         {(["NFL","NBA","MLB","NHL","WNBA"] as const).map((lg) => {
           const active = league === lg;
           return (
-            <TouchableOpacity
-              key={lg}
-              onPress={() => setLeague(lg)}
-              style={[styles.tab, active && styles.tabActive]}
-            >
+            <TouchableOpacity key={lg} onPress={() => setLeague(lg)} style={[styles.tab, active && styles.tabActive]}>
               <Text style={[styles.tabTxt, active && styles.tabTxtActive]}>{lg}</Text>
             </TouchableOpacity>
           );
@@ -255,11 +246,11 @@ export default function ManagePick() {
           <ActivityIndicator color={GOLD} />
         ) : !leagueEnabled ? (
           <Text style={{ color: "#ddd", textAlign: "center", marginTop: RFValue(16), paddingHorizontal: RFValue(14) }}>
-            {league} is unlocked for UI testing. Live data isn’t wired yet for this category.
+            Add SPORTSDATAIO_KEY in app.json → expo.extra to load NFL games.
           </Text>
         ) : games.length === 0 ? (
           <Text style={{ color: "#ddd", textAlign: "center", marginTop: RFValue(16), paddingHorizontal: RFValue(14) }}>
-            {SDIO_KEY ? `No ${league} games found for this day.` : "Add your SportsDataIO key in expo.extra to load games."}
+            No {league} games found for this day.
           </Text>
         ) : (
           <FlatList
@@ -299,7 +290,7 @@ export default function ManagePick() {
   );
 }
 
-/* ---------- styles ---------- */
+/* ---------- styles (kept your look) ---------- */
 const styles = StyleSheet.create({
   bg: { flex: 1, backgroundColor: "#0d0013" },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },

@@ -29,6 +29,49 @@ const toSDIODate = (d) => `${d.getFullYear()}-${MONTHS_ABBR[d.getMonth()]}-${Str
 
 const nameFor = (t) => t?.week_label || (t?.entry_fee ? `Tournament $${t.entry_fee}` : "Tournament");
 
+// ---- window + status helpers ----
+function ms(v) { return v ? new Date(v).getTime() : null; }
+
+/** Returns {uiStatus, canPick, openMs, closeMs} */
+function computeUiStatus(t) {
+  const now = Date.now();
+  const openMs  = ms(t?.join_open_at);
+  let closeMs   = ms(t?.join_close_at);
+  const startMs = ms(t?.start_at);
+  const endMs   = ms(t?.end_at);
+
+  // derive close if missing
+  if (!closeMs && startMs) closeMs = startMs - 30 * 60 * 1000;
+
+  const status = String(t?.status || "").toLowerCase();
+
+  // settled beats everything
+  if (status === "settled" || (endMs && now >= endMs)) {
+    return { uiStatus: "Settled", canPick: false, openMs, closeMs };
+  }
+
+  // running if past start (even if close/open inconsistent)
+  if (status === "running" || (startMs && now >= startMs && (!endMs || now < endMs))) {
+    return { uiStatus: "Running", canPick: false, openMs, closeMs };
+  }
+
+  // pick window logic
+  if (openMs && now < openMs) {
+    return { uiStatus: "Opens Soon", canPick: false, openMs, closeMs };
+  }
+  if (closeMs && now >= closeMs) {
+    return { uiStatus: "Closed", canPick: false, openMs, closeMs };
+  }
+
+  // explicit locked from server also means closed
+  if (status === "locked") {
+    return { uiStatus: "Closed", canPick: false, openMs, closeMs };
+  }
+
+  // if we have an open time already passed, or no times at all -> treat as open
+  return { uiStatus: "Open", canPick: true, openMs, closeMs };
+}
+
 export default function TournamentStatus() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -49,41 +92,48 @@ export default function TournamentStatus() {
 
         const enriched = [];
         for (const e of entries || []) {
-          const t = e.tournaments;
+          const t = e.tournaments || {};
+          const ui = computeUiStatus(t);
 
           // Your pick for that tourney/day
-          const { data: p, error: pErr } = await supabase
+          const { data: p } = await supabase
             .from("picks")
             .select("game_id, selection")
             .eq("tournament_id", t.id)
             .eq("user_id", e.user_id)
             .eq("day_date", t.day_date)
-            .limit(1)
             .maybeSingle();
-          if (pErr) throw pErr;
 
-          let correct = 0, wrong = 0, pending = 1;
+          // outcome counters
+          let correct = 0, wrong = 0, pending = 0;
           let eliminated = String(e.status || "").toLowerCase() === "eliminated";
-          const statusStr = (Date.now() >= new Date(t.join_close_at).getTime()) ? "Locked" : "Open";
 
           if (p?.game_id) {
             const res = await findGameForId(new Date(t.day_date), p.game_id);
             if (res) {
               if (res.done) {
-                pending = 0;
-                if (res.winner === p.selection) { correct = 1; wrong = 0; }
+                if (res.winner === p.selection) { correct = 1; }
                 else if (res.winner && res.winner !== p.selection) { wrong = 1; eliminated = true; }
+                else { /* push/void; show neither */ }
               } else {
                 pending = 1;
               }
+            } else {
+              // no external data, treat unknown as pending only if canPick (i.e., pre-lock)
+              pending = ui.canPick ? 1 : 0;
             }
+          } else {
+            // no pick yet → pending only while pick window is open
+            pending = ui.canPick ? 1 : 0;
           }
 
           enriched.push({
             entryId: e.id,
             name: nameFor(t),
-            closes: t.join_close_at ? new Date(t.join_close_at).toLocaleString() : "—",
-            status: statusStr,
+            opens: ui.openMs ? new Date(ui.openMs).toLocaleString() : "—",
+            closes: ui.closeMs ? new Date(ui.closeMs).toLocaleString() : "—",
+            uiStatus: ui.uiStatus,     // Open | Opens Soon | Closed | Running | Settled
+            canPick: ui.canPick,
             correct, wrong, pending,
             eliminated,
           });
@@ -99,14 +149,12 @@ export default function TournamentStatus() {
     return () => { on = false; };
   }, []);
 
-  const goManage = useCallback((id) => {
-    // More robust navigation prevents the brief crash/flash if params parsing ever hiccups
+  const goManage = useCallback((id, canPick) => {
+    if (!canPick) return; // block navigation when locked/closed
     router.push({ pathname: "/entries/[entryId]", params: { entryId: String(id) } });
   }, [router]);
 
-  if (loading) {
-    return <View style={styles.center}><ActivityIndicator color={PURPLE} size="large" /></View>;
-  }
+  if (loading) return <View style={styles.center}><ActivityIndicator color={PURPLE} size="large" /></View>;
 
   return (
     <ImageBackground source={require("@/assets/images/bgDash.png")} style={{ flex: 1 }} resizeMode="cover">
@@ -125,21 +173,28 @@ export default function TournamentStatus() {
         }
         renderItem={({ item: c }) => (
           <View style={styles.card}>
-            {/* Header */}
-            <Text
-              style={styles.name}
-              numberOfLines={1}
-              ellipsizeMode="tail"
-            >
+            <Text style={styles.name} numberOfLines={1} ellipsizeMode="tail">
               {c.name} • ANY
             </Text>
 
-            {/* Meta line (wraps nicely on small screens) */}
-            <Text style={styles.sub} numberOfLines={2}>
-              <Text>Closes: </Text>
+            {/* Meta line */}
+            <Text style={styles.sub} numberOfLines={3}>
+              <Text>Opens: </Text>
+              <Text style={styles.subStrong}>{c.opens}</Text>
+              <Text>  •  Closes: </Text>
               <Text style={styles.subStrong}>{c.closes}</Text>
               <Text>  •  Status: </Text>
-              <Text style={[styles.subStrong, { color: GOLD }]}>{c.status}</Text>
+              <Text
+                style={[
+                  styles.subStrong,
+                  c.uiStatus === "Open" ? { color: GOLD }
+                  : c.uiStatus === "Running" ? { color: "#4ADE80" }
+                  : c.uiStatus === "Settled" ? { color: "#22c55e" }
+                  : { color: "#f59e0b" }
+                ]}
+              >
+                {c.uiStatus}
+              </Text>
             </Text>
 
             {/* Pills */}
@@ -158,20 +213,18 @@ export default function TournamentStatus() {
                   : { backgroundColor: "rgba(34,197,94,0.15)", borderColor: "#22c55e" },
               ]}
             >
-              <Text
-                style={[
-                  styles.bannerText,
-                  { color: c.eliminated ? "#ef4444" : "#22c55e" },
-                ]}
-                numberOfLines={1}
-              >
+              <Text style={[styles.bannerText, { color: c.eliminated ? "#ef4444" : "#22c55e" }]} numberOfLines={1}>
                 {c.eliminated ? "Eliminated" : "Still Alive"}
               </Text>
             </View>
 
-            {/* Manage */}
-            <TouchableOpacity onPress={() => goManage(c.entryId)} style={styles.manageBtn}>
-              <Text style={styles.manageTxt}>Manage Pick</Text>
+            {/* Manage Pick (disabled if closed/running/settled) */}
+            <TouchableOpacity
+              onPress={() => goManage(c.entryId, c.canPick)}
+              disabled={!c.canPick}
+              style={[styles.manageBtn, !c.canPick && { backgroundColor: "#555" }]}
+            >
+              <Text style={styles.manageTxt}>{c.canPick ? "Make / Manage Pick" : "Pick Locked"}</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -220,10 +273,9 @@ function Pill({ color, label, value }) {
   );
 }
 
-/* ===== styles (keeps your vibe; clamps text and reduces overflow) ===== */
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
-  back: { color: PURPLE, fontWeight: "700", fontSize: RFValue(16), marginTop: RFValue(50), marginBottom: RFValue(20) },
+  back: { color: PURPLE, fontWeight: "700", fontSize: RFValue(16), marginTop: RFValue(20), marginBottom: RFValue(20) },
   title: { fontSize: RFValue(22), fontWeight: "900", color: "#fff", marginBottom: RFValue(6) },
   empty: { color: "#ddd", marginTop: RFValue(8) },
 
@@ -236,18 +288,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     overflow: "hidden",
   },
-  name: {
-    color: "#fff",
-    fontWeight: "900",
-    fontSize: RFValue(16),
-    marginBottom: RFValue(4),
-  },
-  sub: {
-    color: "#ccc",
-    fontSize: RFValue(12),
-    lineHeight: RFValue(16),
-    flexWrap: "wrap",
-  },
+  name: { color: "#fff", fontWeight: "900", fontSize: RFValue(16), marginBottom: RFValue(4) },
+  sub: { color: "#ccc", fontSize: RFValue(12), lineHeight: RFValue(16), flexWrap: "wrap" },
   subStrong: { color: "#eee", fontWeight: "700" },
 
   pills: { flexDirection: "row", gap: RFValue(10), marginTop: RFValue(10) },

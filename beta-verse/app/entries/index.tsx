@@ -27,8 +27,8 @@ type EntryCard = {
   tournamentId: number;
   fee: number;
   weekLabel?: string | null;
-  startISO: string;
-  endISO: string;
+  startISO: string; // tournament day 1 (D0) in local YYYY-MM-DD
+  endISO: string;   // D2 in local YYYY-MM-DD
   status: EntryStatus;
   planetName: string;
 };
@@ -37,7 +37,22 @@ type DayRow = {
   iso: string; label: string;
   selection: "home" | "away" | null;
   result: "WIN" | "LOSS" | "PUSH" | "PENDING" | "—";
+  // (not rendered directly; used to decide whether to show "Make Your Selection")
+  _ui?: "open" | "locked" | "running" | "settled" | "preopen" | "cancelled";
 };
+
+/* --------- Local date helpers (avoid UTC drift) --------- */
+function toLocalISO(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+// Parse an ISO "YYYY-MM-DD" as a *local* date (not UTC)
+function parseLocalISO(iso: string) {
+  const [y, m, d] = iso.split("-").map((n) => parseInt(n, 10));
+  return new Date(y, (m || 1) - 1, d || 1);
+}
 
 export default function EntriesIndex() {
   const router = useRouter();
@@ -80,22 +95,35 @@ export default function EntriesIndex() {
     const user = auth?.user;
     if (!user) { setCards([]); return; }
 
-    const { data, error } = await supabase
-      .from("entrants")
-      .select(`
-        id, status, joined_at, tournament_id,
-        tournaments!inner(id, day_date, entry_fee, week_label, status)
-      `)
+    // 1) read user's entries (public.entries)
+    const { data: entries, error: eErr } = await supabase
+      .from("entries")
+      .select("id, status, joined_at, tournament_id")
       .eq("user_id", user.id)
       .order("joined_at", { ascending: false });
+    if (eErr) throw eErr;
 
-    if (error) throw error;
+    const tIds = Array.from(new Set((entries || []).map((e: any) => e.tournament_id)));
+    if (tIds.length === 0) { setCards([]); return; }
+
+    // 2) fetch tournaments from the UI view for state + labels
+    const { data: tv, error: tErr } = await supabase
+      .from("v_tournaments_ui")
+      .select("id, day_date, entry_fee, week_label, status")
+      .in("id", tIds);
+    if (tErr) throw tErr;
+
+    const tById = new Map<number, any>();
+    (tv || []).forEach((t: any) => tById.set(Number(t.id), t));
 
     const rows: EntryCard[] = [];
-    for (const e of data || []) {
-      const t = e.tournaments;
-      const start = new Date(String(t.day_date));
-      const end = new Date(start); end.setDate(start.getDate() + 2);
+    for (const e of entries || []) {
+      const t = tById.get(Number(e.tournament_id));
+      if (!t) continue;
+
+      // Treat DATE from DB as local date
+      const d0 = parseLocalISO(String(t.day_date));
+      const d2 = new Date(d0); d2.setDate(d0.getDate() + 2);
 
       const { planet_name } = await planetNameForTournament(t.id, t.day_date);
 
@@ -110,8 +138,8 @@ export default function EntriesIndex() {
         tournamentId: Number(t.id),
         fee: Number(t.entry_fee),
         weekLabel: t.week_label,
-        startISO: start.toISOString().slice(0, 10),
-        endISO: end.toISOString().slice(0, 10),
+        startISO: toLocalISO(d0),
+        endISO: toLocalISO(d2),
         status: st,
         planetName: planet_name || "Tournament",
       });
@@ -133,51 +161,89 @@ export default function EntriesIndex() {
 
   const visibleCards = useMemo(() => (filter === "all" ? cards : cards.filter(c => c.status === filter)), [cards, filter]);
 
+  /* ----- TODAY (local) – no memo so it always reflects the current render ----- */
+  const todayISO = toLocalISO(new Date());
+
+  const clampToWindow = (startISO: string, endISO: string) => {
+    if (todayISO < startISO) return startISO;
+    if (todayISO > endISO) return endISO;
+    return todayISO;
+  };
+
   const openDetails = async (entry: EntryCard) => {
     setModalEntry(entry);
-    const start = new Date(entry.startISO);
-    const days: DayRow[] = [0,1,2].map(off => {
-      const d = new Date(start); d.setDate(start.getDate() + off);
-      const iso = d.toISOString().slice(0,10);
+
+    // Build 3 local days from entry.startISO
+    const base = parseLocalISO(entry.startISO);
+    const daysLocal: DayRow[] = [0, 1, 2].map(off => {
+      const d = new Date(base);
+      d.setDate(base.getDate() + off);
+      const iso = toLocalISO(d);
       const label = d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
       return { iso, label, selection: null, result: "PENDING" };
     });
 
+    // ----- hydrate with UI status + picks
     const { data: auth } = await supabase.auth.getUser();
     const user = auth?.user;
-    if (user) {
+
+    // 1) find sibling tournaments for this week/fee on each day
+    //    we use v_tournaments_ui to know if each day is open/locked/running/settled
+    const { data: siblings } = await supabase
+      .from("v_tournaments_ui")
+      .select("id, day_date, ui_status, entry_fee, week_label")
+      .eq("entry_fee", entry.fee)
+      .eq("week_label", entry.weekLabel || null);
+
+    const tuiByDate = new Map<string, { id: number; ui_status: DayRow["_ui"] }>();
+    (siblings || []).forEach((t: any) => {
+      tuiByDate.set(String(t.day_date), { id: Number(t.id), ui_status: t.ui_status });
+    });
+
+    // 2) picks for those sibling tournament ids on those day_dates
+    const tIds = Array.from(new Set((siblings || []).map((t: any) => t.id)));
+    if (user && tIds.length) {
       const { data: picks } = await supabase
         .from("picks")
-        .select("day_date, selection, result")
+        .select("tournament_id, day_date, selection, result")
         .eq("user_id", user.id)
-        .eq("tournament_id", entry.tournamentId)
-        .in("day_date", days.map(d => d.iso));
-      const map = new Map<string, { selection: "home" | "away"; result: string }>();
-      (picks || []).forEach((p: any) => map.set(String(p.day_date), { selection: p.selection, result: p.result }));
-      for (let i=0;i<days.length;i++) {
-        const hit = map.get(days[i].iso);
-        if (hit) {
-          const RU = (hit.result || "pending").toUpperCase();
-          days[i] = {
-            ...days[i],
-            selection: hit.selection,
-            result: RU === "WIN" ? "WIN" : RU === "LOSS" ? "LOSS" : RU === "PUSH" ? "PUSH" : "PENDING",
-          };
+        .in("tournament_id", tIds)
+        .in("day_date", daysLocal.map(d => d.iso));
+
+      const pKey = (tId: number, iso: string) => `${tId}|${iso}`;
+      const pickMap = new Map<string, { selection: "home"|"away"; result: string }>();
+      (picks || []).forEach((p: any) => pickMap.set(pKey(Number(p.tournament_id), String(p.day_date)), { selection: p.selection, result: p.result }));
+
+      for (let i = 0; i < daysLocal.length; i++) {
+        const iso = daysLocal[i].iso;
+        const twin = tuiByDate.get(iso); // which tournament that day
+        if (twin) {
+          (daysLocal[i] as any)._ui = twin.ui_status;
+          const pk = pickMap.get(pKey(twin.id, iso));
+          if (pk) {
+            const RU = (pk.result || "pending").toUpperCase();
+            daysLocal[i] = {
+              ...daysLocal[i],
+              selection: pk.selection,
+              result: RU === "WIN" ? "WIN" : RU === "LOSS" ? "LOSS" : RU === "PUSH" ? "PUSH" : "PENDING",
+            };
+          }
         }
       }
     }
 
-    setModalDays(days);
+    setModalDays(daysLocal);
     setOpen(true);
     requestAnimationFrame(animateIn);
   };
 
   const closeDetails = () => animateOut(() => setOpen(false));
 
-  // --- timeline helpers (keep layout, adjust fill/outline rules) ---
-  const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
-  const isPast = (iso: string) => new Date(iso) < new Date(todayISO);
-  const isToday = (iso: string) => iso === todayISO;
+  const goManagePicks = () => {
+    if (!modalEntry) return;
+    const target = clampToWindow(modalEntry.startISO, modalEntry.endISO);
+    router.push(`/entries/${modalEntry.entrantId}?date=${encodeURIComponent(target)}`);
+  };
 
   const renderCard = ({ item }: { item: EntryCard }) => {
     const pill = pillDef(item.status);
@@ -206,13 +272,17 @@ export default function EntriesIndex() {
     );
   };
 
+  // today helpers (compare strings in same YYYY-MM-DD format)
+  const isPast = (iso: string) => iso < todayISO;
+  const isToday = (iso: string) => iso === todayISO;
+
   return (
     <ImageBackground source={BG} resizeMode="cover" style={styles.bg}>
       {/* Back to Tournaments + Title */}
       <View style={styles.topBar}>
         <TouchableOpacity onPress={() => router.push("/(tabs)/tournaments")} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={RFValue(18)} color="#fff" />
-          <Text style={styles.backTxt}>Back</Text>
+          <Text style={styles.backTxt}>Tournaments</Text>
         </TouchableOpacity>
         <Text style={styles.title}>Current Entries</Text>
         <View style={{ width: RFValue(90) }} />
@@ -259,37 +329,38 @@ export default function EntriesIndex() {
               <TouchableOpacity onPress={closeDetails} style={styles.closeBtn}><Ionicons name="close" size={RFValue(18)} color="#fff" /></TouchableOpacity>
             </View>
 
+            {/* Range */}
             <View style={styles.rowBetween}>
               <Text style={styles.rangeLink}>{prettyRange(modalEntry?.startISO || "", modalEntry?.endISO || "", true)}</Text>
               <TouchableOpacity><Text style={styles.playerStatus}>Player Status</Text></TouchableOpacity>
             </View>
-
             <View style={[styles.divider, { marginTop: RFValue(10) }]} />
 
-            {/* Timeline: same layout, updated fill/outline rules */}
+            {/* Timeline with live today/past styling */}
             <View style={styles.timelineWrap}>
               <View style={styles.timelineLine} />
               {modalDays.map((d, idx) => {
                 const pill = resultDef(d.result);
 
-                // Determine dot visuals
-                const past = isPast(d.iso);
-                const today = isToday(d.iso);
+                // Dot styling by day state
+                let dotStyle: any = { backgroundColor: "transparent", borderColor: "rgba(255,255,255,0.25)", borderWidth: 1.5 };
+                if (isPast(d.iso)) dotStyle = { backgroundColor: GOLD, borderColor: GOLD, borderWidth: 1.5 };
+                else if (isToday(d.iso)) dotStyle = { backgroundColor: "transparent", borderColor: GOLD, borderWidth: 2 };
 
-                // Base dot (transparent future)
-                let dotStyle: any = {
-                  backgroundColor: "transparent",
-                  borderColor: "rgba(255,255,255,0.25)",
-                  borderWidth: 1.5,
-                };
-
-                if (past) {
-                  // Past: filled gold
-                  dotStyle = { backgroundColor: GOLD, borderColor: GOLD, borderWidth: 1.5 };
-                } else if (today) {
-                  // Today: outline gold (no fill)
-                  dotStyle = { backgroundColor: "transparent", borderColor: GOLD, borderWidth: 2 };
-                }
+                // Render row content:
+                // - If you picked: show pick + result badge
+                // - If no pick and UI is open: "Make Your Selection"
+                // - Else (locked/running/settled): a dim status text
+                const showMakePick = !d.selection && d._ui === "open";
+                const dimStatus =
+                  !d.selection && d._ui && d._ui !== "open"
+                    ? d._ui === "locked" ? "Locked"
+                    : d._ui === "running" ? "In Progress"
+                    : d._ui === "settled" ? "Finished"
+                    : d._ui === "preopen" ? "Opens Soon"
+                    : d._ui === "cancelled" ? "Cancelled"
+                    : "—"
+                    : null;
 
                 return (
                   <View key={d.iso} style={styles.timelineItem}>
@@ -304,8 +375,10 @@ export default function EntriesIndex() {
                               <Text style={[styles.resBadgeTxt, { color: pill.color }]}>{pill.text}</Text>
                             </View>
                           </>
+                        ) : showMakePick ? (
+                          <Text style={[styles.makePick, { opacity: 0.9 }]}>Make Your Selection</Text>
                         ) : (
-                          <Text style={[styles.makePick, { opacity: 0.65 }]}>Make Your Selection</Text>
+                          <Text style={styles.dimNote}>{dimStatus}</Text>
                         )}
                       </View>
                       {idx !== modalDays.length - 1 && <View style={styles.hrThin} />}
@@ -316,7 +389,7 @@ export default function EntriesIndex() {
             </View>
 
             <View style={styles.modalActions}>
-              <TouchableOpacity onPress={() => router.push(`/entries/${modalEntry?.entrantId}`)} style={styles.primaryBtn}>
+              <TouchableOpacity onPress={goManagePicks} style={styles.primaryBtn}>
                 <Text style={styles.primaryTxt}>Manage Picks</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={closeDetails} style={styles.secondaryBtn}>
@@ -333,7 +406,7 @@ export default function EntriesIndex() {
 /* utils */
 function prettyRange(startISO: string, endISO: string, _u=false) {
   if (!startISO || !endISO) return "";
-  const s = new Date(startISO), e = new Date(endISO);
+  const s = parseLocalISO(startISO), e = parseLocalISO(endISO);
   return `${s.toLocaleDateString(undefined,{month:"long",day:"numeric"})} - ${e.toLocaleDateString(undefined,{day:"numeric"})}`;
 }
 function pillDef(status: EntryStatus) {
@@ -354,13 +427,13 @@ function resultDef(r: DayRow["result"]) {
   }
 }
 
-/* styles (your original look; only timeline dot fill changed) */
+/* styles (unchanged look) */
 const styles = StyleSheet.create({
   bg: { flex: 1, backgroundColor: "#0d0013" },
-  topBar: {flexDirection:'row', columnGap: RFValue(8), paddingTop: RFValue(50), paddingBottom: RFValue(8), alignItems: "center", justifyContent: "center" },
-  backBtn: {   position: "relative",  flexDirection: "row", alignItems: "center", gap: RFValue(4), padding: RFValue(6) },
+  topBar: {     marginTop: RFValue(40),paddingTop: RFValue(10), paddingBottom: RFValue(8), alignItems: "center", justifyContent: "center" },
+  backBtn: { position: "absolute", left: RFValue(12), top: RFValue(8), flexDirection: "row", alignItems: "center", gap: RFValue(4), padding: RFValue(6) },
   backTxt: { color: "#fff", fontWeight: "800", fontSize: RFValue(12) },
-  title: { marginLeft: RFValue(8), color: "#fff", fontWeight: "900", fontSize: RFValue(20) },
+  title: { color: "#fff", fontWeight: "900", fontSize: RFValue(20) },
   filterBar: { flexDirection: "row", paddingHorizontal: RFValue(12), paddingBottom: RFValue(8), gap: RFValue(8) },
   chip: { paddingHorizontal: RFValue(10), paddingVertical: RFValue(6), borderRadius: RFValue(999), backgroundColor: "rgba(255,255,255,0.12)", borderWidth: 1, borderColor: "rgba(255,255,255,0.15)" },
   chipActive: { backgroundColor: "rgba(255,215,0,0.18)", borderColor: "rgba(255,215,0,0.38)" },
@@ -389,7 +462,7 @@ const styles = StyleSheet.create({
   timelineWrap: { marginTop: RFValue(6), paddingLeft: RFValue(18) },
   timelineLine: { position: "absolute", left: RFValue(6), top: RFValue(6), bottom: 0, width: RFValue(2), backgroundColor: "rgba(255,255,255,0.08)" },
   timelineItem: { flexDirection: "row", marginBottom: RFValue(10) },
-  timelineDot: { position: "absolute", left: -RFValue(2), width: RFValue(12), height: RFValue(12), borderRadius: RFValue(6), backgroundColor: CARD_SOLID, borderWidth: 2 },
+  timelineDot: { position: "absolute", left: -RFValue(2), width: RFValue(12), height: RFValue(12), borderRadius: RFValue(6), backgroundColor: "#141029", borderWidth: 2 },
   timelineCard: { flex: 1, backgroundColor: "#0f0c22", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", borderRadius: RFValue(12), padding: RFValue(10), marginLeft: RFValue(8) },
   dayHeading: { color: "rgba(255,255,255,0.92)", fontWeight: "900", marginBottom: RFValue(6) },
   pickRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
@@ -397,6 +470,7 @@ const styles = StyleSheet.create({
   resBadge: { paddingHorizontal: RFValue(10), paddingVertical: RFValue(4), borderRadius: RFValue(999), borderWidth: 1 },
   resBadgeTxt: { fontWeight: "900", fontSize: RFValue(11) },
   makePick: { color: GOLD, fontWeight: "800", fontSize: RFValue(12) },
+  dimNote: { color: "rgba(255,255,255,0.66)", fontWeight: "700", fontSize: RFValue(12) },
   hrThin: { height: 1, backgroundColor: DIV, marginTop: RFValue(10) },
   modalActions: { flexDirection: "row", gap: RFValue(10), marginTop: RFValue(12) },
   primaryBtn: { flex: 1, backgroundColor: PURPLE, borderRadius: RFValue(12), paddingVertical: RFValue(12), alignItems: "center" },

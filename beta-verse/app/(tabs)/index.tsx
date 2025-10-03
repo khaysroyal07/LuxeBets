@@ -1,4 +1,4 @@
-// app/(tabs)/Dash.js — SportsDataIO feed + profile dropdown + streaks modal
+// app/(tabs)/index.tsx — Dash (keep original style; fix duplicate keys + dedupe)
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   View, Text, Image, TouchableOpacity, StyleSheet, FlatList, Dimensions,
@@ -19,26 +19,26 @@ if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental
 
 const SDIO_KEY =
   process.env.EXPO_PUBLIC_SPORTSDATAIO_KEY ||
-  Constants?.expoConfig?.extra?.SPORTSDATAIO_KEY ||
+  (Constants?.expoConfig?.extra as any)?.SPORTSDATAIO_KEY ||
   "";
 
 /* ---------- Streaks (leaderboard) config ---------- */
 const STREAKS_URL =
   process.env.EXPO_PUBLIC_STREAKS_URL ||
-  Constants?.expoConfig?.extra?.STREAKS_URL ||
+  (Constants?.expoConfig?.extra as any)?.STREAKS_URL ||
   "";
 const STREAKS_API_KEY =
   process.env.EXPO_PUBLIC_STREAKS_API_KEY ||
-  Constants?.expoConfig?.extra?.STREAKS_API_KEY ||
+  (Constants?.expoConfig?.extra as any)?.STREAKS_API_KEY ||
   "";
 
 /* ---------------- Sports config (SportsDataIO) ---------------- */
-const SPORT_CONFIG = {
-  nba:  { label: "NBA",  base: "https://api.sportsdata.io/v3/nba/scores/json",  gamesByDate: "GamesByDate",  teams: "Teams", standings: (s)=>`Standings/${s}`, iconUrl: "https://img.icons8.com/ios-filled/100/basketball.png" },
-  wnba: { label: "WNBA", base: "https://api.sportsdata.io/v3/wnba/scores/json", gamesByDate: "GamesByDate", teams: "Teams", standings: (s)=>`Standings/${s}`, iconUrl: "https://img.icons8.com/fluency/100/basketball-2.png" },
-  mlb:  { label: "MLB",  base: "https://api.sportsdata.io/v3/mlb/scores/json",  gamesByDate: "GamesByDate",  teams: "Teams", standings: (s)=>`Standings/${s}`, iconUrl: "https://img.icons8.com/ios-filled/100/baseball.png" },
-  nfl:  { label: "NFL",  base: "https://api.sportsdata.io/v3/nfl/scores/json",  gamesByDate: "ScoresByDate", teams: "Teams", standings: (s)=>`Standings/${s}`, iconUrl: "https://img.icons8.com/ios-filled/100/american-football.png" },
-  nhl:  { label: "NHL",  base: "https://api.sportsdata.io/v3/nhl/scores/json",  gamesByDate: "GamesByDate",  teams: "Teams", standings: (s)=>`Standings/${s}`, iconUrl: "https://img.icons8.com/ios-filled/100/ice-hockey.png" },
+const SPORT_CONFIG: Record<string, any> = {
+  nba:  { label: "NBA",  base: "https://api.sportsdata.io/v3/nba/scores/json",  gamesByDate: "GamesByDate",  teams: "Teams", standings: (s:number)=>`Standings/${s}`, iconUrl: "https://img.icons8.com/ios-filled/100/basketball.png" },
+  wnba: { label: "WNBA", base: "https://api.sportsdata.io/v3/wnba/scores/json", gamesByDate: "GamesByDate", teams: "Teams", standings: (s:number)=>`Standings/${s}`, iconUrl: "https://img.icons8.com/fluency/100/basketball-2.png" },
+  mlb:  { label: "MLB",  base: "https://api.sportsdata.io/v3/mlb/scores/json",  gamesByDate: "GamesByDate",  teams: "Teams", standings: (s:number)=>`Standings/${s}`, iconUrl: "https://img.icons8.com/ios-filled/100/baseball.png" },
+  nfl:  { label: "NFL",  base: "https://api.sportsdata.io/v3/nfl/scores/json",  gamesByDate: "ScoresByDate", teams: "Teams", standings: (s:number)=>`Standings/${s}`, iconUrl: "https://img.icons8.com/ios-filled/100/american-football.png" },
+  nhl:  { label: "NHL",  base: "https://api.sportsdata.io/v3/nhl/scores/json",  gamesByDate: "GamesByDate",  teams: "Teams", standings: (s:number)=>`Standings/${s}`, iconUrl: "https://img.icons8.com/ios-filled/100/ice-hockey.png" },
 };
 const SPORTS = Object.keys(SPORT_CONFIG);
 const YEAR_OPTIONS = ["Auto", 2025, 2024, 2023, 2022];
@@ -49,29 +49,42 @@ const defaultTeamLogo =
 /* ---------------- Theme & Utils ---------------- */
 const MONTHS_ABBR = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
 const PURPLE = "#613DC1";
-const DEEP_PURPLE = "#2c0735";
 const GOLD = "#FFD700";
 
-/** 👇 Add a default tier for deep-linking into the tournaments page */
+/** 👇 Default tier for deep-linking into tournaments page */
 const DEFAULT_TIER = "20";
 
-function toSDIODate(d){const y=d.getFullYear();const m=MONTHS_ABBR[d.getMonth()];const day=String(d.getDate()).padStart(2,"0");return `${y}-${m}-${day}`;}
-function sanitizeUrl(u){if(!u)return null;try{const t=u.trim();return t.startsWith("http://")?"https://"+t.slice(7):t;}catch{return null;}}
-function parseGameDate(s){if(!s)return null;const dt=new Date(s);return isNaN(dt.getTime())?null:dt;}
-function statusBucket(status,dt){const now=new Date();const s=(status||"").toLowerCase();if(s.includes("inprogress")||s==="in progress"||s==="live")return "LIVE";if(s.includes("final")||s.startsWith("f/"))return "FINAL";if(dt&&dt>now)return "UPCOMING";return s==="scheduled"?"UPCOMING":"FINAL";}
-function tagStyle(b){return b==="LIVE"?{bg:"#22c55e",fg:"#0a2915"}:b==="UPCOMING"?{bg:"#f59e0b",fg:"#2b1a00"}:{bg:"#6b7280",fg:"#0d1117"};}
-function dedupeByGameId(list){const seen=new Set();return list.filter(g=>{const id=g.GameID||g.GameId||g.GlobalGameID||`${g.HomeTeam}-${g.AwayTeam}-${g.DateTime||g.Day}`;const s=String(id);if(seen.has(s))return false;seen.add(s);return true;});}
-function relativeWhen(ms,b){if(!ms)return"";const now=Date.now();const diff=ms-now;const abs=Math.abs(diff);const min=Math.round(abs/60000);const h=Math.floor(min/60);const m=min%60;if(b==="FINAL"){if(h>=24)return`${Math.floor(h/24)}d ago`;if(h>=1)return`${h}h ago`;return`${m}m ago`;}if(diff<=0)return"now";if(h>=24)return`in ${Math.floor(h/24)}d`;if(h>=1)return`in ${h}h ${m?m+"m":""}`.trim();return`in ${m}m`;}
+function toSDIODate(d: Date){const y=d.getFullYear();const m=MONTHS_ABBR[d.getMonth()];const day=String(d.getDate()).padStart(2,"0");return `${y}-${m}-${day}`;}
+function sanitizeUrl(u?: string|null){if(!u)return null;try{const t=u.trim();return t.startsWith("http://")?"https://"+t.slice(7):t;}catch{return null;}}
+function parseGameDate(s?: string){if(!s)return null;const dt=new Date(s);return isNaN(dt.getTime())?null:dt;}
+function statusBucket(status?: string,dt?: Date|null){const now=new Date();const s=(status||"").toLowerCase();if(s.includes("inprogress")||s==="in progress"||s==="live")return "LIVE";if(s.includes("final")||s.startsWith("f/"))return "FINAL";if(dt&&dt>now)return "UPCOMING";return s==="scheduled"?"UPCOMING":"FINAL";}
+function tagStyle(b: "LIVE"|"UPCOMING"|"FINAL"){return b==="LIVE"?{bg:"#22c55e",fg:"#0a2915"}:b==="UPCOMING"?{bg:"#f59e0b",fg:"#2b1a00"}:{bg:"#6b7280",fg:"#0d1117"};}
+function dedupeByGameId(list:any[]){const seen=new Set();return list.filter(g=>{const id=g.GameID||g.GameId||g.GlobalGameID||`${g.HomeTeam}-${g.AwayTeam}-${g.DateTime||g.Day}`;const s=String(id);if(seen.has(s))return false;seen.add(s);return true;});}
+function relativeWhen(ms?: number,b?: "FINAL"|"UPCOMING"|"LIVE"){if(!ms)return"";const now=Date.now();const diff=ms-now;const abs=Math.abs(diff);const min=Math.round(abs/60000);const h=Math.floor(min/60);const m=min%60;if(b==="FINAL"){if(h>=24)return`${Math.floor(h/24)}d ago`;if(h>=1)return`${h}h ago`;return`${m}m ago`;}if(diff<=0)return"now";if(h>=24)return`in ${Math.floor(h/24)}d`;if(h>=1)return`in ${h}h ${m?m+"m":""}`.trim();return`in ${m}m`;}
+
+/* ==== NEW: composite key + dedupe by composite key ==== */
+const makeEventKey = (sportKey: string, g: any) =>
+  `${sportKey}:${String(g.id ?? `${g.homeName}-${g.awayName}`)}:${String(g.rawDate ?? 0)}`;
+
+const uniqByKey = (sportKey: string, list: any[]) => {
+  const seen = new Set<string>();
+  return (list || []).filter(g => {
+    const k = makeEventKey(sportKey, g);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+};
 
 /* ---------------- Atoms ---------------- */
-function TeamAvatar({ uri, name }) {
+function TeamAvatar({ uri, name }: { uri?: string|null; name?: string }) {
   const [err, setErr] = useState(false);
-  const good = !err && sanitizeUrl(uri);
+  const good = !err && sanitizeUrl(uri || null);
   if (good) return <Image source={{ uri: good }} onError={() => setErr(true)} style={styles.teamLogo} />;
   const initials=(name||"").split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]?.toUpperCase()).join("")||"??";
   return (<View style={styles.avatarFallback}><Text style={styles.avatarInitials}>{initials}</Text></View>);
 }
-function Chip({ label, selected, onPress, style }) {
+function Chip({ label, selected, onPress, style }: any) {
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.85}
       style={[styles.chip, selected && styles.chipSelected, style]}>
@@ -88,7 +101,7 @@ const MOCK_STREAKS = [
   { id: "4", name: "Owen Kim",  streak: 4, avatarUrl: "https://i.pravatar.cc/100?img=44" },
   { id: "5", name: "Liam Fox",  streak: 3, avatarUrl: "https://i.pravatar.cc/100?img=14" },
 ];
-function trophyForRank(rank){
+function trophyForRank(rank:number){
   if(rank===1) return { uri:"https://img.icons8.com/fluency/96/trophy.png" };
   if(rank===2) return { uri:"https://img.icons8.com/color/96/silver-medal.png" };
   if(rank===3) return { uri:"https://img.icons8.com/color/96/bronze-medal.png" };
@@ -98,26 +111,26 @@ function trophyForRank(rank){
 /* ---------------- Screen ---------------- */
 export default function Dash(){
   const [selectedSportIndex,setSelectedSportIndex]=useState(0);
-  const [selectedYear,setSelectedYear]=useState("Auto");
+  const [selectedYear,setSelectedYear]=useState<"Auto"|number>("Auto");
 
   // teams/standings
-  const [teamsMap,setTeamsMap]=useState({});
-  const [teamIdMap,setTeamIdMap]=useState({});
-  const [standingsMap,setStandingsMap]=useState({});
+  const [teamsMap,setTeamsMap]=useState<Record<string, any>>({});
+  const [teamIdMap,setTeamIdMap]=useState<Record<string|number, any>>({});
+  const [standingsMap,setStandingsMap]=useState<Record<string, any>>({});
 
-  const [events,setEvents]=useState([]);
+  const [events,setEvents]=useState<any[]>([]);
   const [loading,setLoading]=useState(false);
   const [note,setNote]=useState("");
 
   const [showFilter,setShowFilter]=useState(false);
-  const [quickFilter,setQuickFilter]=useState("ALL");
+  const [quickFilter,setQuickFilter]=useState<"ALL"|"LIVE"|"UPCOMING"|"FINAL">("ALL");
   const [todayOnly,setTodayOnly]=useState(false);
-  const [sortMode,setSortMode]=useState("smart");
+  const [sortMode,setSortMode]=useState<"smart"|"timeAsc"|"timeDesc">("smart");
 
   // profile dropdown + streaks modal
   const [profileOpen, setProfileOpen] = useState(false);
   const [streakOpen, setStreakOpen] = useState(false);
-  const [streaks, setStreaks] = useState([]);
+  const [streaks, setStreaks] = useState<any[]>([]);
   const [streakLoading, setStreakLoading] = useState(false);
   const [streakError, setStreakError] = useState("");
 
@@ -133,20 +146,20 @@ export default function Dash(){
   const sportCfg=SPORT_CONFIG[sportKey];
   const headers=useMemo(()=>({"Ocp-Apim-Subscription-Key":SDIO_KEY}),[]);
 
-  // safe navigation helper: close then push on next frame
-  const go = useCallback((path) => {
+  // safe navigation
+  const go = useCallback((path: string) => {
     setProfileOpen(false);
-    requestAnimationFrame(() => router.push(path));
+    requestAnimationFrame(() => router.push(path as any));
   }, [router]);
 
-  /* -------- Teams (build byKey + byId maps) -------- */
+  /* -------- Teams -------- */
   useEffect(()=>{ if(!SDIO_KEY)return; let off=false; (async()=>{
       try{
         const r=await fetch(`${sportCfg.base}/${sportCfg.teams}`,{headers});
         if(!r.ok) throw new Error(`Teams ${sportCfg.label} -> ${r.status}`);
         const data=await r.json();
-        const byKey={}, byId={};
-        (data||[]).forEach(t=>{
+        const byKey:Record<string,any>={}, byId:Record<string|number,any>={};
+        (data||[]).forEach((t:any)=>{
           const key=t.Key||t.Team||t.Abbreviation||t.Code;
           const id=t.TeamID ?? t.TeamId ?? t.ID;
           const name=t.Name || [t.City,t.Nickname].filter(Boolean).join(" ") || key;
@@ -164,8 +177,8 @@ export default function Dash(){
         const season = selectedYear==="Auto"?new Date().getFullYear():Number(selectedYear);
         const r=await fetch(`${sportCfg.base}/${sportCfg.standings(season)}`,{headers});
         if(!r.ok){ console.warn("Standings HTTP",sportCfg.label,r.status); if(!off) setStandingsMap({}); return; }
-        const arr=await r.json(); const map={};
-        (arr||[]).forEach(row=>{
+        const arr=await r.json(); const map:Record<string,any>={};
+        (arr||[]).forEach((row:any)=>{
           const wins=row.Wins??row.WinsOverall??row.WinsHome??row.Wins??undefined;
           const losses=row.Losses??row.LossesOverall??row.LossesHome??row.Losses??undefined;
           const pct=row.Percentage??row.WinPercentage??(wins!=null&&losses!=null?wins/(wins+losses):undefined);
@@ -175,7 +188,7 @@ export default function Dash(){
           const name=row.Name;
           const city=row.City;
           const fullName=[city,name].filter(Boolean).join(" ");
-          const add=(k)=>{ if(!k) return; map[k]=rec; map[String(k).toUpperCase()]=rec; };
+          const add=(k:any)=>{ if(!k) return; map[k]=rec; map[String(k).toUpperCase()]=rec; };
           if(id!=null) add(`ID:${id}`);
           add(key); add(name); add(fullName);
         });
@@ -184,22 +197,24 @@ export default function Dash(){
     })(); return()=>{off=true}; },[sportKey,selectedYear]);
 
   /* -------- Fetch helpers -------- */
-  async function fetchByDate(date){ const d=toSDIODate(date); const url=`${sportCfg.base}/${sportCfg.gamesByDate}/${encodeURIComponent(d)}`;
+  async function fetchByDate(date: Date){
+    const d=toSDIODate(date);
+    const url=`${sportCfg.base}/${sportCfg.gamesByDate}/${encodeURIComponent(d)}`;
     const r=await fetch(url,{headers}); if(!r.ok) return []; const j=await r.json(); return Array.isArray(j)?j:[]; }
-  async function fetchWindowSerial(center,aheadDays,backDays,stopAfter){
-    const out=[]; for(let i=0;i<=aheadDays;i++){ const dt=new Date(center); dt.setDate(dt.getDate()+i); const arr=await fetchByDate(dt); out.push(...arr); if(out.length>=stopAfter)break; }
+  async function fetchWindowSerial(center: Date,aheadDays:number,backDays:number,stopAfter:number){
+    const out:any[]=[]; for(let i=0;i<=aheadDays;i++){ const dt=new Date(center); dt.setDate(dt.getDate()+i); const arr=await fetchByDate(dt); out.push(...arr); if(out.length>=stopAfter)break; }
     if(out.length<stopAfter){ for(let i=1;i<=backDays;i++){ const dt=new Date(center); dt.setDate(dt.getDate()-i); const arr=await fetchByDate(dt); out.push(...arr); if(out.length>=stopAfter)break; } }
     return dedupeByGameId(out);
   }
-  async function fetchYearSamples(year){
+  async function fetchYearSamples(year:number){
     const sample=[new Date(`${year}-01-15`),new Date(`${year}-04-15`),new Date(`${year}-08-15`),new Date(`${year}-11-15`)];
-    let res=[]; for(const d of sample){ const c=await fetchWindowSerial(d,2,2,30); res=res.concat(c); if(res.length>=40)break; }
+    let res:any[]=[]; for(const d of sample){ const c=await fetchWindowSerial(d,2,2,30); res=res.concat(c); if(res.length>=40)break; }
     return dedupeByGameId(res);
   }
 
   /* -------- Enrich games -------- */
-  function enrichGames(list){
-    return list.map(g=>{
+  function enrichGames(list:any[]){
+    return list.map((g:any)=>{
       const homeId = g.HomeTeamID ?? g.HomeTeamId ?? null;
       const awayId = g.AwayTeamID ?? g.AwayTeamId ?? null;
 
@@ -228,12 +243,12 @@ export default function Dash(){
       };
     });
   }
-  function sortEnriched(arr,mode){
+  function sortEnriched(arr:any[],mode:"smart"|"timeAsc"|"timeDesc"){
     if(!Array.isArray(arr))return [];
     const A=[...arr];
     if(mode==="timeAsc") return A.sort((a,b)=>(a.rawDate||0)-(b.rawDate||0));
     if(mode==="timeDesc")return A.sort((a,b)=>(b.rawDate||0)-(a.rawDate||0));
-    const score={LIVE:0,UPCOMING:1,FINAL:2};
+    const score:{[k:string]:number}={LIVE:0,UPCOMING:1,FINAL:2};
     return A.sort((a,b)=>{
       if(score[a.bucket]!==score[b.bucket]) return score[a.bucket]-score[b.bucket];
       if(a.bucket==="FINAL"&&b.bucket==="FINAL") return (b.rawDate||0)-(a.rawDate||0);
@@ -245,31 +260,33 @@ export default function Dash(){
   useEffect(()=>{ if(!SDIO_KEY)return; let off=false; (async()=>{
       setLoading(true); setEvents([]); setNote("");
       try{
-        const now=new Date(); let list=[];
+        const now=new Date(); let list:any[]=[];
         if(selectedYear==="Auto"){
-          if(todayOnly){ const today=await fetchByDate(now); const e=enrichGames(today); if(!off){ setEvents(sortEnriched(e,sortMode)); setNote(e.length?"":"No games today."); } setLoading(false); return; }
+          if(todayOnly){ const today=await fetchByDate(now); const e=enrichGames(today); const unique=uniqByKey(sportKey, e); if(!off){ setEvents(sortEnriched(unique,sortMode)); setNote(unique.length?"":"No games today."); } setLoading(false); return; }
           list=await fetchWindowSerial(now,5,0,30); let e=enrichGames(list); let up=e.filter(g=>g.bucket!=="FINAL");
           if(up.length===0){ setNote("Looking ahead for upcoming games…"); list=await fetchWindowSerial(now,14,0,50); e=enrichGames(list); up=e.filter(g=>g.bucket!=="FINAL"); }
           if(up.length===0){ setNote("No upcoming found; showing recent finals…"); list=await fetchWindowSerial(now,0,7,40); e=enrichGames(list); }
           if(!e?.length){ list=await fetchWindowSerial(now,0,21,60); e=enrichGames(list); }
           if(!e?.length){ const yr=now.getFullYear(); setNote(`Sampling ${yr}…`); list=await fetchYearSamples(yr); e=enrichGames(list); }
-          if(!off) setEvents(sortEnriched(e,sortMode));
+          const unique=uniqByKey(sportKey, e);
+          if(!off) setEvents(sortEnriched(unique,sortMode));
         }else{
           setNote(`Looking in ${selectedYear}…`);
           const yearList=await fetchYearSamples(Number(selectedYear)); const e=enrichGames(yearList);
-          if(!off){ setEvents(sortEnriched(e,sortMode)); setNote(e.length?"":`No results in ${selectedYear}.`); }
+          const unique=uniqByKey(sportKey, e);
+          if(!off){ setEvents(sortEnriched(unique,sortMode)); setNote(unique.length?"":`No results in ${selectedYear}.`); }
         }
       }catch(e){ console.warn("Events error",sportCfg.label,e); if(!off){ setEvents([]); setNote("No events to show (check API key / plan)."); } }
       finally{ if(!off) setLoading(false); }
     })(); return()=>{off=true};
-  // eslint-disable-next-line react-hooks/exhaustive-comments
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   },[sportKey,selectedYear,todayOnly,sortMode,SDIO_KEY,sportCfg.base,teamsMap,teamIdMap]);
 
   const shownEvents=useMemo(()=>quickFilter==="ALL"?events:events.filter(e=>e.bucket===quickFilter),[events,quickFilter]);
   if(!fontsLoaded) return null;
 
   /* -------- Subcomponent to lock column alignment -------- */
-  const TeamCol = ({ name, logo }) => (
+  const TeamCol = ({ name, logo }: any) => (
     <View style={styles.teamCol}>
       <TeamAvatar uri={logo} name={name} />
       <View style={styles.teamNameBox}>
@@ -281,7 +298,7 @@ export default function Dash(){
   );
 
   /* Helper to fetch correct standings for a side */
-  const getStd = (item, side) => {
+  const getStd = (item:any, side:"home"|"away") => {
     const id = item[side === "home" ? "homeId" : "awayId"];
     const key = (item[side === "home" ? "homeKey" : "awayKey"] || "").toUpperCase();
     const name = item[side === "home" ? "homeName" : "awayName"];
@@ -295,7 +312,7 @@ export default function Dash(){
   };
 
   /* -------- Card -------- */
-  const EventCard = ({ item }) => {
+  const EventCard = ({ item }: any) => {
     const { bg, fg } = tagStyle(item.bucket);
     const homeStd = getStd(item, "home");
     const awayStd = getStd(item, "away");
@@ -357,7 +374,7 @@ export default function Dash(){
     );
   };
 
-  const renderSportTab = ({ item: k, index }) => {
+  const renderSportTab = ({ item: k, index }: any) => {
     const cfg = SPORT_CONFIG[k]; const selected = selectedSportIndex===index;
     return (
       <TouchableOpacity onPress={()=>{ setSelectedSportIndex(index); setSelectedYear("Auto"); setQuickFilter("ALL"); }}
@@ -373,7 +390,7 @@ export default function Dash(){
     setStreakLoading(true);
     setStreakError("");
     try {
-      let rows = [];
+      let rows:any[] = [];
       if (STREAKS_URL) {
         const r = await fetch(STREAKS_URL, {
           headers: {
@@ -434,7 +451,7 @@ export default function Dash(){
           <Text style={styles.filterTitle}>Quick Filter</Text>
           <View style={styles.filterRow}>
             {["ALL","LIVE","UPCOMING","FINAL"].map(q=>(
-              <Chip key={q} label={q} selected={quickFilter===q} onPress={()=>setQuickFilter(q)} style={{ marginBottom: RFValue(6) }} />
+              <Chip key={q} label={q} selected={quickFilter===q as any} onPress={()=>setQuickFilter(q as any)} style={{ marginBottom: RFValue(6) }} />
             ))}
           </View>
 
@@ -445,7 +462,7 @@ export default function Dash(){
 
           <Text style={[styles.filterTitle,{marginTop:RFValue(8)}]}>Year</Text>
           <View style={styles.filterRow}>
-            {YEAR_OPTIONS.map(y=>(
+            {YEAR_OPTIONS.map((y:any)=>(
               <Chip key={String(y)} label={String(y)} selected={selectedYear===y} onPress={()=>setSelectedYear(y)} style={{ marginBottom: RFValue(6) }} />
             ))}
           </View>
@@ -468,25 +485,19 @@ export default function Dash(){
         </View>
       )}
 
-      {/* Profile dropdown menu (fixed layering + delayed navigation) */}
+      {/* Profile dropdown menu */}
       {profileOpen && (
         <View style={[StyleSheet.absoluteFill, { zIndex: 40 }]} pointerEvents="box-none">
-          {/* Backdrop behind the menu so it doesn't block menu taps */}
           <Pressable style={styles.overlayTap} onPress={()=>setProfileOpen(false)} />
           <BlurView intensity={70} tint="dark" style={styles.profileMenu}>
-            <Pressable
-              style={styles.menuItem}
-              onPress={() => go("/user/profile")}
-            >
+            <Pressable style={styles.menuItem} onPress={() => go("/user/profile")}>
               <Image source={{ uri: "https://img.icons8.com/ios-glyphs/30/user--v1.png" }} style={styles.menuIcon} />
-<TouchableOpacity onPress={() => router.push("/profile")}>
-      <Text style={styles.menuText}>Profile</Text>
-    </TouchableOpacity>            </Pressable>
+              <TouchableOpacity onPress={() => router.push("/profile")}>
+                <Text style={styles.menuText}>Profile</Text>
+              </TouchableOpacity>
+            </Pressable>
             <View style={styles.menuDivider} />
-            <Pressable
-              style={styles.menuItem}
-              onPress={() => go("/user/settings")}
-            >
+            <Pressable style={styles.menuItem} onPress={() => go("/user/settings")}>
               <Image source={{ uri: "https://img.icons8.com/ios-glyphs/30/settings.png" }} style={styles.menuIcon} />
               <Text style={styles.menuText}>Settings</Text>
             </Pressable>
@@ -513,12 +524,12 @@ export default function Dash(){
 
             <FlatList
               data={streaks}
-              keyExtractor={(it, idx)=>String(it.id ?? idx)}
+              keyExtractor={(it, idx)=>String(it?.id ?? idx)}
               refreshControl={
                 <RefreshControl
-                    refreshing={streakLoading}
-                    onRefresh={loadStreaks}
-                    tintColor="#fff"
+                  refreshing={streakLoading}
+                  onRefresh={loadStreaks}
+                  tintColor="#fff"
                 />
               }
               renderItem={({ item, index }) => {
@@ -552,11 +563,12 @@ export default function Dash(){
 
       <FlatList
         data={shownEvents}
-        keyExtractor={(item)=>String(item.id)}
+        /* ==== NEW: use composite key to avoid duplicates ==== */
+        keyExtractor={(item)=> makeEventKey(sportKey, item)}
         renderItem={({item})=>(
           <TouchableOpacity
             activeOpacity={0.9}
-            onPress={()=>router.push({ pathname: "/tournaments", params: { tier: DEFAULT_TIER } })}
+            onPress={()=>router.push({ pathname: "/tournaments", params: { tier: DEFAULT_TIER } } as any)}
           >
             <EventCard item={item} />
           </TouchableOpacity>
@@ -583,7 +595,7 @@ export default function Dash(){
   );
 }
 
-/* ---------------- Styles (original colors + dropdown + modal) ---------------- */
+/* ---------------- Styles (unchanged) ---------------- */
 const styles = StyleSheet.create({
   container:{ flex:1, width:"100%", height:"100%" },
 
@@ -604,7 +616,7 @@ const styles = StyleSheet.create({
   filterRow:{ flexDirection:"row", flexWrap:"wrap" },
 
   chip:{ paddingHorizontal:RFValue(12), paddingVertical:RFValue(6), marginRight:RFValue(6), marginTop:RFValue(6),
-    borderRadius:RFValue(12), borderWidth:1, borderColor:"rgba(255,255,255,0.2)", backgroundColor:"rgba(44,7,53,0.8)" },
+    borderRadius:RFValue(12), borderWidth:1, borderColor:"rgba(255,255,255,0.2)", backgroundColor:"#2c0735" },
   chipSelected:{ backgroundColor:"#613DC1", borderColor:"#FFD700" },
   chipText:{ fontFamily:"PoppinsMedium", fontSize:RFValue(12), color:"#fff" },
   chipTextSelected:{ color:"#FFD700", fontWeight:"700" },
@@ -621,7 +633,6 @@ const styles = StyleSheet.create({
   eventBgVertical:{ borderRadius:20, paddingHorizontal:RFValue(12), paddingBottom:RFValue(12),
     paddingTop:RFValue(32), minHeight:RFValue(138), position:"relative" },
 
-  // Centered status pill
   statusWrap:{ position:"absolute", top:RFValue(8), left:0, right:0, alignItems:"center", zIndex:2 },
   statusPill:{ minWidth:RFValue(60), paddingHorizontal:RFValue(10), paddingVertical:RFValue(2),
     borderRadius:RFValue(999), alignItems:"center", justifyContent:"center" },
@@ -656,13 +667,13 @@ const styles = StyleSheet.create({
   avatarInitials:{ fontFamily:"PoppinsSemiBold", color:"#FFD700", fontSize:RFValue(15) },
 
   /* Dropdown menu */
-  overlayTap:{ ...StyleSheet.absoluteFillObject }, // no zIndex -> behind the menu
+  overlayTap:{ ...StyleSheet.absoluteFillObject },
   profileMenu:{
     position:"absolute", top:RFValue(92), right:RFValue(14),
     width:RFValue(170), borderRadius:RFValue(14), overflow:"hidden",
     backgroundColor:"rgba(30,30,30,0.9)", borderWidth:1, borderColor:"rgba(255,255,255,0.08)",
-    zIndex: 5,           // ensure above backdrop
-    elevation: 8         // Android tapability
+    zIndex: 5,
+    elevation: 8
   },
   menuItem:{ flexDirection:"row", alignItems:"center", paddingVertical:RFValue(10), paddingHorizontal:RFValue(12) },
   menuIcon:{ width:RFValue(18), height:RFValue(18), tintColor:"#fff", marginRight:RFValue(8) },
@@ -686,5 +697,4 @@ const styles = StyleSheet.create({
   rankName:{ color:"#fff", fontFamily:"PoppinsMedium", fontSize:RFValue(13) },
   progressTrack:{ height:RFValue(6), backgroundColor:"rgba(255,255,255,0.1)", borderRadius:RFValue(999), marginTop:RFValue(4), overflow:"hidden" },
   progressBar:{ height:"100%", backgroundColor:GOLD },
-
 });

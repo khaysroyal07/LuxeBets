@@ -15,7 +15,7 @@ export const SDIO_KEY =
 export const SPORTSDB_KEY =
   readExtra("SPORTSDB_KEY") ||
   process.env.EXPO_PUBLIC_SPORTSDB_KEY ||
-  "3"; // public demo key works
+  "123"; // public demo key works
 
 export const SDIO_BASE = "https://api.sportsdata.io/v3";
 export const SPORTSDB_BASE = "https://www.thesportsdb.com/api/v1/json";

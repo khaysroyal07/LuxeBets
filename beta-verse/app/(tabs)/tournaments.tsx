@@ -1,5 +1,4 @@
-// app/(tabs)/tournaments.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, memo } from "react";
 import {
   View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView,
   ImageBackground, ActivityIndicator, Alert, TextInput, Platform,
@@ -12,23 +11,117 @@ import { LinearGradient } from "expo-linear-gradient";
 import Constants from "expo-constants";
 import { supabase } from "@/lib/supabase";
 
+/* =========================================================
+   FREE/PAID SCOREBOARD HELPERS
+   - NFL via SportsDataIO (needs key)
+   - NBA/MLB/NHL/WNBA via ESPN free scoreboard
+   Only used for slate preview + deriving first kickoff time.
+========================================================= */
+const SDIO_KEY = (Constants?.expoConfig?.extra as any)?.SPORTSDATAIO_KEY as string | undefined;
+
+type LeagueKey = "NFL" | "NBA" | "MLB" | "NHL" | "WNBA";
+export type GameRow = {
+  id: string;
+  start: string;   // ISO
+  league: LeagueKey;
+  home: { short: string; name: string };
+  away: { short: string; name: string };
+};
+
+const toSDioDate = (d: string | Date) => {
+  const dt = new Date(d);
+  const M = dt.toLocaleString("en-US", { month: "short" }).toUpperCase();
+  const DD = String(dt.getDate()).padStart(2, "0");
+  return `${dt.getFullYear()}-${M}-${DD}`;
+};
+
+async function fetchNFL_SDIO(dayISO: string): Promise<GameRow[]> {
+  if (!SDIO_KEY) return [];
+  const base = "https://api.sportsdata.io/v3/nfl/scores/json";
+  const url = `${base}/ScoresByDate/${toSDioDate(dayISO)}?key=${encodeURIComponent(SDIO_KEY)}`;
+  const r = await fetch(url);
+  if (!r.ok) return [];
+  const arr = await r.json();
+  if (!Array.isArray(arr)) return [];
+  const rows: GameRow[] = arr.map((g: any) => ({
+    id: String(g?.GameID ?? g?.GameKey ?? `${g?.HomeTeam}-${g?.AwayTeam}-${g?.Date}`),
+    start: g?.Date ?? g?.DateTime ?? new Date().toISOString(),
+    league: "NFL",
+    home: { short: g?.HomeTeam ?? "HOME", name: g?.HomeTeam ?? "Home" },
+    away: { short: g?.AwayTeam ?? "AWAY", name: g?.AwayTeam ?? "Away" },
+  }));
+  rows.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+  return rows;
+}
+
+async function fetchESPN(league: Exclude<LeagueKey,"NFL">, dayISO: string): Promise<GameRow[]> {
+  const map: Record<Exclude<LeagueKey,"NFL">, string> = {
+    NBA: "nba", MLB: "mlb", NHL: "nhl", WNBA: "wnba",
+  };
+  const sport = map[league];
+  const yyyymmdd = dayISO.replace(/-/g, "");
+  const url = `https://site.api.espn.com/apis/v2/sports/${sport}/${sport}/scoreboard?dates=${yyyymmdd}`;
+  const r = await fetch(url);
+  if (!r.ok) return [];
+  const json = await r.json();
+  const events = Array.isArray(json?.events) ? json.events : [];
+  const rows: GameRow[] = [];
+  for (const ev of events) {
+    const c = ev?.competitions?.[0]; if (!c) continue;
+    const start = c?.date || ev?.date || new Date().toISOString();
+    const home = c?.competitors?.find((t: any) => t?.homeAway === "home");
+    const away = c?.competitors?.find((t: any) => t?.homeAway === "away");
+    rows.push({
+      id: String(ev?.id ?? c?.id ?? `${sport}-${start}`),
+      start,
+      league,
+      home: { short: home?.team?.abbreviation || home?.team?.shortDisplayName || "HOME", name: home?.team?.displayName || "Home" },
+      away: { short: away?.team?.abbreviation || away?.team?.shortDisplayName || "AWAY", name: away?.team?.displayName || "Away" },
+    });
+  }
+  rows.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+  return rows;
+}
+
+async function fetchAllLeagues(dayISO: string): Promise<GameRow[]> {
+  const [nfl, nba, mlb, nhl, wnba] = await Promise.all([
+    fetchNFL_SDIO(dayISO),
+    fetchESPN("NBA", dayISO),
+    fetchESPN("MLB", dayISO),
+    fetchESPN("NHL", dayISO),
+    fetchESPN("WNBA", dayISO),
+  ]);
+  return [...nfl, ...nba, ...mlb, ...nhl, ...wnba];
+}
+
+async function earliestKickMillis(dayISO: string): Promise<number | null> {
+  try {
+    const rows = await fetchAllLeagues(dayISO);
+    if (!rows.length) return null;
+    const ms = rows
+      .map(r => new Date(r.start).getTime())
+      .filter(n => Number.isFinite(n))
+      .sort((a, b) => a - b)[0];
+    return Number.isFinite(ms) ? ms : null;
+  } catch {
+    return null;
+  }
+}
+
+/* =========================================================
+   UI
+========================================================= */
 const GOLD = "#FFD700";
 const PURPLE = "#613DC1";
 const DARK = "#1a1a1a";
 
-/** Planet labels by rank (cheapest→priciest) within the same week (day_date) */
 const PLANET_BY_RANK = ["Tournament of Mars", "Tournament of Jupiter", "Tournament of Saturn"];
-/** Fallback if we don’t have all three */
 const FEE_TO_PLANET: Record<string, string> = {
   "20": PLANET_BY_RANK[0],
   "50": PLANET_BY_RANK[1],
   "100": PLANET_BY_RANK[2],
 };
-
 const PROMO_CODES: Record<string, number> = { LUXE10: 10, VIP20: 20, BETA30: 30 };
-
-const SDIO_KEY = (Constants?.expoConfig?.extra as any)?.SPORTSDATAIO_KEY as string | undefined;
-const SPORTSDB_KEY = (Constants?.expoConfig?.extra as any)?.SPORTSDB_KEY as string | undefined;
 
 const fmtMoney = (n: any) => `$${Number(n || 0).toFixed(2)}`;
 const timeUntil = (ms: number) => {
@@ -41,58 +134,6 @@ const timeUntil = (ms: number) => {
   return `${mm}m`;
 };
 
-// ---- helpers for slate preview (NFL first) ----
-const toSDioDate = (d: string | Date) => {
-  const dt = new Date(d);
-  const M = dt.toLocaleString("en-US", { month: "short" }).toUpperCase();
-  const DD = String(dt.getDate()).padStart(2, "0");
-  return `${dt.getFullYear()}-${M}-${DD}`;
-};
-
-type GameRow = {
-  id: string;
-  start: string;
-  home: { key: string; name: string; short: string };
-  away: { key: string; name: string; short: string };
-};
-
-async function fetchNFLSlate(dayISO: string): Promise<GameRow[]> {
-  // 1) SportsDataIO NFL
-  if (SDIO_KEY) {
-    try {
-      const url = `https://api.sportsdata.io/v3/nfl/scores/json/GamesByDate/${toSDioDate(dayISO)}?key=${SDIO_KEY}`;
-      const r = await fetch(url);
-      if (r.ok) {
-        const rows = await r.json();
-        if (Array.isArray(rows)) {
-          return rows.map((g: any) => ({
-            id: String(g?.GameKey ?? g?.GameID ?? `${g?.HomeTeam}-${g?.AwayTeam}-${g?.Date}`),
-            start: g?.Date ?? g?.DateTime ?? new Date().toISOString(),
-            home: { key: g?.HomeTeam, name: g?.HomeTeam ?? "Home", short: g?.HomeTeam ?? "H" },
-            away: { key: g?.AwayTeam, name: g?.AwayTeam ?? "Away", short: g?.AwayTeam ?? "A" },
-          }));
-        }
-      }
-    } catch {}
-  }
-  // 2) Fallback: TheSportsDB NFL
-  try {
-    const ymd = new Date(dayISO).toISOString().slice(0, 10);
-    const url = `https://www.thesportsdb.com/api/v1/json/${SPORTSDB_KEY || "3"}/eventsday.php?d=${ymd}&l=NFL`;
-    const r = await fetch(url);
-    const js = await r.json();
-    const arr = js?.events || [];
-    return (arr as any[]).map((g) => ({
-      id: String(g?.idEvent),
-      start: g?.dateEvent ? `${g.dateEvent}T${g.strTime || "00:00:00"}Z` : new Date().toISOString(),
-      home: { key: g?.idHomeTeam, name: g?.strHomeTeam, short: g?.strHomeTeam?.slice(0, 3)?.toUpperCase() || "H" },
-      away: { key: g?.idAwayTeam, name: g?.strAwayTeam, short: g?.strAwayTeam?.slice(0, 3)?.toUpperCase() || "A" },
-    }));
-  } catch {}
-  return [];
-}
-
-/** Build planet name map by week (group by day_date, sort by entry_fee asc). */
 function makePlanetNameMap(list: any[]): Map<number, string> {
   const group = new Map<string, any[]>();
   for (const t of list) {
@@ -133,12 +174,12 @@ export default function TournamentsTab() {
   // Joined confirmation
   const [joinedConfirmOpen, setJoinedConfirmOpen] = useState(false);
 
-  // Status modal (DECLARE ONCE)
+  // Status modal
   const [statusOpen, setStatusOpen] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusData, setStatusData] = useState<any>(null);
 
-  // SLATE PREVIEW modal
+  // SLATE PREVIEW modal (all leagues)
   const [slateOpen, setSlateOpen] = useState(false);
   const [slateBusy, setSlateBusy] = useState(false);
   const [slateRows, setSlateRows] = useState<GameRow[]>([]);
@@ -151,6 +192,9 @@ export default function TournamentsTab() {
       if (showSpinner) setLoading(true);
       setRefreshing(true);
 
+      const nowIso = new Date().toISOString();
+
+      // Pull what you consider "available" to users.
       const { data: list, error: tErr } = await supabase
         .from("tournaments")
         .select("*")
@@ -158,12 +202,13 @@ export default function TournamentsTab() {
       if (tErr) throw tErr;
 
       const ids = (list || []).map((t: any) => t.id);
+
+      // Count joined entrants
       const counts: Record<string, number> = {};
       if (ids.length) {
         const { data: entrantRows } = await supabase
-          .from("entrants")
-          .select("tournament_id")
-          .in("tournament_id", ids);
+          .from("entrants") // if your table is 'entries', change here
+          .select("tournament_id");
         (entrantRows || []).forEach((r: any) => {
           counts[r.tournament_id] = (counts[r.tournament_id] || 0) + 1;
         });
@@ -173,7 +218,7 @@ export default function TournamentsTab() {
       const pmap = makePlanetNameMap(merged);
 
       const { data: mine, error: mErr } = await supabase
-        .from("entrants")
+        .from("entrants") // if using 'entries', change here too
         .select("tournament_id");
       if (mErr) throw mErr;
 
@@ -191,14 +236,14 @@ export default function TournamentsTab() {
   useEffect(() => { loadTournaments(true); }, []);
   useEffect(() => {
     tickRef.current && clearInterval(tickRef.current);
+    // refresh countdowns every 30s
     tickRef.current = setInterval(() => setTournaments((t) => [...t]), 30000);
     return () => clearInterval(tickRef.current);
   }, []);
 
   const planetTitle = (t: any) =>
-    planetById.get(t.id) ||
-    FEE_TO_PLANET[String(Number(t.entry_fee || 0))] ||
-    `Tournament $${Number(t.entry_fee || 0)}`;
+    t?.planet_name || planetById.get(t.id) ||
+    (FEE_TO_PLANET[String(Number(t.entry_fee || 0))] || `Tournament $${Number(t.entry_fee || 0)}`);
 
   const openJoin = (t: any) => {
     const fee = Number(t.entry_fee || t.entry_amount || 0);
@@ -211,7 +256,6 @@ export default function TournamentsTab() {
   const discountPct = useMemo(() => (appliedPromo ? PROMO_CODES[appliedPromo] || 0 : 0), [appliedPromo]);
   const discounted = useMemo(() => Math.max(0, entryFee - entryFee * (discountPct / 100)), [entryFee, discountPct]);
 
-  // ---- join with robust parse ----
   const confirmJoin = async () => {
     try {
       setBusyJoin(true);
@@ -226,8 +270,7 @@ export default function TournamentsTab() {
         });
         if (r.error) throw r.error;
         return typeof r.data === "string" ? JSON.parse(r.data as any) : (r.data as any);
-      };
-
+        };
       let resp: any = null;
       try { resp = await invokeJoin("join_tournament"); }
       catch { resp = await invokeJoin("join-tournament"); }
@@ -254,21 +297,31 @@ export default function TournamentsTab() {
       const fee = Number(t.entry_fee || t.entry_amount || 0);
       const prizePool = entrants != null ? entrants * fee : null;
 
+      const dayISO =
+        t?.day_date ||
+        (t?.start_date ? new Date(t.start_date).toISOString().slice(0, 10) : null) ||
+        (t?.join_open_at ? new Date(t.join_open_at).toISOString().slice(0, 10) : null) ||
+        new Date().toISOString().slice(0, 10);
+
+      const derivedFirstKick = await earliestKickMillis(dayISO);
+      const derivedClose = derivedFirstKick ? derivedFirstKick - 30 * 60 * 1000 : null;
+
       const openMs  = t.join_open_at  ? new Date(t.join_open_at).getTime()  : null;
-      const closeMs = t.join_close_at ? new Date(t.join_close_at).getTime() : null;
+      const closeMs = t.join_close_at ? new Date(t.join_close_at).getTime() : (derivedClose ?? null);
       const now = Date.now();
-      const isOpen = t.status === "open" && (openMs == null || now >= openMs) && (closeMs == null || now < closeMs);
-      const status = isOpen ? "Open" : (openMs && now < openMs) ? "Opens Soon" : "Locked";
+
+      // IMPORTANT: ignore DB t.status for display (prevents random "Finished")
+      const isJoinOpen = (openMs == null || now >= openMs) && (closeMs == null || now < closeMs);
+      const status = isJoinOpen ? "Open" : (openMs && now < openMs) ? "Opens Soon" : (derivedFirstKick ? "Locked" : "Off day");
 
       setStatusData({
         id: t.id,
         name: planetTitle(t),
-        sport: "ANY",
         entryFee: fee,
         status,
         opensAt: t.join_open_at,
         opensIn: openMs ? timeUntil(openMs) : "—",
-        closesAt: t.join_close_at,
+        closesAt: closeMs ? new Date(closeMs).toISOString() : null,
         closesIn: closeMs ? timeUntil(closeMs) : "—",
         entrants,
         prizePool,
@@ -280,7 +333,6 @@ export default function TournamentsTab() {
     }
   };
 
-  // --- PREVIEW GAMES (NFL) ---
   const previewGames = async (t: any) => {
     setSlateOpen(true);
     setSlateBusy(true);
@@ -294,9 +346,9 @@ export default function TournamentsTab() {
       new Date().toISOString().slice(0, 10);
 
     try {
-      const rows = await fetchNFLSlate(dayISO);
+      const rows = await fetchAllLeagues(dayISO);
       if (rows.length === 0) {
-        setSlateMsg("No games found for this date (NFL). If you just created the tournament, try another day or check provider limits.");
+        setSlateMsg("No games found on this date.");
       } else {
         setSlateRows(rows);
       }
@@ -363,63 +415,21 @@ export default function TournamentsTab() {
         </View>
 
         {/* Cards */}
-        {tournaments?.length ? tournaments.map((t) => {
-          const fee = Number((t as any).entry_fee || (t as any).entry_amount || 0);
-          const title = planetTitle(t);
-          const openMs  = t.join_open_at  ? new Date(t.join_open_at).getTime()  : null;
-          const closeMs = t.join_close_at ? new Date(t.join_close_at).getTime() : null;
-          const now = Date.now();
-          const isOpen =
-            t.status === "open" &&
-            (openMs == null || now >= openMs) &&
-            (closeMs == null || now < closeMs);
-          const alreadyIn = joinedIds.has(t.id);
-          const joinDisabled = !isOpen || alreadyIn;
-
-          let statusLine = "—";
-          if (isOpen && closeMs) statusLine = `Closes in ${timeUntil(closeMs)}`;
-          else if (!isOpen && openMs && now < openMs) statusLine = `Opens in ${timeUntil(openMs)}`;
-          else statusLine = "Locked";
-
-          const dayISO =
-            t?.day_date ||
-            (t?.start_date ? new Date(t.start_date).toISOString().slice(0, 10) : null) ||
-            (t?.join_open_at ? new Date(t.join_open_at).toISOString().slice(0, 10) : null) ||
-            new Date().toISOString().slice(0, 10);
-
-          return (
-            <View key={t.id} style={styles.card}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.cardTitle} numberOfLines={1}>{title} • ANY</Text>
-                <View style={{ flexDirection: "row", alignItems: "center" }}>
-                  <TouchableOpacity onPress={() => previewGames(t)} style={styles.iconBtnSmall}>
-                    <Ionicons name="eye-outline" size={RFValue(18)} color={GOLD} />
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => openStatus(t)} style={styles.iconBtnSmall}>
-                    <Ionicons name="stats-chart" size={RFValue(18)} color={GOLD} />
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              <Text style={styles.sub} numberOfLines={2}>
-                Entry: <Text style={{ color: GOLD }}>{fmtMoney(fee)}</Text>{" "}
-                · Join Window: {t.join_open_at ? new Date(t.join_open_at).toLocaleString() : "—"} → {t.join_close_at ? new Date(t.join_close_at).toLocaleString() : "—"}
-              </Text>
-              <Text style={styles.sub} numberOfLines={1}>
-                Day: <Text style={{ color: "#fff" }}>{dayISO}</Text>
-              </Text>
-              <Text style={styles.countdown} numberOfLines={1}>{statusLine}</Text>
-
-              <View style={styles.actionsRow}>
-                <TouchableOpacity disabled={joinDisabled} onPress={() => openJoin(t)} style={[styles.joinBtn, joinDisabled && { backgroundColor: "#555" }]}>
-                  <Text style={styles.joinTxt}>{alreadyIn ? "Joined ✓" : isOpen ? "Join" : "Join Closed"}</Text>
-                </TouchableOpacity>
-              </View>
-
-              <Text style={styles.houseNote} numberOfLines={2}>* 25% to house · last person standing splits the pot.</Text>
-            </View>
-          );
-        }) : (
+        {tournaments?.length ? (
+          <View>
+            {tournaments.map((t) => (
+              <TournamentCard
+                key={t.id}
+                t={t}
+                planetTitle={planetTitle}
+                joined={joinedIds.has(t.id)}
+                onOpenJoin={() => openJoin(t)}
+                onOpenStatus={() => openStatus(t)}
+                onPreview={() => previewGames(t)}
+              />
+            ))}
+          </View>
+        ) : (
           <Text style={styles.empty}>No open tournaments right now.</Text>
         )}
       </ScrollView>
@@ -428,7 +438,7 @@ export default function TournamentsTab() {
       <Modal visible={joinOpen} animationType="slide" transparent onRequestClose={() => setJoinOpen(false)}>
         <ScrollView contentContainerStyle={styles.overlay} keyboardShouldPersistTaps="handled">
           <View style={styles.modal}>
-            <Text style={styles.modalTitle}>Join {selectedT?.displayName || ""} (ANY)</Text>
+            <Text style={styles.modalTitle}>Join {selectedT?.displayName || ""}</Text>
 
             <Row label="Entry Fee" value={fmtMoney(entryFee)} />
             <Row
@@ -464,11 +474,7 @@ export default function TournamentsTab() {
               }
             />
 
-            <Row
-              label="Amount to Withdraw"
-              valueElStyle={{ color: GOLD }}
-              value={fmtMoney(discounted)}
-            />
+            <Row label="Amount to Withdraw" valueElStyle={{ color: GOLD }} value={fmtMoney(discounted)} />
             <Text style={styles.disclaimer}>This will be withdrawn from your funds (payments wiring later).</Text>
 
             <TouchableOpacity disabled={busyJoin} onPress={confirmJoin} style={[styles.confirmBtn, busyJoin && { opacity: 0.7 }]}>
@@ -478,7 +484,7 @@ export default function TournamentsTab() {
               <Text style={styles.cancelTxt}>Cancel</Text>
             </TouchableOpacity>
 
-            <Text style={styles.lockNote}>Closes 30m before first game (daily picks).</Text>
+            <Text style={styles.lockNote}>Closes 30m before first game (weekly picks).</Text>
           </View>
         </ScrollView>
       </Modal>
@@ -491,11 +497,8 @@ export default function TournamentsTab() {
             <Text style={styles.confirmBody}>
               Find it under <Text style={{ color: GOLD, fontWeight: "800" }}>Current Entries</Text> to make picks.
             </Text>
-            <TouchableOpacity onPress={() => { setJoinedConfirmOpen(false); router.push("/entries"); }} style={styles.gotoBtn}>
-              <Text style={styles.gotoTxt}>Go to Current Entries</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setJoinedConfirmOpen(false)} style={styles.closeSmall}>
-              <Text style={styles.closeSmallTxt}>Close</Text>
+            <TouchableOpacity onPress={() => { setJoinedConfirmOpen(false); }} style={styles.gotoBtn}>
+              <Text style={styles.gotoTxt}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -509,7 +512,7 @@ export default function TournamentsTab() {
               <ActivityIndicator color={GOLD} />
             ) : (
               <>
-                <Text style={styles.statusTitle}>{statusData.name} • ANY</Text>
+                <Text style={styles.statusTitle}>{statusData.name}</Text>
                 <Row label="Status" value={statusData.status} />
                 <Row label="Entry Fee" value={fmtMoney(statusData.entryFee)} />
                 <Row label="Join Opens" value={`${statusData.opensAt ? new Date(statusData.opensAt).toLocaleString() : "—"} (${statusData.opensIn})`} />
@@ -528,23 +531,23 @@ export default function TournamentsTab() {
         </View>
       </Modal>
 
-      {/* SLATE PREVIEW MODAL (NFL) */}
+      {/* SLATE PREVIEW MODAL — ALL LEAGUES */}
       <Modal visible={slateOpen} animationType="slide" transparent onRequestClose={() => setSlateOpen(false)}>
         <View style={styles.overlay}>
           <View style={styles.slateCard}>
-            <Text style={styles.slateTitle}>Preview Games (NFL)</Text>
+            <Text style={styles.slateTitle}>Preview Games (All Leagues)</Text>
             {slateBusy ? (
               <ActivityIndicator color={GOLD} />
             ) : slateRows.length ? (
               <FlatList
                 data={slateRows}
-                keyExtractor={(g) => g.id}
-                style={{ maxHeight: RFValue(340) }}
+                keyExtractor={(g) => `${g.league}-${g.id}`}
+                style={{ maxHeight: RFValue(360) }}
                 ItemSeparatorComponent={() => <View style={{ height: RFValue(8) }} />}
                 renderItem={({ item }) => (
                   <View style={styles.slateRow}>
                     <Text style={styles.slateTime} numberOfLines={1}>
-                      {new Date(item.start).toLocaleString()}
+                      {item.league} • {new Date(item.start).toLocaleString()}
                     </Text>
                     <Text style={styles.slateTeams} numberOfLines={1} ellipsizeMode="tail">
                       {item.away.short} {item.away.name} @ {item.home.short} {item.home.name}
@@ -566,6 +569,94 @@ export default function TournamentsTab() {
     </ImageBackground>
   );
 }
+
+/* ------------ Child components ------------ */
+
+type CardProps = {
+  t: any;
+  planetTitle: (t: any) => string;
+  joined: boolean;
+  onOpenJoin: () => void;
+  onOpenStatus: () => void;
+  onPreview: () => void;
+};
+
+const TournamentCard = memo(function TournamentCard({
+  t, planetTitle, joined, onOpenJoin, onOpenStatus, onPreview,
+}: CardProps) {
+  const [statusLine, setStatusLine] = useState<string>("—");
+  const [joinDisabled, setJoinDisabled] = useState<boolean>(true);
+
+  const fee = Number(t?.entry_fee || t?.entry_amount || 0);
+  const title = planetTitle(t);
+
+  const dayISO =
+    t?.day_date ||
+    (t?.start_date ? new Date(t.start_date).toISOString().slice(0, 10) : null) ||
+    (t?.join_open_at ? new Date(t.join_open_at).toISOString().slice(0, 10) : null) ||
+    new Date().toISOString().slice(0, 10);
+
+  useEffect(() => {
+    let on = true;
+    (async () => {
+      const openMs  = t.join_open_at  ? new Date(t.join_open_at).getTime()  : null;
+      let closeMs = t.join_close_at ? new Date(t.join_close_at).getTime() : null;
+
+      if (!closeMs) {
+        const firstKick = await earliestKickMillis(dayISO);
+        if (firstKick) closeMs = firstKick - 30 * 60 * 1000;
+      }
+      const now = Date.now();
+
+      // *** Ignore DB t.status here to avoid random "Finished" ***
+      const isOpen = (openMs == null || now >= openMs) && (closeMs == null || now < closeMs);
+
+      let line = "Locked";
+      if (isOpen && closeMs) line = `Closes in ${timeUntil(closeMs)}`;
+      else if (!isOpen && openMs && now < openMs) line = `Opens in ${timeUntil(openMs)}`;
+      else if (!closeMs) line = "Off day";
+
+      if (on) {
+        setStatusLine(line);
+        setJoinDisabled(!isOpen || joined);
+      }
+    })();
+    return () => { on = false; };
+  }, [t.id, t.join_open_at, t.join_close_at, joined, dayISO]);
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.cardHeader}>
+        <Text style={styles.cardTitle} numberOfLines={1}>{title}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <TouchableOpacity onPress={onPreview} style={styles.iconBtnSmall}>
+            <Ionicons name="eye-outline" size={RFValue(18)} color={GOLD} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onOpenStatus} style={styles.iconBtnSmall}>
+            <Ionicons name="stats-chart" size={RFValue(18)} color={GOLD} />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <Text style={styles.sub} numberOfLines={2}>
+        Entry: <Text style={{ color: GOLD }}>{fmtMoney(fee)}</Text>{" "}
+        · Join Window: {t.join_open_at ? new Date(t.join_open_at).toLocaleString() : "—"} → {t.join_close_at ? new Date(t.join_close_at).toLocaleString() : "—"}
+      </Text>
+      <Text style={styles.sub} numberOfLines={1}>
+        Day: <Text style={{ color: "#fff" }}>{dayISO}</Text>
+      </Text>
+      <Text style={styles.countdown} numberOfLines={1}>{statusLine}</Text>
+
+      <View style={styles.actionsRow}>
+        <TouchableOpacity disabled={joinDisabled} onPress={onOpenJoin} style={[styles.joinBtn, (joinDisabled || joined) && { backgroundColor: "#555" }]}>
+          <Text style={styles.joinTxt}>{joined ? "Joined ✓" : !joinDisabled ? "Join" : "Join Closed"}</Text>
+        </TouchableOpacity>
+      </View>
+
+      <Text style={styles.houseNote} numberOfLines={2}>* 25% to house · last person standing splits the pot.</Text>
+    </View>
+  );
+});
 
 function Row({ label, value, valueNode, valueElStyle }: any) {
   return (
@@ -632,22 +723,15 @@ const styles = StyleSheet.create({
   confirmBody: { color: "#ddd", fontSize: RFValue(13), textAlign: "center", lineHeight: RFValue(18) },
   gotoBtn: { backgroundColor: PURPLE, paddingVertical: RFValue(10), borderRadius: RFValue(12), marginTop: RFValue(10), alignItems: "center" },
   gotoTxt: { color: "#fff", fontWeight: "900" },
-  closeSmall: { padding: RFValue(10), alignItems: "center", marginTop: RFValue(6) },
-  closeSmallTxt: { color: GOLD, fontWeight: "800" },
 
   statusCard: { width: "92%", backgroundColor: DARK, borderRadius: RFValue(16), padding: RFValue(16), borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
   statusTitle: { color: "#fff", fontSize: RFValue(18), fontWeight: "900", textAlign: "center", marginBottom: RFValue(10) },
   hr: { height: 1, backgroundColor: "rgba(255,255,255,0.08)", marginVertical: RFValue(8) },
   closeBig: { backgroundColor: PURPLE, paddingVertical: RFValue(10), borderRadius: RFValue(12), marginTop: RFValue(12), alignItems: "center" },
-  closeBigTxt: { color: "#fff", fontWeight: "900" },
 
   slateCard: { width: "92%", backgroundColor: DARK, borderRadius: RFValue(16), padding: RFValue(16), borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
   slateTitle: { color: "#fff", fontSize: RFValue(18), fontWeight: "900", textAlign: "center", marginBottom: RFValue(8) },
-  slateRow: {
-    backgroundColor: "rgba(0,0,0,0.5)",
-    borderWidth: 1, borderColor: "rgba(255,255,255,0.08)",
-    borderRadius: RFValue(10), padding: RFValue(10)
-  },
+  slateRow: { backgroundColor: "rgba(0,0,0,0.5)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", borderRadius: RFValue(10), padding: RFValue(10) },
   slateTime: { color: GOLD, fontWeight: "800", fontSize: RFValue(12), marginBottom: RFValue(4) },
   slateTeams: { color: "#fff", fontWeight: "700", fontSize: RFValue(13) },
   slateEmpty: { color: "#ddd", textAlign: "center", marginVertical: RFValue(10) },
