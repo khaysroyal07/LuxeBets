@@ -28,6 +28,7 @@ export type GameRow = {
   away: { short: string; name: string };
 };
 
+// SDIO date format: 2025-SEP-10
 const toSDioDate = (d: string | Date) => {
   const dt = new Date(d);
   const M = dt.toLocaleString("en-US", { month: "short" }).toUpperCase();
@@ -55,9 +56,7 @@ async function fetchNFL_SDIO(dayISO: string): Promise<GameRow[]> {
 }
 
 async function fetchESPN(league: Exclude<LeagueKey,"NFL">, dayISO: string): Promise<GameRow[]> {
-  const map: Record<Exclude<LeagueKey,"NFL">, string> = {
-    NBA: "nba", MLB: "mlb", NHL: "nhl", WNBA: "wnba",
-  };
+  const map: Record<Exclude<LeagueKey,"NFL">, string> = { NBA: "nba", MLB: "mlb", NHL: "nhl", WNBA: "wnba" };
   const sport = map[league];
   const yyyymmdd = dayISO.replace(/-/g, "");
   const url = `https://site.api.espn.com/apis/v2/sports/${sport}/${sport}/scoreboard?dates=${yyyymmdd}`;
@@ -109,7 +108,7 @@ async function earliestKickMillis(dayISO: string): Promise<number | null> {
 }
 
 /* =========================================================
-   UI
+   UI helpers
 ========================================================= */
 const GOLD = "#FFD700";
 const PURPLE = "#613DC1";
@@ -154,6 +153,9 @@ function makePlanetNameMap(list: any[]): Map<number, string> {
   return map;
 }
 
+/* =========================================================
+   Screen
+========================================================= */
 export default function TournamentsTab() {
   const router = useRouter();
 
@@ -192,9 +194,7 @@ export default function TournamentsTab() {
       if (showSpinner) setLoading(true);
       setRefreshing(true);
 
-      const nowIso = new Date().toISOString();
-
-      // Pull what you consider "available" to users.
+      // Pull open/visible tournaments (add .eq('is_archived', false) if you use that flag)
       const { data: list, error: tErr } = await supabase
         .from("tournaments")
         .select("*")
@@ -203,12 +203,13 @@ export default function TournamentsTab() {
 
       const ids = (list || []).map((t: any) => t.id);
 
-      // Count joined entrants
+      // Counts from entries (your actual join table)
       const counts: Record<string, number> = {};
       if (ids.length) {
-        const { data: entrantRows } = await supabase
-          .from("entrants") // if your table is 'entries', change here
+        const { data: entrantRows, error: eErr } = await supabase
+          .from("entries")
           .select("tournament_id");
+        if (eErr) throw eErr;
         (entrantRows || []).forEach((r: any) => {
           counts[r.tournament_id] = (counts[r.tournament_id] || 0) + 1;
         });
@@ -217,8 +218,9 @@ export default function TournamentsTab() {
 
       const pmap = makePlanetNameMap(merged);
 
+      // Which tournaments have I joined?
       const { data: mine, error: mErr } = await supabase
-        .from("entrants") // if using 'entries', change here too
+        .from("entries")
         .select("tournament_id");
       if (mErr) throw mErr;
 
@@ -259,10 +261,11 @@ export default function TournamentsTab() {
   const confirmJoin = async () => {
     try {
       setBusyJoin(true);
-      const { data: { session} } = await supabase.auth.getSession();
+      const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token;
       if (!token) return Alert.alert("Sign in required", "Please log in to join tournaments.");
 
+      // Edge function (Option A) — no ON CONFLICT anywhere
       const invokeJoin = async (name: string) => {
         const r = await supabase.functions.invoke(name, {
           body: { tournament_id: selectedT.id, debug: true },
@@ -270,7 +273,7 @@ export default function TournamentsTab() {
         });
         if (r.error) throw r.error;
         return typeof r.data === "string" ? JSON.parse(r.data as any) : (r.data as any);
-        };
+      };
       let resp: any = null;
       try { resp = await invokeJoin("join_tournament"); }
       catch { resp = await invokeJoin("join-tournament"); }
@@ -310,7 +313,7 @@ export default function TournamentsTab() {
       const closeMs = t.join_close_at ? new Date(t.join_close_at).getTime() : (derivedClose ?? null);
       const now = Date.now();
 
-      // IMPORTANT: ignore DB t.status for display (prevents random "Finished")
+      // Ignore DB t.status for display to avoid stale values
       const isJoinOpen = (openMs == null || now >= openMs) && (closeMs == null || now < closeMs);
       const status = isJoinOpen ? "Open" : (openMs && now < openMs) ? "Opens Soon" : (derivedFirstKick ? "Locked" : "Off day");
 
@@ -347,11 +350,8 @@ export default function TournamentsTab() {
 
     try {
       const rows = await fetchAllLeagues(dayISO);
-      if (rows.length === 0) {
-        setSlateMsg("No games found on this date.");
-      } else {
-        setSlateRows(rows);
-      }
+      if (rows.length === 0) setSlateMsg("No games found on this date.");
+      else setSlateRows(rows);
     } catch (e: any) {
       setSlateMsg(e?.message || "Could not load games.");
     } finally {
@@ -608,7 +608,7 @@ const TournamentCard = memo(function TournamentCard({
       }
       const now = Date.now();
 
-      // *** Ignore DB t.status here to avoid random "Finished" ***
+      // Ignore DB t.status here to avoid random "Finished"
       const isOpen = (openMs == null || now >= openMs) && (closeMs == null || now < closeMs);
 
       let line = "Locked";
@@ -667,7 +667,7 @@ function Row({ label, value, valueNode, valueElStyle }: any) {
   );
 }
 
-/* ---------- Styles ---------- */
+/* ---------- Styles (kept your style) ---------- */
 const styles = StyleSheet.create({
   background: { flex: 1 },
   loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
@@ -728,6 +728,7 @@ const styles = StyleSheet.create({
   statusTitle: { color: "#fff", fontSize: RFValue(18), fontWeight: "900", textAlign: "center", marginBottom: RFValue(10) },
   hr: { height: 1, backgroundColor: "rgba(255,255,255,0.08)", marginVertical: RFValue(8) },
   closeBig: { backgroundColor: PURPLE, paddingVertical: RFValue(10), borderRadius: RFValue(12), marginTop: RFValue(12), alignItems: "center" },
+  closeBigTxt: { color: "#fff", fontWeight: "800" },
 
   slateCard: { width: "92%", backgroundColor: DARK, borderRadius: RFValue(16), padding: RFValue(16), borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
   slateTitle: { color: "#fff", fontSize: RFValue(18), fontWeight: "900", textAlign: "center", marginBottom: RFValue(8) },

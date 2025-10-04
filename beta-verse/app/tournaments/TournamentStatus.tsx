@@ -1,36 +1,44 @@
 // app/tournaments/TournamentStatus.js
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import {
   View, Text, StyleSheet, ImageBackground, ActivityIndicator,
-  TouchableOpacity, FlatList
+  TouchableOpacity, FlatList, Animated, Easing, Dimensions
 } from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
 import { useRouter } from "expo-router";
 import { supabase } from "@/lib/supabase";
 import Constants from "expo-constants";
+import { LinearGradient } from "expo-linear-gradient";
 
 const PURPLE = "#613DC1";
 const GOLD   = "#FFD700";
 
-/* SportsDataIO (to show pick outcome) */
-const SPORT_CFG = {
-  nfl:  { base: "https://api.sportsdata.io/v3/nfl/scores/json",  gamesByDate: "ScoresByDate" },
-  mlb:  { base: "https://api.sportsdata.io/v3/mlb/scores/json",  gamesByDate: "GamesByDate" },
-  nba:  { base: "https://api.sportsdata.io/v3/nba/scores/json",  gamesByDate: "GamesByDate" },
-  nhl:  { base: "https://api.sportsdata.io/v3/nhl/scores/json",  gamesByDate: "GamesByDate" },
-  wnba: { base: "https://api.sportsdata.io/v3/wnba/scores/json", gamesByDate: "GamesByDate" },
-};
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
+
+/* ---------------- Keys / Config ---------------- */
 const SDIO_KEY =
   process.env.EXPO_PUBLIC_SPORTSDATAIO_KEY ||
-  Constants?.expoConfig?.extra?.SPORTSDATAIO_KEY || "";
+  (Constants?.expoConfig?.extra?.SPORTSDATAIO_KEY) || "";
+
+/* ESPN (free) sport slugs */
+const ESPN = { NBA: "nba", MLB: "mlb", NHL: "nhl", WNBA: "wnba" };
+
+/* SDIO for NFL (optional by key) */
+const SDIO = {
+  nfl:  { base: "https://api.sportsdata.io/v3/nfl/scores/json",  byDate: "ScoresByDate" },
+  mlb:  { base: "https://api.sportsdata.io/v3/mlb/scores/json",  byDate: "GamesByDate" },
+  nba:  { base: "https://api.sportsdata.io/v3/nba/scores/json",  byDate: "GamesByDate" },
+  nhl:  { base: "https://api.sportsdata.io/v3/nhl/scores/json",  byDate: "GamesByDate" },
+  wnba: { base: "https://api.sportsdata.io/v3/wnba/scores/json", byDate: "GamesByDate" },
+};
 
 const MONTHS_ABBR = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
 const toSDIODate = (d) => `${d.getFullYear()}-${MONTHS_ABBR[d.getMonth()]}-${String(d.getDate()).padStart(2,"0")}`;
 
 const nameFor = (t) => t?.week_label || (t?.entry_fee ? `Tournament $${t.entry_fee}` : "Tournament");
 
-// ---- window + status helpers ----
-function ms(v) { return v ? new Date(v).getTime() : null; }
+/* ---------- status helpers (same UX) ---------- */
+const ms = (v) => (v ? new Date(v).getTime() : null);
 
 /** Returns {uiStatus, canPick, openMs, closeMs} */
 function computeUiStatus(t) {
@@ -40,38 +48,201 @@ function computeUiStatus(t) {
   const startMs = ms(t?.start_at);
   const endMs   = ms(t?.end_at);
 
-  // derive close if missing
   if (!closeMs && startMs) closeMs = startMs - 30 * 60 * 1000;
 
   const status = String(t?.status || "").toLowerCase();
 
-  // settled beats everything
   if (status === "settled" || (endMs && now >= endMs)) {
     return { uiStatus: "Settled", canPick: false, openMs, closeMs };
   }
-
-  // running if past start (even if close/open inconsistent)
   if (status === "running" || (startMs && now >= startMs && (!endMs || now < endMs))) {
     return { uiStatus: "Running", canPick: false, openMs, closeMs };
   }
-
-  // pick window logic
   if (openMs && now < openMs) {
     return { uiStatus: "Opens Soon", canPick: false, openMs, closeMs };
   }
   if (closeMs && now >= closeMs) {
     return { uiStatus: "Closed", canPick: false, openMs, closeMs };
   }
-
-  // explicit locked from server also means closed
   if (status === "locked") {
     return { uiStatus: "Closed", canPick: false, openMs, closeMs };
   }
-
-  // if we have an open time already passed, or no times at all -> treat as open
   return { uiStatus: "Open", canPick: true, openMs, closeMs };
 }
 
+/* ===================================================================
+   SCORE INDEX (caches per day):
+   - ESPN (free) for NBA/MLB/NHL/WNBA (matches your pick IDs)
+   - SDIO (NFL only; optional key)
+=================================================================== */
+const scoreCache = new Map(); // dayISO -> { [eventId]: { done, winner } }
+
+const toDayISO = (d) => {
+  const dt = new Date(d);
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;
+};
+
+async function fetchESPNDay(sportSlug, dayISO) {
+  const yyyymmdd = dayISO.replace(/-/g, "");
+  const url = `https://site.api.espn.com/apis/v2/sports/${sportSlug}/${sportSlug}/scoreboard?dates=${yyyymmdd}`;
+  const r = await fetch(url).catch(() => null);
+  if (!r || !r.ok) return [];
+  const j = await r.json().catch(() => ({}));
+  return Array.isArray(j?.events) ? j.events : [];
+}
+
+function parseESPNOutcome(ev) {
+  const c = ev?.competitions?.[0];
+  const hc = c?.competitors?.find((t) => t?.homeAway === "home");
+  const ac = c?.competitors?.find((t) => t?.homeAway === "away");
+  const hs = hc?.score != null ? Number(hc.score) : null;
+  const as = ac?.score != null ? Number(ac.score) : null;
+  const state = (ev?.status?.type?.state || "").toLowerCase(); // 'pre'|'in'|'post'
+  const done = state === "post";
+  let winner = null;
+  if (done && hs != null && as != null) {
+    winner = hs > as ? "home" : as > hs ? "away" : null;
+  }
+  return { id: String(ev?.id || c?.id), done, winner };
+}
+
+async function fetchNFL_SDIO(dayISO) {
+  if (!SDIO_KEY) return [];
+  const sdioDate = toSDIODate(new Date(dayISO));
+  const url = `${SDIO.nfl.base}/${SDIO.nfl.byDate}/${encodeURIComponent(sdioDate)}?key=${encodeURIComponent(SDIO_KEY)}`;
+  const r = await fetch(url).catch(() => null);
+  if (!r || !r.ok) return [];
+  const arr = await r.json().catch(() => []);
+  return Array.isArray(arr) ? arr : [];
+}
+
+function parseSDIOOutcome(game) {
+  const id = String(game?.GameID ?? game?.GameKey ?? `${game?.HomeTeam}-${game?.AwayTeam}-${game?.Date}`);
+  const st = String(game?.Status || "").toLowerCase();
+  const done = st.includes("final") || st.startsWith("f/");
+  const hs = game?.HomeTeamScore ?? game?.HomeScore ?? game?.HomeTeamRuns ?? game?.HomeTeamGoals ?? null;
+  const as = game?.AwayTeamScore ?? game?.AwayScore ?? game?.AwayTeamRuns ?? game?.AwayTeamGoals ?? null;
+  let winner = null;
+  if (done && hs != null && as != null) {
+    winner = hs > as ? "home" : as > hs ? "away" : null;
+  }
+  return { id, done, winner };
+}
+
+async function buildScoreIndex(dayISO) {
+  if (scoreCache.has(dayISO)) return scoreCache.get(dayISO);
+  const index = {};
+
+  const [nba, mlb, nhl, wnba] = await Promise.all([
+    fetchESPNDay(ESPN.NBA, dayISO),
+    fetchESPNDay(ESPN.MLB, dayISO),
+    fetchESPNDay(ESPN.NHL, dayISO),
+    fetchESPNDay(ESPN.WNBA, dayISO),
+  ]);
+  [...nba, ...mlb, ...nhl, ...wnba].forEach((ev) => {
+    const { id, done, winner } = parseESPNOutcome(ev);
+    if (id) index[String(id)] = { done, winner };
+  });
+
+  const nflArr = await fetchNFL_SDIO(dayISO);
+  nflArr.forEach((g) => {
+    const { id, done, winner } = parseSDIOOutcome(g);
+    if (id) index[String(id)] = { done, winner };
+  });
+
+  scoreCache.set(dayISO, index);
+  return index;
+}
+
+async function findGameOutcome(dayDate, gameId) {
+  const dayISO = toDayISO(dayDate);
+  const idx = await buildScoreIndex(dayISO);
+  return idx[String(gameId)] || null;
+}
+
+/* ======================= Animated Galaxy Bits ======================= */
+function useTwinkleStars(count = 26) {
+  const stars = useMemo(() => {
+    return new Array(count).fill(0).map((_, i) => {
+      const size = Math.random() < 0.25 ? RFValue(4) : RFValue(2);
+      return {
+        id: i,
+        x: Math.random() * SCREEN_W,
+        y: Math.random() * SCREEN_H * 0.7 + RFValue(40),
+        size,
+        anim: new Animated.Value(Math.random() * 1),
+        delay: Math.floor(Math.random() * 1800),
+        dur: 1200 + Math.floor(Math.random() * 1400),
+      };
+    });
+  }, [count]);
+
+  useEffect(() => {
+    stars.forEach((s) => {
+      const loop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(s.anim, { toValue: 0.15, duration: s.dur, delay: s.delay, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+          Animated.timing(s.anim, { toValue: 1, duration: s.dur, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        ])
+      );
+      loop.start();
+    });
+    // no cleanup needed; app unmount stops anims
+  }, [stars]);
+
+  return stars;
+}
+
+function GalaxyOverlay() {
+  const drift = useMemo(() => new Animated.Value(0), []);
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(drift, { toValue: 1, duration: 8000, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(drift, { toValue: 0, duration: 8000, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ])
+    ).start();
+  }, [drift]);
+
+  const translateY = drift.interpolate({ inputRange: [0,1], outputRange: [0, -RFValue(18)] });
+  const stars = useTwinkleStars(28);
+
+  return (
+    <View style={StyleSheet.absoluteFill} pointerEvents="none">
+      {/* soft aurora sweep */}
+      <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ translateY }] }]}>
+        <LinearGradient
+          colors={["rgba(97,61,193,0.20)", "rgba(255,215,0,0.08)", "rgba(44,7,53,0.18)"]}
+          start={{ x: 0.1, y: 0.0 }} end={{ x: 0.9, y: 1.0 }}
+          style={{ width: "120%", height: "115%", position: "absolute", top: -RFValue(60), left: -RFValue(20) }}
+        />
+      </Animated.View>
+
+      {/* twinkling points */}
+      {stars.map((s) => (
+        <Animated.View
+          key={s.id}
+          style={{
+            position: "absolute",
+            left: s.x, top: s.y,
+            width: s.size, height: s.size,
+            borderRadius: 999,
+            backgroundColor: "#fff",
+            opacity: s.anim,
+            shadowColor: "#fff",
+            shadowOpacity: 0.8,
+            shadowRadius: 3,
+            shadowOffset: { width: 0, height: 0 },
+          }}
+        />
+      ))}
+    </View>
+  );
+}
+
+/* ===================================================================
+   Screen
+=================================================================== */
 export default function TournamentStatus() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -83,7 +254,7 @@ export default function TournamentStatus() {
       try {
         setLoading(true);
 
-        // Your entrants + tournaments (latest first)
+        // your entrants + tournaments (latest first)
         const { data: entries, error } = await supabase
           .from("entrants")
           .select("id, user_id, status, joined_at, tournaments(*)")
@@ -95,36 +266,50 @@ export default function TournamentStatus() {
           const t = e.tournaments || {};
           const ui = computeUiStatus(t);
 
-          // Your pick for that tourney/day
+          // include result so manual grading shows instantly
           const { data: p } = await supabase
             .from("picks")
-            .select("game_id, selection")
+            .select("game_id, selection, result")
             .eq("tournament_id", t.id)
             .eq("user_id", e.user_id)
             .eq("day_date", t.day_date)
             .maybeSingle();
 
-          // outcome counters
+          // pillar counts
           let correct = 0, wrong = 0, pending = 0;
+
+          // banner eliminated (from entrants row)
           let eliminated = String(e.status || "").toLowerCase() === "eliminated";
 
-          if (p?.game_id) {
-            const res = await findGameForId(new Date(t.day_date), p.game_id);
-            if (res) {
-              if (res.done) {
-                if (res.winner === p.selection) { correct = 1; }
-                else if (res.winner && res.winner !== p.selection) { wrong = 1; eliminated = true; }
-                else { /* push/void; show neither */ }
-              } else {
-                pending = 1;
-              }
+          if (p) {
+            // 1) Prefer DB grading if present
+            if (p.result === "win") {
+              correct = 1;
+            } else if (p.result === "loss") {
+              wrong = 1;
+              eliminated = true; // keep consistent with DB elimination trigger / manual flip
             } else {
-              // no external data, treat unknown as pending only if canPick (i.e., pre-lock)
-              pending = ui.canPick ? 1 : 0;
+              // 2) No DB grade yet → external scoreboards
+              const outcome = p.game_id ? await findGameOutcome(new Date(t.day_date), p.game_id) : null;
+              if (outcome) {
+                if (!outcome.done) pending = 1;
+                else if (outcome.winner === p.selection) correct = 1;
+                else if (outcome.winner && outcome.winner !== p.selection) { wrong = 1; eliminated = true; }
+              } else {
+                // unknown → pending only while pick window open
+                pending = ui.canPick ? 1 : 0;
+              }
             }
           } else {
-            // no pick yet → pending only while pick window is open
+            // no pick yet → pending only while window open
             pending = ui.canPick ? 1 : 0;
+          }
+
+          // 🔒 OVERRIDE: if entrant is already eliminated, never show Pending.
+          // If nothing marked wrong/correct yet, show Wrong = 1 (explains elimination).
+          if (eliminated) {
+            if (correct === 0 && wrong === 0) wrong = 1;
+            pending = 0;
           }
 
           enriched.push({
@@ -150,14 +335,23 @@ export default function TournamentStatus() {
   }, []);
 
   const goManage = useCallback((id, canPick) => {
-    if (!canPick) return; // block navigation when locked/closed
+    if (!canPick) return; // block when locked/closed
     router.push({ pathname: "/entries/[entryId]", params: { entryId: String(id) } });
   }, [router]);
 
-  if (loading) return <View style={styles.center}><ActivityIndicator color={PURPLE} size="large" /></View>;
+  if (loading) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator color={PURPLE} size="large" />
+      </View>
+    );
+  }
 
   return (
     <ImageBackground source={require("@/assets/images/bgDash.png")} style={{ flex: 1 }} resizeMode="cover">
+      {/* animated galaxy overlay */}
+      <GalaxyOverlay />
+
       <FlatList
         contentContainerStyle={{ padding: RFValue(16), paddingTop: RFValue(44), paddingBottom: RFValue(50) }}
         data={cards}
@@ -173,6 +367,13 @@ export default function TournamentStatus() {
         }
         renderItem={({ item: c }) => (
           <View style={styles.card}>
+            {/* subtle animated border gloss */}
+            <LinearGradient
+              colors={["rgba(255,215,0,0.25)","rgba(97,61,193,0.15)","rgba(44,7,53,0.25)"]}
+              start={{x:0,y:0}} end={{x:1,y:1}}
+              style={styles.cardGradient}
+            />
+
             <Text style={styles.name} numberOfLines={1} ellipsizeMode="tail">
               {c.name} • ANY
             </Text>
@@ -236,34 +437,7 @@ export default function TournamentStatus() {
   );
 }
 
-async function findGameForId(dayDate, gameId) {
-  if (!SDIO_KEY) return null;
-  const sdioDate = toSDIODate(dayDate);
-
-  const lists = await Promise.all(
-    Object.values(SPORT_CFG).map(async (cfg) => {
-      const url = `${cfg.base}/${cfg.gamesByDate}/${encodeURIComponent(sdioDate)}?key=${encodeURIComponent(SDIO_KEY)}`;
-      const resp = await fetch(url).catch(() => null);
-      if (!resp || !resp.ok) return [];
-      const arr = await resp.json();
-      return Array.isArray(arr) ? arr : [];
-    })
-  );
-  const flat = lists.flat();
-  for (const g of flat) {
-    const id = String(g.GameID || g.GameId || g.GlobalGameID || `${g.HomeTeam}-${g.AwayTeam}-${g.DateTime || g.Day}`);
-    if (id !== String(gameId)) continue;
-    const status = String(g.Status || "").toLowerCase();
-    const done = status.includes("final") || status.startsWith("f/");
-    const hs = g.HomeTeamScore ?? g.HomeScore ?? g.HomeTeamRuns ?? g.HomeTeamGoals ?? null;
-    const as = g.AwayTeamScore ?? g.AwayScore ?? g.AwayTeamRuns ?? g.AwayTeamGoals ?? null;
-    let winner = null;
-    if (done && hs != null && as != null) winner = hs > as ? "home" : (as > hs ? "away" : null);
-    return { done, winner };
-  }
-  return null;
-}
-
+/* ---------- UI bits ---------- */
 function Pill({ color, label, value }) {
   return (
     <View style={[pillStyles.pill, { borderColor: color, backgroundColor: "rgba(255,255,255,0.05)" }]}>
@@ -287,6 +461,10 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.08)",
     borderWidth: 1,
     overflow: "hidden",
+  },
+  cardGradient: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.35,
   },
   name: { color: "#fff", fontWeight: "900", fontSize: RFValue(16), marginBottom: RFValue(4) },
   sub: { color: "#ccc", fontSize: RFValue(12), lineHeight: RFValue(16), flexWrap: "wrap" },
