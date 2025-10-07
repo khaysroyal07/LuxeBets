@@ -1,292 +1,427 @@
-// app/profile/index.js
-import React, { useEffect, useState, useMemo } from "react";
+// app/user/profile.tsx
+import React, { useEffect, useMemo, useState } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ImageBackground,
-  Image,
-  TextInput,
-  ScrollView,
-  ActivityIndicator,
-  Platform,
+  View, Text, StyleSheet, ImageBackground, TouchableOpacity, TextInput,
+  Alert, ScrollView, Image, Modal
 } from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
-import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import * as ImagePicker from "expo-image-picker";
 import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/hooks/AuthContext";
 
-const PURPLE = "#613DC1";
+const BG = require("@/assets/images/Signup.png");
 const GOLD = "#FFD700";
-const CYAN = "#00D2FF";
-const STAR_BG = require("@/assets/images/bgDash.png"); // <- your starry background
-const AVATAR_PLACEHOLDER = require("@/assets/images/avatar.png"); // add a simple circle avatar image (or use Ionicons)
+const CARD_BG = "rgba(25, 20, 55, 0.58)";
+const CARD_BORDER = "rgba(255, 215, 0, 0.35)";
+const DIV = "rgba(255,255,255,0.18)";
 
-export default function Profile() {
+type Profile = {
+  id: string;
+  username: string | null;
+  full_name: string | null;
+  email: string | null;
+  phone: string | null;
+  country: string | null;
+  state: string | null;
+  avatar_url: string | null;
+};
+
+export default function ProfileScreen() {
   const router = useRouter();
+  const { user, signOut } = useAuth();
+
   const [loading, setLoading] = useState(true);
-  const [profile, setProfile] = useState({
-    username: "TopDogBetter769",
-    full_name: "Wednesday Adams",
-    avatar_url: "",
-    wins: 2,
-    tournaments: 122,
-  });
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [edit, setEdit] = useState({ email: "", username: "", phone: "" });
+  const [uploading, setUploading] = useState(false);
 
+  const initials = useMemo(() => {
+    const n = profile?.full_name || "";
+    const parts = n.trim().split(/\s+/).slice(0, 2);
+    const init = parts.map((p) => (p[0] || "").toUpperCase()).join("");
+    return init || "BV";
+  }, [profile?.full_name]);
+
+  const load = async () => {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id,username,full_name,email,phone,country,state,avatar_url")
+        .eq("id", user?.id)
+        .maybeSingle();
+      if (error) throw error;
+      setProfile(data as Profile);
+    } catch (e: any) {
+      Alert.alert("Error", e.message ?? "Could not load profile.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { if (user?.id) load(); }, [user?.id]);
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          setLoading(false);
-          return;
-        }
-        // Pull profile + simple stats (adjust column names to your schema)
-        const { data: p, error } = await supabase
-          .from("profiles")
-          .select("username, full_name, avatar_url, wins, tournaments_count")
-          .eq("id", user.id)
-          .maybeSingle();
+    if (editOpen && profile) {
+      setEdit({
+        email: profile.email ?? "",
+        username: profile.username ?? "",
+        phone: profile.phone ?? "",
+      });
+    }
+  }, [editOpen, profile]);
 
-        if (!mounted) return;
-
-        if (error || !p) {
-          setLoading(false);
-          return;
-        }
-
-        setProfile({
-          username: p.username || "",
-          full_name: p.full_name || "",
-          avatar_url: p.avatar_url || "",
-          wins: p.wins ?? 0,
-          tournaments: p.tournaments_count ?? 0,
-        });
-        setLoading(false);
-      } catch {
-        if (mounted) setLoading(false);
+  const saveEdit = async () => {
+    try {
+      setSaving(true);
+      if (edit.email.trim() && edit.email.trim() !== (profile?.email ?? "")) {
+        const { error: aErr } = await supabase.auth.updateUser({ email: edit.email.trim() });
+        if (aErr) throw aErr;
       }
-    })();
-    return () => { mounted = false; };
-  }, []);
+      const { error: pErr } = await supabase.from("profiles").update({
+        email: edit.email.trim(),
+        username: edit.username.trim(),
+        phone: edit.phone.trim(),
+      }).eq("id", user?.id);
+      if (pErr) throw pErr;
+      setEditOpen(false);
+      await load();
+      Alert.alert("Saved", "Your profile has been updated.");
+    } catch (e: any) {
+      Alert.alert("Error", e.message ?? "Save failed.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
-  const avatarSource = useMemo(() => {
-    if (profile.avatar_url) return { uri: profile.avatar_url };
-    return AVATAR_PLACEHOLDER;
-  }, [profile.avatar_url]);
+  const chooseAvatar = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Permission needed", "Please allow photo access to set your profile picture.");
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        allowsEditing: true, aspect: [1, 1], quality: 0.9, mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      });
+      if (res.canceled || !res.assets?.length) return;
+      const asset = res.assets[0];
+      setUploading(true);
+      const fileResp = await fetch(asset.uri);
+      const blob = await fileResp.blob();
+      const ext = asset.fileName?.split(".").pop() || "jpg";
+      const path = `avatars/${user?.id}.${ext}`;
+      const { error: upErr } = await supabase.storage.from("avatars").upload(path, blob, {
+        upsert: true, contentType: blob.type || "image/jpeg",
+      });
+      if (upErr) throw upErr;
+      const { data: pub } = supabase.storage.from("avatars").getPublicUrl(path);
+      const publicUrl = pub?.publicUrl;
+      const { error: profErr } = await supabase.from("profiles").update({ avatar_url: publicUrl }).eq("id", user?.id);
+      if (profErr) throw profErr;
+      await load();
+      Alert.alert("Done", "Profile photo updated.");
+    } catch (e: any) {
+      Alert.alert("Upload failed", e.message ?? "Please try again.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // NEW: sign out + go to login
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+      router.replace("/user/login");
+    } catch (e: any) {
+      Alert.alert("Sign out failed", e.message ?? "Please try again.");
+    }
+  };
 
   return (
-    <View style={styles.container}>
-      <LinearGradient
-        colors={["#2C0735", "#14021C"]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 0, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
-      <ImageBackground source={STAR_BG} resizeMode="cover" style={StyleSheet.absoluteFill} />
-
-      <ScrollView contentContainerStyle={styles.scroll} bounces={false}>
-        {/* Header spacer */}
-        <View style={{ height: RFValue(24) }} />
-
-        {/* Avatar */}
-        <View style={styles.avatarWrap}>
-          <View style={styles.avatarOuter}>
-            <Image source={avatarSource} style={styles.avatar} />
-          </View>
-        </View>
-
-        {/* Inputs (read-only look) */}
-        <View style={styles.fieldGroup}>
-          <Text style={styles.label}>User Name</Text>
-          <View style={styles.inputWrap}>
-            <TextInput
-              editable={false}
-              value={profile.username}
-              style={styles.input}
-              placeholder="Username"
-              placeholderTextColor="rgba(255,255,255,0.6)"
-            />
-          </View>
-        </View>
-
-        <View style={styles.fieldGroup}>
-          <Text style={styles.label}>Full Name</Text>
-          <View style={styles.inputWrap}>
-            <TextInput
-              editable={false}
-              value={profile.full_name}
-              style={styles.input}
-              placeholder="Full name"
-              placeholderTextColor="rgba(255,255,255,0.6)"
-            />
-          </View>
-        </View>
-
-        {/* Stats row */}
-        <View style={styles.statsRow}>
-          {/* Wins */}
-          <View style={styles.statCard}>
-            <Ionicons name="trophy" size={RFValue(28)} color={GOLD} />
-            <Text style={styles.statNumber}>{profile.wins}</Text>
-            <Text style={styles.statLabel}>Wins</Text>
-          </View>
-
-          {/* Tournaments (pressable) */}
-          <TouchableOpacity
-            activeOpacity={0.9}
-            onPress={() => router.push("/tournaments/TournamentHistory")}
-            style={[styles.statCard, styles.statCardPressable]}
-          >
-            <Ionicons name="ribbon" size={RFValue(28)} color={CYAN} />
-            <Text style={[styles.statNumber, { color: CYAN }]}>{profile.tournaments}</Text>
-            <Text style={[styles.statLabel, { color: CYAN }]}>Tournaments</Text>
+    <ImageBackground source={BG} style={{ flex: 1 }} resizeMode="cover">
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        {/* Top bar */}
+        <View style={styles.topBar}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.9}>
+            <Ionicons name="chevron-back" size={RFValue(16)} color="#000" />
+            <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Edit button */}
-        <TouchableOpacity
-          style={styles.editBtn}
-          onPress={() => router.push("/profile/edit")}
-          activeOpacity={0.9}
-        >
-          <Text style={styles.editText}>Edit profile</Text>
+        {/* Header card */}
+        <View style={styles.headerCard}>
+          <TouchableOpacity onPress={chooseAvatar} activeOpacity={0.9} style={styles.avatarWrap}>
+            {profile?.avatar_url ? (
+              <Image source={{ uri: profile.avatar_url }} style={styles.avatar} />
+            ) : (
+              <View style={[styles.avatar, styles.avatarFallback]}>
+                <Text style={styles.avatarInitials}>{initials}</Text>
+              </View>
+            )}
+            <View style={styles.ring} />
+            <View style={styles.camBadge}>
+              <Ionicons name={uploading ? "cloud-upload-outline" : "camera-outline"} size={RFValue(12)} color="#000" />
+            </View>
+          </TouchableOpacity>
+
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.nameText} numberOfLines={1}>{profile?.full_name || "—"}</Text>
+            <Text style={styles.userText} numberOfLines={1}>@{profile?.username || "username"}</Text>
+          </View>
+
+          <TouchableOpacity onPress={() => setEditOpen(true)} style={styles.editBtn} activeOpacity={0.9}>
+            <Ionicons name="create-outline" size={RFValue(14)} color="#000" />
+            <Text style={styles.editText}>Edit</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Contact */}
+        <GlassCard title="Contact">
+          <KV label="Email" value={profile?.email ?? "—"} />
+          <KV label="Phone" value={profile?.phone ?? "—"} />
+          <Text style={styles.helperText}>Name & location are read-only. To change them, details must match your ID.</Text>
+        </GlassCard>
+
+        {/* Location */}
+        <GlassCard title="Location">
+          <View style={styles.rowSpread}>
+            <KV label="Country" value={profile?.country ?? "—"} half />
+            <View style={{ width: 12 }} />
+            <KV label="State/Region" value={profile?.state ?? "—"} half />
+          </View>
+        </GlassCard>
+
+        {/* Actions */}
+        <GlassCard title="Security & Tools" padTopSmall>
+          <RowLink label="Manage 2FA & Password" icon="shield-checkmark-outline" onPress={() => router.push("/user/security")} />
+          <RowLink label="Responsible Gambling Limits" icon="timer-outline" onPress={() => router.push("/user/responsible")} />
+          <RowLink label="Notification Settings" icon="notifications-outline" onPress={() => router.push("/user/notifications")} last />
+        </GlassCard>
+
+        {/* Sign out */}
+        <TouchableOpacity style={styles.signOut} onPress={handleSignOut} activeOpacity={0.9}>
+          <Ionicons name="exit-outline" size={RFValue(14)} color="#4B0000" />
+          <Text style={styles.signOutText}>Sign out</Text>
         </TouchableOpacity>
-
-        {/* Bottom quick-nav (optional, matches your mock’s vibe) */}
-        <View style={styles.bottomDock}>
-          <TouchableOpacity style={styles.dockBtn} onPress={() => router.push("/wallet")}>
-            <Ionicons name="card" size={RFValue(18)} color="#fff" />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.dockBtn} onPress={() => router.push("/(tabs)")} >
-            <Ionicons name="home" size={RFValue(18)} color="#fff" />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.dockBtn} onPress={() => router.push("/tournaments/TournamentHistory")} >
-            <Ionicons name="trophy" size={RFValue(18)} color="#fff" />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.dockBtn} onPress={() => router.push("/user/settings")}>
-            <Ionicons name="settings" size={RFValue(18)} color="#fff" />
-          </TouchableOpacity>
-        </View>
-
-        {loading && (
-          <View style={styles.loading}>
-            <ActivityIndicator />
-          </View>
-        )}
       </ScrollView>
+
+      {/* Edit modal */}
+      <Modal visible={editOpen} transparent animationType="slide" statusBarTranslucent onRequestClose={() => setEditOpen(false)}>
+        <View style={styles.modalBack}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Edit Profile</Text>
+
+            <Underlined placeholder="Email" value={edit.email} onChangeText={(v: string) => setEdit((p) => ({ ...p, email: v }))} keyboardType="email-address" autoCapitalize="none" />
+            <Underlined placeholder="Username" value={edit.username} onChangeText={(v: string) => setEdit((p) => ({ ...p, username: v }))} autoCapitalize="none" />
+            <Underlined placeholder="Phone" value={edit.phone} onChangeText={(v: string) => setEdit((p) => ({ ...p, phone: v }))} keyboardType="phone-pad" />
+
+            <View style={styles.modalRow}>
+              <TouchableOpacity style={[styles.modalBtn, styles.modalCancel]} onPress={() => setEditOpen(false)}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalBtn, styles.modalSave]} onPress={saveEdit} disabled={saving}>
+                <Text style={styles.modalSaveText}>{saving ? "Saving..." : "Save"}</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.modalNote}>Name & location changes require ID verification.</Text>
+          </View>
+        </View>
+      </Modal>
+    </ImageBackground>
+  );
+}
+
+/* Components */
+
+function GlassCard({ children, title, padTopSmall }: { children: React.ReactNode; title: string; padTopSmall?: boolean }) {
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>{title}</Text>
+      <View style={[styles.cardInner, padTopSmall && { paddingTop: 8 }]}>{children}</View>
+    </View>
+  );
+}
+function RowLink({ label, onPress, icon, last }: { label: string; onPress: () => void; icon: any; last?: boolean }) {
+  return (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.85}>
+      <View style={[styles.rowLink, last && { borderBottomWidth: 0 }]}>
+        <View style={styles.rowLeft}>
+          <Ionicons name={icon} size={RFValue(14)} color="#fff" />
+          <Text style={styles.rowLabel}>{label}</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={RFValue(16)} color="rgba(255,255,255,0.9)" />
+      </View>
+    </TouchableOpacity>
+  );
+}
+function KV({ label, value, half }: { label: string; value: string; half?: boolean }) {
+  return (
+    <View style={[{ marginBottom: 10 }, half && { flex: 1 }]}>
+      <Text style={styles.kvLabel}>{label}</Text>
+      <Text style={styles.kvValue} numberOfLines={1}>{value || "—"}</Text>
+    </View>
+  );
+}
+function Underlined(props: any) {
+  return (
+    <View style={{ marginBottom: RFValue(14) }}>
+      <TextInput {...props} placeholderTextColor="rgba(255,255,255,0.95)" style={styles.underlined} />
     </View>
   );
 }
 
-const CARD_BG = "rgba(255,255,255,0.1)";
-const BORDER = "rgba(255,255,255,0.25)";
+/* Styles */
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#0d0013" },
-  scroll: { paddingHorizontal: RFValue(16), paddingBottom: RFValue(40) },
+  // ↑ increased a bit to fix “top of card” spacing
+  scroll: { paddingHorizontal: 18, paddingBottom: 34, paddingTop: RFValue(44) },
 
-  avatarWrap: { alignItems: "center", justifyContent: "center", marginBottom: RFValue(20) },
-  avatarOuter: {
-    width: RFValue(120),
-    height: RFValue(120),
-    borderRadius: RFValue(60),
-    backgroundColor: "rgba(255,255,255,0.15)",
+  topBar: {
+    width: "100%",
+    marginBottom: RFValue(12), // a touch more space before the card
+    flexDirection: "row",
+    justifyContent: "flex-start",
+  },
+  backBtn: {
+    backgroundColor: GOLD,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  backText: { color: "#000", fontWeight: "900", fontSize: RFValue(11) },
+
+  headerCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: CARD_BG,
+    borderWidth: 1,
+    borderColor: CARD_BORDER,
+    borderRadius: 18,
+    paddingVertical: 14, // +2px vertical for nicer centering
+    paddingHorizontal: 12,
+    marginBottom: 14,
+  },
+
+  avatarWrap: { width: RFValue(68), height: RFValue(68) },
+  avatar: {
+    width: RFValue(68),
+    height: RFValue(68),
+    borderRadius: RFValue(34),
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.35)",
+  },
+  avatarFallback: {
+    backgroundColor: "rgba(255,255,255,0.18)",
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 2,
-    borderColor: BORDER,
-    overflow: "hidden",
+    width: RFValue(68),
+    height: RFValue(68),
+    borderRadius: RFValue(34),
   },
-  avatar: { width: "86%", height: "86%", resizeMode: "cover", borderRadius: 999 },
-
-  fieldGroup: { marginBottom: RFValue(14) },
-  label: {
-    color: "#fff",
-    opacity: 0.9,
-    fontSize: RFValue(12),
-    marginBottom: RFValue(6),
-  },
-  inputWrap: {
+  avatarInitials: { color: "#000", fontSize: RFValue(18), fontWeight: "900" },
+  ring: {
+    position: "absolute",
+    width: RFValue(84),
+    height: RFValue(84),
+    borderRadius: RFValue(42),
     borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "rgba(0,0,0,0.25)",
-    borderRadius: RFValue(8),
-    paddingHorizontal: RFValue(12),
-    paddingVertical: Platform.select({ ios: RFValue(12), android: RFValue(8) }),
+    borderColor: "rgba(255,215,0,0.35)",
+    top: -8, left: -8,
   },
-  input: {
-    color: "#fff",
-    fontSize: RFValue(14),
-    padding: 0,
+  camBadge: {
+    position: "absolute",
+    right: -2, bottom: -2,
+    backgroundColor: GOLD,
+    borderRadius: 999,
+    padding: 6,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.2)",
   },
 
-  statsRow: {
-    flexDirection: "row",
-    gap: RFValue(12),
-    marginTop: RFValue(6),
-    marginBottom: RFValue(10),
-  },
-  statCard: {
-    flex: 1,
+  nameText: { color: GOLD, fontSize: RFValue(16), fontWeight: "900" },
+  userText: { color: "white", opacity: 0.9, fontSize: RFValue(11), marginTop: 2 },
+
+  card: {
     backgroundColor: CARD_BG,
-    borderRadius: RFValue(14),
-    paddingVertical: RFValue(14),
-    alignItems: "center",
+    borderColor: CARD_BORDER,
     borderWidth: 1,
-    borderColor: BORDER,
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 14,
   },
-  statCardPressable: {
-    shadowColor: "#000",
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 4,
+  cardTitle: { color: GOLD, fontSize: RFValue(13.5), fontWeight: "900", marginBottom: 8 },
+  cardInner: { paddingTop: 2 },
+
+  kvLabel: { color: "rgba(255,255,255,0.9)", fontSize: RFValue(10), marginBottom: 2 },
+  kvValue: { color: "white", fontSize: RFValue(12), fontWeight: "700" },
+  rowSpread: { flexDirection: "row", alignItems: "flex-start" },
+
+  rowLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: DIV,
   },
-  statNumber: {
-    marginTop: RFValue(6),
-    fontSize: RFValue(18),
-    fontWeight: "700",
-    color: GOLD,
-  },
-  statLabel: {
-    fontSize: RFValue(12),
-    marginTop: RFValue(2),
-    color: "#FFD700",
-    opacity: 0.85,
-  },
+  rowLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
+  rowLabel: { color: "white", fontSize: RFValue(12) },
 
   editBtn: {
-    alignSelf: "center",
-    marginTop: RFValue(10),
-    backgroundColor: "#ffffff",
-    paddingVertical: RFValue(12),
-    paddingHorizontal: RFValue(22),
-    borderRadius: RFValue(12),
-  },
-  editText: { color: "#000", fontWeight: "700", fontSize: RFValue(14) },
-
-  bottomDock: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: GOLD,
     flexDirection: "row",
-    justifyContent: "space-between",
-    backgroundColor: "rgba(0,0,0,0.35)",
-    borderRadius: RFValue(18),
-    padding: RFValue(10),
-    marginTop: RFValue(22),
+    alignItems: "center",
+    gap: 6,
   },
-  dockBtn: {
-    backgroundColor: "#000",
-    borderRadius: RFValue(12),
-    paddingVertical: RFValue(10),
-    paddingHorizontal: RFValue(16),
+  editText: { color: "#000", fontSize: RFValue(11), fontWeight: "900" },
+
+  signOut: {
+    marginTop: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.4)",
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    justifyContent: "center",
+    backgroundColor: "rgba(255,215,0,0.12)",
+  },
+  signOutText: { color: "#4B0000", fontSize: RFValue(12), fontWeight: "800" },
+
+  underlined: {
+    color: "white",
+    fontSize: RFValue(12),
+    paddingVertical: RFValue(7),
+    paddingLeft: 0,
+    paddingRight: 0,
+    borderBottomWidth: 1.2,
+    borderBottomColor: "rgba(255,255,255,0.95)",
   },
 
-  loading: {
-    position: "absolute",
-    top: RFValue(24),
-    right: RFValue(16),
-  },
+  modalBack: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", padding: 18 },
+  modalCard: { backgroundColor: CARD_BG, borderColor: CARD_BORDER, borderWidth: 1, borderRadius: 18, padding: 16 },
+  modalTitle: { color: GOLD, fontSize: RFValue(15), fontWeight: "900", marginBottom: 10 },
+  modalRow: { flexDirection: "row", gap: 10, marginTop: 10 },
+  modalBtn: { flex: 1, paddingVertical: 11, borderRadius: 12, alignItems: "center" },
+  modalCancel: { borderWidth: 1, borderColor: "rgba(255,255,255,0.35)" },
+  modalSave: { backgroundColor: GOLD },
+  modalCancelText: { color: "white", fontWeight: "800", fontSize: RFValue(12) },
+  modalSaveText: { color: "#000", fontWeight: "900", fontSize: RFValue(12) },
+  modalNote: { color: "rgba(255,255,255,0.95)", fontSize: RFValue(10), marginTop: 8, textAlign: "center" },
+
+  helperText: { marginTop: 6, color: "rgba(255,255,255,0.95)", fontSize: RFValue(10) },
 });

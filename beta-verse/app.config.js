@@ -41,6 +41,7 @@ export default {
       STREAKS_API_KEY: process.env.STREAKS_API_KEY,
       SPORTSDATAIO_KEY: process.env.EXPO_PUBLIC_SPORTSDATAIO_KEY,
       SPORTSDB_KEY: process.env.EXPO_PUBLIC_SPORTSDB_KEY ?? "123",
+      SQUARE_REDIRECT_URL: process.env.EXPO_PUBLIC_SQUARE_REDIRECT_URL,
       eas: { projectId: "538a1d74-068e-425d-817d-692eff7a3423" }
     }
   }

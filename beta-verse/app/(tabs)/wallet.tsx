@@ -1,5 +1,7 @@
-// app/(tabs)/Wallet.tsx — LuxeBETS themed wallet (no API, ready to wire later)
-import React, { useMemo, useState, useCallback } from "react";
+// app/(tabs)/Wallet.tsx — LuxeBETS themed wallet (now live with Supabase)
+// STYLE & LAYOUT KEPT IDENTICAL — only data/handlers wired up.
+
+import React, { useMemo, useState, useCallback, useEffect } from "react";
 import {
   View,
   Text,
@@ -14,12 +16,15 @@ import {
   Platform,
   UIManager,
   LayoutAnimation,
+  ActivityIndicator,
+  Alert,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { useFonts } from "expo-font";
 import { useRouter } from "expo-router";
+import { supabase } from "@/lib/supabase"; // make sure this exists
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -34,9 +39,9 @@ const INK = "#0E0A12";
 const GLASS = "rgba(30,30,30,0.75)";
 const BORDER = "rgba(255,255,255,0.10)";
 
-/** -------- MOCK DATA -------- */
+/** -------- TYPES -------- */
 type Txn = {
-  id: number;
+  id: string | number;
   icon: any;
   title: string;
   date: string; // display string
@@ -44,64 +49,15 @@ type Txn = {
   type: "deposit" | "bid" | "win";
 };
 
-const transactions: Txn[] = [
-  {
-    id: 1,
-    icon: require("@/assets/icons/deposit.png"),
-    title: "Deposit",
-    date: "June 28, 2025",
-    amount: "+1000.00",
-    type: "deposit",
-  },
-  {
-    id: 2,
-    icon: require("@/assets/icons/target.png"),
-    title: "Tournament Bid – $20",
-    date: "June 25, 2025",
-    amount: "-20.00",
-    type: "bid",
-  },
-  {
-    id: 3,
-    icon: require("@/assets/icons/trophy.png"),
-    title: "Winnings",
-    date: "June 20, 2025",
-    amount: "+50.00",
-    type: "win",
-  },
-  {
-    id: 4,
-    icon: require("@/assets/icons/target.png"),
-    title: "Tournament Bid – $20",
-    date: "June 19, 2025",
-    amount: "-20.00",
-    type: "bid",
-  },
-  {
-    id: 5,
-    icon: require("@/assets/icons/deposit.png"),
-    title: "Deposit",
-    date: "June 18, 2025",
-    amount: "+300.00",
-    type: "deposit",
-  },
-  {
-    id: 6,
-    icon: require("@/assets/icons/target.png"),
-    title: "Tournament Bid – $20",
-    date: "June 19, 2025",
-    amount: "-20.00",
-    type: "bid",
-  },
-  {
-    id: 7,
-    icon: require("@/assets/icons/target.png"),
-    title: "Tournament Bid – $20",
-    date: "June 19, 2025",
-    amount: "-20.00",
-    type: "bid",
-  },
-];
+type LedgerRow = {
+  id: string;
+  user_id: string;
+  type: "deposit" | "withdraw" | "adjust";
+  amount_cents: number;
+  status: "pending" | "succeeded" | "failed" | "canceled";
+  ext_ref: string | null;
+  created_at: string;
+};
 
 /** -------- HELPERS -------- */
 function isPositive(amount: string) {
@@ -125,6 +81,55 @@ function formatUsd(n: number) {
   }
 }
 
+function mapLedgerToTxn(row: LedgerRow): Txn | null {
+  // We only show deposits and wins/spends in this UI list.
+  // Map:
+  //   deposit (succeeded) => "+amount"
+  //   withdraw (succeeded) => "-amount" (appears as "Bid" in this theme? keep list minimal; skip or show as spent)
+  if (row.status !== "succeeded") return null;
+
+  if (row.type === "deposit") {
+    return {
+      id: row.id,
+      icon: require("@/assets/icons/deposit.png"),
+      title: "Deposit",
+      date: new Date(row.created_at).toLocaleString(),
+      amount: `+${(row.amount_cents / 100).toFixed(2)}`,
+      type: "deposit",
+    };
+  }
+
+  if (row.type === "adjust") {
+    // Treat positive adjust as Winnings; negative as Spent
+    const sign = row.amount_cents >= 0 ? "+" : "-";
+    const isWin = row.amount_cents >= 0;
+    return {
+      id: row.id,
+      icon: isWin
+        ? require("@/assets/icons/trophy.png")
+        : require("@/assets/icons/target.png"),
+      title: isWin ? "Winnings" : "Adjustment",
+      date: new Date(row.created_at).toLocaleString(),
+      amount: `${sign}${Math.abs(row.amount_cents / 100).toFixed(2)}`,
+      type: isWin ? "win" : "bid",
+    };
+  }
+
+  if (row.type === "withdraw") {
+    // Show as Spent in history (keeps your original three chips)
+    return {
+      id: row.id,
+      icon: require("@/assets/icons/target.png"),
+      title: "Withdrawal",
+      date: new Date(row.created_at).toLocaleString(),
+      amount: `-${(row.amount_cents / 100).toFixed(2)}`,
+      type: "bid",
+    };
+  }
+
+  return null;
+}
+
 export default function WalletScreen() {
   const router = useRouter();
 
@@ -134,44 +139,134 @@ export default function WalletScreen() {
     PoppinsSemiBold: require("@/assets/fonts/Poppins-SemiBold.ttf"),
     PoppinsBold: require("@/assets/fonts/Poppins-Bold.ttf"),
   });
+
   const [filter, setFilter] = useState<"ALL" | "deposit" | "bid" | "win">("ALL");
   const [refreshing, setRefreshing] = useState(false);
   const [showAction, setShowAction] = useState<null | "deposit" | "withdraw">(null);
 
+  // Live data
+  const [loading, setLoading] = useState(true);
+  const [balanceCents, setBalanceCents] = useState<number>(0);
+  const [rows, setRows] = useState<Txn[]>([]);
+
+  const fetchAll = useCallback(async () => {
+    try {
+      setLoading(true);
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth.user?.id;
+      if (!uid) throw new Error("Not signed in");
+
+      // ensure wallet exists (safe if already there)
+      await supabase.rpc("ensure_wallet_for_user", { p_user_id: uid });
+
+      const [{ data: acct }, { data: ledger }] = await Promise.all([
+        supabase.from("wallet_accounts").select("balance_cents").eq("user_id", uid).maybeSingle(),
+        supabase
+          .from("wallet_ledger")
+          .select("*")
+          .eq("user_id", uid)
+          .order("created_at", { ascending: false })
+          .limit(100),
+      ]);
+
+      setBalanceCents(acct?.balance_cents ?? 0);
+
+      const mapped =
+        (ledger ?? [])
+          .map(mapLedgerToTxn)
+          .filter(Boolean) as Txn[];
+
+      setRows(mapped);
+    } catch (e: any) {
+      console.warn("wallet fetch error:", e?.message || e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAll();
+
+    // Realtime: update on any wallet_accounts change for THIS user
+    const ch1 = supabase
+      .channel("wallet_accounts_changes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "wallet_accounts" },
+        (payload) => {
+          const row: any = payload.new;
+          if (row?.balance_cents != null) setBalanceCents(row.balance_cents);
+        }
+      )
+      .subscribe();
+
+    // Optional: refresh ledger when new row inserts
+    const ch2 = supabase
+      .channel("wallet_ledger_changes")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "wallet_ledger" },
+        (_payload) => fetchAll()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(ch1);
+      supabase.removeChannel(ch2);
+    };
+  }, [fetchAll]);
+
   const filtered = useMemo(() => {
-    const base = [...transactions];
+    const base = [...rows];
     const list = filter === "ALL" ? base : base.filter((t) => t.type === filter);
-    // simple sort: most recent first by id (mock)
-    return list.sort((a, b) => b.id - a.id);
-  }, [filter]);
+    return list; // already sorted by created_at desc from query
+  }, [filter, rows]);
 
   const totals = useMemo(() => {
     let deposits = 0;
     let wins = 0;
     let spends = 0;
-    for (const t of transactions) {
+    for (const t of rows) {
       const v = Number(t.amount.replace(/[+,]/g, ""));
       if (t.type === "deposit") deposits += v;
       else if (t.type === "win") wins += v;
       else if (t.type === "bid") spends += Math.abs(v);
     }
-    const balance = 120; // demo balance to match your mock
     return {
       deposits,
       wins,
       spends,
-      balance,
+      balance: balanceCents / 100,
     };
-  }, []);
+  }, [rows, balanceCents]);
 
-  const onRefresh = useCallback(() => {
+  const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    setTimeout(() => setRefreshing(false), 700);
-  }, []);
+    await fetchAll();
+    setRefreshing(false);
+  }, [fetchAll]);
 
   const goSettings = useCallback(() => {
     LayoutAnimation.easeInEaseOut();
     router.push("/user/settings");
+  }, [router]);
+
+  // ACTIONS (keep your modal, just wire buttons)
+  const handleDepositContinue = useCallback(async () => {
+    try {
+      setShowAction(null);
+      // Route to your dedicated deposit screen so user can choose amount
+      router.push("/wallet/deposit");
+      // If you prefer one-tap quick deposit (e.g., $20), uncomment:
+      // await startWalletDeposit(20);
+    } catch (e: any) {
+      Alert.alert("Deposit error", e.message ?? String(e));
+    }
+  }, [router]);
+
+  const handleWithdrawContinue = useCallback(() => {
+    setShowAction(null);
+    router.push("/wallet/withdraw");
   }, [router]);
 
   if (!fontsLoaded) return null;
@@ -212,7 +307,13 @@ export default function WalletScreen() {
               <Text style={styles.badgeText}>Secure</Text>
             </View>
           </View>
-          <Text style={styles.balanceAmount}>{formatUsd(totals.balance)}</Text>
+
+          {loading ? (
+            <ActivityIndicator color="#fff" style={{ marginVertical: 10 }} />
+          ) : (
+            <Text style={styles.balanceAmount}>{formatUsd(totals.balance)}</Text>
+          )}
+
           <View style={styles.actionsRow}>
             <TouchableOpacity
               onPress={() => setShowAction("deposit")}
@@ -271,17 +372,9 @@ export default function WalletScreen() {
                   setFilter(k as any);
                 }}
                 activeOpacity={0.85}
-                style={[
-                  styles.chip,
-                  selected && styles.chipSelected,
-                ]}
+                style={[styles.chip, selected && styles.chipSelected]}
               >
-                <Text
-                  style={[
-                    styles.chipText,
-                    selected && styles.chipTextSelected,
-                  ]}
-                >
+                <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
                   {k === "ALL" ? "All" : chipTextFromType(k as any)}
                 </Text>
               </TouchableOpacity>
@@ -295,11 +388,7 @@ export default function WalletScreen() {
         data={filtered}
         keyExtractor={(item) => String(item.id)}
         refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor="#fff"
-          />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />
         }
         renderItem={({ item }) => (
           <View style={styles.rowPad}>
@@ -321,7 +410,9 @@ export default function WalletScreen() {
                 <Text style={styles.txnDate}>{item.date}</Text>
               </View>
               <Text style={[styles.txnAmount, { color: amtColor(item.amount) }]}>
-                {isPositive(item.amount) ? `+${Number(item.amount).toFixed(2)}` : `${Number(item.amount).toFixed(2)}`}
+                {isPositive(item.amount)
+                  ? `+${Number(item.amount).toFixed(2)}`
+                  : `${Number(item.amount).toFixed(2)}`}
               </Text>
             </BlurView>
           </View>
@@ -332,7 +423,11 @@ export default function WalletScreen() {
           </View>
         }
         ListEmptyComponent={
-          <Text style={styles.emptyText}>No transactions yet.</Text>
+          loading ? (
+            <ActivityIndicator color="#fff" style={{ marginTop: 20 }} />
+          ) : (
+            <Text style={styles.emptyText}>No transactions yet.</Text>
+          )
         }
         contentContainerStyle={{ paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}
@@ -347,7 +442,7 @@ export default function WalletScreen() {
         <Ionicons name="add" size={24} color={INK} />
       </TouchableOpacity>
 
-      {/* Simple Action Modal (no API) */}
+      {/* Simple Action Modal (kept) */}
       <Modal
         transparent
         visible={!!showAction}
@@ -360,11 +455,11 @@ export default function WalletScreen() {
               {showAction === "deposit" ? "Add Funds" : "Withdraw"}
             </Text>
             <Text style={styles.modalNote}>
-              This is a mock flow. Wire to your payment method later.
+              Choose an amount on the next screen.
             </Text>
             <View style={styles.modalRow}>
               <TouchableOpacity
-                onPress={() => setShowAction(null)}
+                onPress={showAction === "deposit" ? handleDepositContinue : handleWithdrawContinue}
                 style={[styles.actionBtn, styles.actionPrimary, { flex: 1 }]}
                 activeOpacity={0.9}
               >
@@ -388,7 +483,7 @@ export default function WalletScreen() {
   );
 }
 
-/** -------- STYLES -------- */
+/** -------- STYLES (UNCHANGED) -------- */
 const styles = StyleSheet.create({
   bg: { flex: 1, backgroundColor: INK },
 

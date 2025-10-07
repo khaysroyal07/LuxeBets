@@ -17,7 +17,8 @@ import React, { useState } from "react";
 import { useFonts } from "expo-font";
 import { RFValue } from "react-native-responsive-fontsize";
 import { useRouter } from "expo-router";
-import { useAuth } from "@/hooks/AuthContext"; // ✅ correct
+import { useAuth } from "@/hooks/AuthContext"; // ✅ your context
+
 const { width, height } = Dimensions.get("window");
 
 export default function Login() {
@@ -31,14 +32,25 @@ export default function Login() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+
   const { signIn } = useAuth();
+
   const handleLogin = async () => {
+    // light guard so we don’t flash an auth call with empty fields
+    const e = email.trim();
+    if (!e || !password) {
+      alert("Enter your email and password.");
+      return;
+    }
     try {
-      await signIn(email, password);
-      alert('Logged in!');
-      router.push("/(tabs)");
-    } catch (error) {
-      alert(error.message);
+      setBusy(true);
+      await signIn(e, password);
+      router.replace("/(tabs)");
+    } catch (error: any) {
+      alert(error?.message ?? "Login failed. Try again.");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -52,16 +64,16 @@ export default function Login() {
     >
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 60 : 0}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 40 : 0}
       >
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <ScrollView
             contentContainerStyle={styles.scroll_container}
             keyboardShouldPersistTaps="handled"
           >
-
             <View style={styles.log_contain}>
+              {/* Back */}
               <TouchableOpacity onPress={() => router.push("/user")} style={styles.back_btn}>
                 <Image
                   style={styles.back_img}
@@ -69,9 +81,12 @@ export default function Login() {
                   resizeMode="contain"
                 />
               </TouchableOpacity>
+
+              {/* Titles */}
               <Text style={styles.log_sub}>Welcome</Text>
               <Text style={styles.log_head}>Back</Text>
 
+              {/* Logo */}
               <View style={styles.log_img_cont}>
                 <Image
                   style={styles.logo}
@@ -80,16 +95,18 @@ export default function Login() {
                 />
               </View>
 
+              {/* Inputs */}
               <View style={styles.log_input_cont}>
                 <View style={styles.email_cont}>
                   <TextInput
                     style={styles.log_input}
                     placeholder="Email Address"
-                    placeholderTextColor="white"
+                    placeholderTextColor="rgba(255,255,255,0.9)"
                     value={email}
                     onChangeText={setEmail}
                     keyboardType="email-address"
                     autoCapitalize="none"
+                    returnKeyType="next"
                   />
                   <Image
                     style={styles.email_img}
@@ -102,10 +119,13 @@ export default function Login() {
                   <TextInput
                     style={styles.pw_input}
                     placeholder="Password"
-                    placeholderTextColor="white"
+                    placeholderTextColor="rgba(255,255,255,0.9)"
                     value={password}
                     onChangeText={setPassword}
                     secureTextEntry
+                    autoCapitalize="none"
+                    returnKeyType="go"
+                    onSubmitEditing={handleLogin}
                   />
                   <Image
                     style={styles.pw_img}
@@ -115,15 +135,21 @@ export default function Login() {
                 </View>
               </View>
 
-              <TouchableOpacity onPress={handleLogin} style={styles.login_btn}>
-                <Text style={styles.log_btn_text}>Log in {'->'}</Text>
+              {/* CTA */}
+              <TouchableOpacity onPress={handleLogin} style={[styles.login_btn, busy && { opacity: 0.8 }]} disabled={busy}>
+                <Text style={styles.log_btn_text}>{busy ? "Logging in..." : "Log in ->"}</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity onPress={() => router.push("/user/singup")} style={styles.create_cont}>
-                <Text style={styles.forgot_text}>Forgot Password?</Text>
-              </TouchableOpacity>
+              {/* Footer link(s) */}
+              <View style={styles.footer_links}>
+                <TouchableOpacity onPress={() => router.push("/user/confirm")}>
+                  <Text style={styles.forgot_text}>Forgot Password?</Text>
+                </TouchableOpacity>
 
-
+                <TouchableOpacity onPress={() => router.push("/user/singup")} style={{ marginTop: RFValue(8) }}>
+                  <Text style={styles.create_text}>Create an account</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </ScrollView>
         </TouchableWithoutFeedback>
@@ -143,64 +169,46 @@ const styles = StyleSheet.create({
   },
   log_contain: {
     flex: 1,
-    paddingHorizontal: RFValue(28),
-    paddingTop: RFValue(80),
+    paddingHorizontal: RFValue(26), // a touch tighter than 28
+    paddingTop: RFValue(56),       // was 80; gives more breathing room overall
+    paddingBottom: RFValue(28),
     justifyContent: "flex-start",
   },
+
+  // Titles
   log_sub: {
     fontFamily: "PoppinsMedium",
-    fontSize: RFValue(25),
+    fontSize: RFValue(22), // slightly smaller for balance with "Back"
     color: "white",
-    height: RFValue(30),
-
+    marginBottom: RFValue(2),
   },
   log_head: {
     fontFamily: "PoppinsSemiBold",
-    fontSize: RFValue(45),
+    fontSize: RFValue(44),
     color: "white",
     marginBottom: RFValue(10),
+    lineHeight: RFValue(46),
   },
+
+  // Logo
   log_img_cont: {
     width: "100%",
     alignItems: "center",
-    marginBottom: RFValue(2),
+    marginBottom: RFValue(8), // give inputs a little air
   },
   logo: {
-    width: RFValue(260),
-    height: RFValue(190),
+    width: RFValue(220),  // slightly smaller so the header area feels less cramped
+    height: RFValue(160),
   },
-  login_btn: {
-    marginTop: RFValue(30),
-    borderRadius: RFValue(16),
-    width: "100%",
-    height: RFValue(55),
-    backgroundColor: "white",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  log_btn_text: {
-    fontFamily: "PoppinsMedium",
-    fontSize: RFValue(18),
-    color: "black",
-  },
-  create_cont: {
-    marginTop: RFValue(18),
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  forgot_text: {
-    textDecorationLine: "underline",
-    fontFamily: "PoppinsMedium",
-    fontSize: RFValue(15),
-    color: "white",
-  },
+
+  // Inputs
   log_input_cont: {
     width: "100%",
-    marginTop: RFValue(10),
+    marginTop: RFValue(8),
   },
   email_cont: {
     position: "relative",
-    marginBottom: RFValue(10),
+    marginBottom: RFValue(12),
   },
   log_input: {
     fontFamily: "PoppinsMedium",
@@ -209,23 +217,21 @@ const styles = StyleSheet.create({
     height: RFValue(50),
     paddingHorizontal: RFValue(15),
     paddingRight: RFValue(45), // space for icon
-    borderBottomWidth: RFValue(2),
+    borderBottomWidth: RFValue(1.6), // slightly thinner underline
     borderColor: "white",
     borderRadius: RFValue(8),
     backgroundColor: "rgba(0,0,0,0.2)",
     color: "white",
-    marginBottom: RFValue(10),
   },
   email_img: {
-    width: RFValue(22),
-    height: RFValue(22),
+    width: RFValue(20),
+    height: RFValue(20),
     position: "absolute",
     right: RFValue(15),
-    top: RFValue(14),
+    top: RFValue(15),
   },
   pw_cont: {
     position: "relative",
-    marginBottom: RFValue(5),
   },
   pw_input: {
     fontFamily: "PoppinsMedium",
@@ -234,19 +240,60 @@ const styles = StyleSheet.create({
     height: RFValue(50),
     paddingHorizontal: RFValue(15),
     paddingRight: RFValue(45), // space for icon
-    borderBottomWidth: RFValue(2),
+    borderBottomWidth: RFValue(1.6),
     borderColor: "white",
     borderRadius: RFValue(8),
     backgroundColor: "rgba(0,0,0,0.2)",
     color: "white",
   },
   pw_img: {
-    width: RFValue(22),
-    height: RFValue(22),
+    width: RFValue(20),
+    height: RFValue(20),
     position: "absolute",
     right: RFValue(15),
-    top: RFValue(14),
+    top: RFValue(15),
   },
-  back_btn: { width: RFValue(105), height: RFValue(44), marginBottom: 25 },
-  back_img: { width: "100%", height: "100%", }
+
+  // Back button
+  back_btn: { width: RFValue(98), height: RFValue(40), marginBottom: RFValue(18) },
+  back_img: { width: "100%", height: "100%" },
+
+  // CTA
+  login_btn: {
+    marginTop: RFValue(22), // tightened so button sits closer to inputs
+    borderRadius: RFValue(16),
+    width: "100%",
+    height: RFValue(55),
+    backgroundColor: "white",
+    justifyContent: "center",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+  log_btn_text: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(18),
+    color: "black",
+  },
+
+  // Footer
+  footer_links: {
+    marginTop: RFValue(16),
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  forgot_text: {
+    textDecorationLine: "underline",
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(14),
+    color: "white",
+  },
+  create_text: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(14),
+    color: "white",
+  },
 });

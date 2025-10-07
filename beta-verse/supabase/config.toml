@@ -88,3 +88,36 @@ entrypoint = "./functions/create_nfl_tournament/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/create_nfl_tournament/*.html" ]
+
+[functions.create-wallet-checkout]
+enabled = true
+verify_jwt = true
+import_map = "./functions/create-wallet-checkout/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/create-wallet-checkout/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/create-wallet-checkout/*.html" ]
+
+[functions.square-payment-updated]
+enabled = true
+verify_jwt = true
+import_map = "./functions/square-payment-updated/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/square-payment-updated/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/square-payment-updated/*.html" ]
+
+[functions.square-redirect]
+enabled = true
+verify_jwt = true
+import_map = "./functions/square-redirect/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/square-redirect/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/square-redirect/*.html" ]
