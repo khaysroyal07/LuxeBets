@@ -127,11 +127,12 @@ export default function EntriesIndex() {
 
       const { planet_name } = await planetNameForTournament(t.id, t.day_date);
 
-      let st: EntryStatus;
+      // ✅ Key logic change: don't auto-finish just because the view says "settled".
+      // Finish AFTER D2 has passed (local), or if entry itself is terminal.
+      let st: EntryStatus = "active";
       if (e.status === "eliminated") st = "eliminated";
       else if (e.status === "winner") st = "winner";
-      else if (t.status === "settled") st = "finished";
-      else st = "active";
+      else if (new Date() > d2) st = "finished";
 
       rows.push({
         entrantId: String(e.id),
@@ -322,7 +323,6 @@ export default function EntriesIndex() {
         <Pressable style={StyleSheet.absoluteFill} onPress={closeDetails} />
         <View style={styles.modalWrap} pointerEvents="box-none">
           <Animated.View style={[styles.modalCard, { opacity: cardFade, transform: [{ scale }] }]}>
-
             <View style={styles.modalHeader}>
               <View style={styles.badge}><Ionicons name="trophy" size={RFValue(14)} color={GOLD} /></View>
               <Text style={styles.modalTitle}>{modalEntry?.planetName} — ${modalEntry?.fee}</Text>

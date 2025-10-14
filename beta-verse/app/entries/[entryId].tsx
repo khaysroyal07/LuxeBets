@@ -1,11 +1,21 @@
-// app/entries/[entryId].tsx
-import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, ImageBackground, ActivityIndicator, Alert, FlatList } from "react-native";
+import React, { useEffect, useMemo, useState, useRef } from "react";
+import {
+  View, Text, StyleSheet, TouchableOpacity, ImageBackground,
+  ActivityIndicator, Alert, FlatList
+} from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import Constants from "expo-constants";
 import { supabase } from "@/lib/supabase";
+
+import {
+  getGamesByDate,
+  getTeams,
+  normalizeGame,
+  getOddsByDate,          // betting feed (pre-game lines)
+  isNotEnabledError,
+  type SportKey
+} from "@/lib/sportsdataio";
 
 const BG = require("@/assets/images/bgDash.png");
 const PURPLE = "#613DC1";
@@ -13,49 +23,34 @@ const GOLD = "#FFD700";
 const BORDER = "rgba(255,255,255,0.12)";
 const CARD = "rgba(10,10,20,0.95)";
 
-/* ---- TSDB base ---- */
-const TSD_KEY =
-  process.env.EXPO_PUBLIC_TSPORTSDB_KEY ||
-  (Constants?.expoConfig?.extra as any)?.THESPORTSDB_KEY ||
-  "123";
-const TSD_BASE = `https://www.thesportsdb.com/api/v1/json/${encodeURIComponent(TSD_KEY)}`;
-
 type LeagueKey = "NFL" | "NBA" | "MLB" | "NHL" | "WNBA";
-type GameRow = { id: string; start: string; league: LeagueKey; home: string; away: string };
+const L2S: Record<LeagueKey, SportKey> = { NFL: "nfl", NBA: "nba", MLB: "mlb", NHL: "nhl", WNBA: "wnba" };
 
-const SPORT_MAP: Record<Exclude<LeagueKey,"NFL">, { tsdbSport: string; leagues: string[] }> = {
-  NBA:  { tsdbSport: "Basketball",        leagues: ["NBA"] },
-  MLB:  { tsdbSport: "Baseball",          leagues: ["MLB","Major League Baseball"] },
-  NHL:  { tsdbSport: "Ice_Hockey",        leagues: ["NHL","National Hockey League"] },
-  WNBA: { tsdbSport: "Basketball",        leagues: ["WNBA","Women's National Basketball Association"] },
+type GameRow = {
+  id: string;
+  start: number;
+  league: LeagueKey;
+  homeShort: string;
+  awayShort: string;
+  homeName: string;
+  awayName: string;
+  // odds (may be null if feed isn’t enabled)
+  mlHome?: number | null;
+  mlAway?: number | null;
+  spread?: number | null; // spread always HOME perspective (negative=home fav)
+  total?: number | null;  // game total
 };
-const NFL = { tsdbSport: "American_Football", leagues: ["NFL","National Football League"] };
 
-const dayISO = (d: string | Date) => (typeof d === "string" ? d : d.toISOString().slice(0, 10));
+type BetTab = "ML" | "Spread" | "Total";
+
 const pickShort = (full?: string) => {
   const name = (full || "").trim(); if (!name) return "TEAM";
-  const parts = name.split(/\s+/); return parts.map(p => p[0]).join("").slice(0,3).toUpperCase() || name.slice(0,3).toUpperCase();
+  const parts = name.split(/\s+/);
+  return parts.map(p => p[0]).join("").slice(0,3).toUpperCase() || name.slice(0,3).toUpperCase();
 };
-
-async function fetchTSDBEvents(tsdbSport: string, leagues: string[], dateISO: string) {
-  const url = `${TSD_BASE}/eventsday.php?s=${encodeURIComponent(tsdbSport)}&d=${encodeURIComponent(dateISO)}`;
-  const r = await fetch(url); if(!r.ok) return [];
-  const j = await r.json();
-  const evs = Array.isArray(j?.events) ? j.events : [];
-  const allow = leagues.map(l => l.toLowerCase());
-  return evs.filter((e:any)=> allow.some(a => String(e?.strLeague||"").toLowerCase().includes(a)));
-}
-
-async function fetchLeagueRows(league: LeagueKey, date: string): Promise<GameRow[]> {
-  const spec = league === "NFL" ? NFL : SPORT_MAP[league as Exclude<LeagueKey,"NFL">];
-  const rows = await fetchTSDBEvents(spec.tsdbSport, spec.leagues, date);
-  return rows.map((e:any) => {
-    const ts = e?.strTimestamp || (e?.dateEvent ? `${e.dateEvent}T${(e?.strTime || "00:00")}:00Z` : new Date().toISOString());
-    const home = pickShort(e?.strHomeTeam);
-    const away = pickShort(e?.strAwayTeam);
-    return { id: String(e?.idEvent || `${home}-${away}-${ts}`), start: ts, league, home, away };
-  }).sort((a,b)=> new Date(a.start).getTime() - new Date(b.start).getTime());
-}
+const dayISO = (d: string | Date) => (typeof d === "string" ? d : d.toISOString().slice(0, 10));
+const fmtOdds = (v?: number | null) => (v == null ? "" : v > 0 ? ` (+${v})` : ` (${v})`);
+const mins = (ms: number) => Math.floor(ms / 60000);
 
 export default function ManagePick() {
   const router = useRouter();
@@ -66,18 +61,29 @@ export default function ManagePick() {
   const [dayISOState, setDayISOState] = useState<string>("");
   const [league, setLeague] = useState<LeagueKey>("NFL");
 
+  const [betTab, setBetTab] = useState<BetTab>("ML");
   const [gamesBusy, setGamesBusy] = useState(false);
   const [games, setGames] = useState<GameRow[]>([]);
   const [existing, setExisting] = useState<{ selection: "home"|"away"; game_id: string; team_picked?: string } | null>(null);
   const [locked, setLocked] = useState<boolean>(false);
+  const [notEnabled, setNotEnabled] = useState<boolean>(false);
 
+  // live ticker to refresh “Starts in …”
+  const tick = useRef<any>(null);
+  useEffect(() => {
+    tick.current && clearInterval(tick.current);
+    tick.current = setInterval(() => setGames((g) => [...g]), 30000);
+    return () => clearInterval(tick.current);
+  }, []);
+
+  // load entry → determine date → check for an existing pick
   useEffect(() => {
     let on = true;
     (async () => {
       try {
         setLoading(true);
         const { data: ent, error: entErr } = await supabase
-          .from("entries") // or "entrants" if that's your table
+          .from("entries")
           .select("id, tournament_id, tournaments(*)")
           .eq("id", entryId)
           .maybeSingle();
@@ -87,7 +93,6 @@ export default function ManagePick() {
 
         const iso = typeof date === "string" ? date : (t.day_date as string);
 
-        // check if user already picked this day
         const { data: { user } } = await supabase.auth.getUser();
         let curr: any = null;
         if (user) {
@@ -104,8 +109,13 @@ export default function ManagePick() {
         if (on) {
           setTournament(t);
           setDayISOState(iso);
-          if (curr) { setExisting({ selection: curr.selection, game_id: String(curr.game_id), team_picked: curr.team_picked ?? undefined }); setLocked(true); }
-          else { setExisting(null); setLocked(false); }
+          if (curr) {
+            setExisting({ selection: curr.selection, game_id: String(curr.game_id), team_picked: curr.team_picked ?? undefined });
+            setLocked(true);
+          } else {
+            setExisting(null);
+            setLocked(false);
+          }
         }
       } catch (e) {
         console.warn(e);
@@ -116,29 +126,80 @@ export default function ManagePick() {
     return () => { on = false; };
   }, [entryId, date]);
 
+  // fetch schedule + odds (and keep only games that haven’t started yet)
   const loadGames = async () => {
     if (!dayISOState) return;
     try {
       setGamesBusy(true);
-      setGames(await fetchLeagueRows(league, dayISO(dayISOState)));
+      setNotEnabled(false);
+
+      const sport = L2S[league];
+      const teams = await getTeams(sport);
+
+      const raw = await getGamesByDate(sport, new Date(dayISO(dayISOState)));
+      const mapped = (raw || []).map((g: any) => normalizeGame(sport, g, teams));
+
+      let oddsMap: Record<string, any> = {};
+      try {
+        oddsMap = await getOddsByDate(sport, new Date(dayISO(dayISOState)));
+      } catch (err: any) {
+        if (isNotEnabledError(err)) setNotEnabled(true);
+      }
+
+      const now = Date.now();
+      const OPEN_FUDGE = 60 * 1000; // 60s grace vs feed/device clock skew
+
+      const open = (mapped || [])
+        .filter((g: any) => {
+          const start = g.rawDate || 0;
+          return start > (now - OPEN_FUDGE); // show if not started (with grace)
+        })
+        .map((g: any) => {
+          const o = oddsMap[String(g.id)] || {};
+          return {
+            id: String(g.id),
+            start: g.rawDate || 0,
+            league,
+            homeShort: pickShort(g.homeName),
+            awayShort: pickShort(g.awayName),
+            homeName: g.homeName,
+            awayName: g.awayName,
+            mlHome: o.mlHome ?? null,
+            mlAway: o.mlAway ?? null,
+            spread: o.spread ?? null, // negative means home -X.5
+            total: o.total ?? null,
+          } as GameRow;
+        })
+        .sort((a: any, b: any) => a.start - b.start);
+
+      setGames(open);
     } catch (e: any) {
-      setGames([]); Alert.alert("Games Error", e?.message || "Could not load games.");
+      if (!isNotEnabledError(e)) {
+        Alert.alert("Games Error", e?.message || "Could not load games.");
+      }
+      setGames([]);
     } finally {
       setGamesBusy(false);
     }
   };
-  useEffect(() => { loadGames(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [league, dayISOState]);
+
+  useEffect(() => { loadGames(); /* eslint-disable-line react-hooks/exhaustive-deps */ }, [league, dayISOState]);
 
   const savePick = async (game: GameRow, selection: "home" | "away") => {
     if (locked) {
-      Alert.alert("Pick locked", "You cannot change a pick once it has been submitted.");
+      Alert.alert("Pick locked", "You already submitted a pick today.");
+      return;
+    }
+    const now = Date.now();
+    if (game.start <= now) {
+      Alert.alert("Closed", "This game already started.");
+      await loadGames();
       return;
     }
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not signed in.");
 
-      // block if a pick exists
       const { data: existingRow } = await supabase
         .from("picks")
         .select("id")
@@ -146,18 +207,19 @@ export default function ManagePick() {
         .eq("tournament_id", tournament.id)
         .eq("day_date", dayISOState)
         .maybeSingle();
-
       if (existingRow?.id) {
         setLocked(true);
         Alert.alert("Pick locked", "You already submitted a pick for this day.");
         return;
       }
 
-      const team = selection === "home" ? game.home : game.away;
+      const team = selection === "home" ? game.homeShort : game.awayShort;
+
+      // IMPORTANT: We still persist the same minimal shape so your DB doesn’t change.
       const { error } = await supabase
         .from("picks")
         .insert({
-          entry_id: entryId,                  // <-- IMPORTANT: link to entry (uuid)
+          entry_id: entryId,
           user_id: user.id,
           tournament_id: tournament.id,
           day_date: dayISOState,
@@ -203,16 +265,17 @@ export default function ManagePick() {
       {/* Day & lock state */}
       <View style={styles.headerCard}>
         <Text style={styles.subTitle}>{dayLabel}</Text>
-        {existing ? (
-          <Text style={styles.lockTxt}>
+        <Text style={styles.noteTxt}>
+          One pick per day. You can pick from any game that <Text style={{ color: GOLD, fontWeight: "900" }}>hasn’t started</Text> yet.
+        </Text>
+        {!!existing && (
+          <Text style={[styles.lockTxt, { marginTop: RFValue(6) }]}>
             Submitted: <Text style={{ color: GOLD, fontWeight: "900" }}>{existing.team_picked || existing.selection.toUpperCase()}</Text> (locked)
           </Text>
-        ) : (
-          <Text style={styles.noteTxt}>Choose any game below for your pick.</Text>
         )}
       </View>
 
-      {/* League filter tabs */}
+      {/* League tabs */}
       <View style={styles.tabsRow}>
         {(["NFL","NBA","MLB","NHL","WNBA"] as const).map((lg) => {
           const active = league === lg;
@@ -224,13 +287,32 @@ export default function ManagePick() {
         })}
       </View>
 
+      {/* Betting category tabs (ML / Spread / Total). ML is the only one submitted today. */}
+      <View style={[styles.tabsRow, { marginTop: RFValue(6) }]}>
+        {(["ML","Spread","Total"] as BetTab[]).map((b) => {
+          const active = betTab === b;
+          return (
+            <TouchableOpacity key={b} onPress={() => setBetTab(b)} style={[styles.tab, active && styles.tabActive]}>
+              <Text style={[styles.tabTxt, active && styles.tabTxtActive]}>{b}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {/* A tiny explainer row */}
+      <View style={{ paddingHorizontal: RFValue(16), marginTop: RFValue(6) }}>
+        <Text style={{ color: "#ccc", fontSize: RFValue(11) }}>
+          Viewing {betTab}. We always submit a simple team pick (Moneyline) so your entry stays compatible.
+        </Text>
+      </View>
+
       {/* Games list */}
       <View style={styles.listWrap}>
         {gamesBusy ? (
           <ActivityIndicator color={GOLD} />
         ) : games.length === 0 ? (
           <Text style={{ color: "#ddd", textAlign: "center", marginTop: RFValue(16), paddingHorizontal: RFValue(14) }}>
-            No {league} games found for this day.
+            No {league} games left to enter for this day.
           </Text>
         ) : (
           <FlatList
@@ -239,26 +321,83 @@ export default function ManagePick() {
             ItemSeparatorComponent={() => <View style={{ height: RFValue(10) }} />}
             renderItem={({ item }) => {
               const pickedThis = existing && existing.game_id === item.id;
+              const isStarted = item.start <= Date.now();
+              const startTxt = new Date(item.start).toLocaleString();
+              const timeLeftMin = Math.max(0, mins(item.start - Date.now()));
+              const startsIn = isStarted ? "Started" : (timeLeftMin >= 60
+                ? `Starts in ${Math.floor(timeLeftMin/60)}h ${timeLeftMin%60}m`
+                : `Starts in ${timeLeftMin}m`);
+
+              // spread is home perspective; show ± for each side
+              const homeSpreadLabel = item.spread!=null ? (item.spread > 0 ? `+${item.spread}` : `${item.spread}`) : "";
+              const awaySpreadLabel = item.spread!=null ? (item.spread > 0 ? `${-item.spread}` : `+${Math.abs(item.spread)}`) : "";
+              const totalLabel = item.total != null ? `${item.total}` : "";
+
               return (
                 <View style={styles.gameCard}>
-                  <Text style={styles.gameTime}>{new Date(item.start).toLocaleString()}</Text>
-                  <Text style={styles.gameTeams} numberOfLines={1}>{item.away} @ {item.home}</Text>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                    <Text style={styles.gameTime}>{startTxt}</Text>
+                    <Text style={{ color: isStarted ? "#f88" : GOLD, fontWeight: "800", fontSize: RFValue(11) }}>{startsIn}</Text>
+                  </View>
+
+                  <Text style={styles.gameTeams} numberOfLines={1}>{item.awayShort} @ {item.homeShort}</Text>
+                  <Text style={{ color:"#bbb", marginBottom: RFValue(6) }} numberOfLines={1}>
+                    {item.awayName} @ {item.homeName}
+                  </Text>
+
+                  {/* Odds row for current tab */}
+                  {betTab === "ML" && (
+                    <Text style={{ color:"#bbb", marginBottom: RFValue(8) }}>
+                      Moneyline: {item.awayShort}{fmtOdds(item.mlAway)} @ {item.homeShort}{fmtOdds(item.mlHome)} {notEnabled ? "(odds unavailable)" : ""}
+                    </Text>
+                  )}
+                  {betTab === "Spread" && (
+                    <Text style={{ color:"#bbb", marginBottom: RFValue(8) }}>
+                      Spread: {item.awayShort} {awaySpreadLabel} • {item.homeShort} {homeSpreadLabel} {notEnabled ? "(odds unavailable)" : ""}
+                    </Text>
+                  )}
+                  {betTab === "Total" && (
+                    <Text style={{ color:"#bbb", marginBottom: RFValue(8) }}>
+                      Total: {totalLabel || "—"} {notEnabled ? "(odds unavailable)" : ""}
+                    </Text>
+                  )}
+
                   <View style={styles.btnRow}>
                     <TouchableOpacity
-                      disabled={locked}
+                      disabled={locked || isStarted}
                       onPress={() => savePick(item, "away")}
-                      style={[styles.pickBtn, pickedThis && existing?.team_picked === item.away && styles.selected, locked && styles.disabled]}
+                      style={[
+                        styles.pickBtn,
+                        pickedThis && existing?.team_picked === item.awayShort && styles.selected,
+                        (locked || isStarted) && styles.disabled
+                      ]}
                     >
-                      <Text style={styles.pickTxt}>Pick {item.away}</Text>
+                      <Text style={styles.pickTxt}>
+                        {betTab === "ML" ? `Pick ${item.awayShort}${fmtOdds(item.mlAway)}`
+                        : betTab === "Spread" ? `${item.awayShort} ${awaySpreadLabel || ""}`
+                        : `Over ${item.total ?? "—"}`}
+                      </Text>
                     </TouchableOpacity>
+
                     <TouchableOpacity
-                      disabled={locked}
+                      disabled={locked || isStarted}
                       onPress={() => savePick(item, "home")}
-                      style={[styles.pickBtn, pickedThis && existing?.team_picked === item.home && styles.selected, locked && styles.disabled]}
+                      style={[
+                        styles.pickBtn,
+                        pickedThis && existing?.team_picked === item.homeShort && styles.selected,
+                        (locked || isStarted) && styles.disabled
+                      ]}
                     >
-                      <Text style={styles.pickTxt}>Pick {item.home}</Text>
+                      <Text style={styles.pickTxt}>
+                        {betTab === "ML" ? `Pick ${item.homeShort}${fmtOdds(item.mlHome)}`
+                        : betTab === "Spread" ? `${item.homeShort} ${homeSpreadLabel || ""}`
+                        : `Under ${item.total ?? "—"}`}
+                      </Text>
                     </TouchableOpacity>
                   </View>
+
+                  {isStarted && <Text style={{ color:"#f88", marginTop: RFValue(6), fontSize: RFValue(11) }}>This game already started.</Text>}
+                  {locked && !pickedThis && <Text style={{ color:"#ddd", marginTop: RFValue(6), fontSize: RFValue(11) }}>You already made today’s pick.</Text>}
                 </View>
               );
             }}
@@ -270,7 +409,7 @@ export default function ManagePick() {
   );
 }
 
-/* ---------- styles (kept your look) ---------- */
+/* ---------- styles (your look) ---------- */
 const styles = StyleSheet.create({
   bg: { flex: 1, backgroundColor: "#0d0013" },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
@@ -294,11 +433,11 @@ const styles = StyleSheet.create({
 
   gameCard: { backgroundColor: "rgba(0,0,0,0.5)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", borderRadius: RFValue(12), padding: RFValue(12) },
   gameTime: { color: GOLD, fontWeight: "800", fontSize: RFValue(12), marginBottom: RFValue(4) },
-  gameTeams: { color: "#fff", fontWeight: "900", fontSize: RFValue(14), marginBottom: RFValue(8) },
+  gameTeams: { color: "#fff", fontWeight: "900", fontSize: RFValue(14), marginBottom: RFValue(2) },
 
   btnRow: { flexDirection: "row", gap: RFValue(10) },
-  pickBtn: { flex: 1, backgroundColor: "rgba(255,255,255,0.1)", borderColor: BORDER, borderWidth: 1, borderRadius: RFValue(12), paddingVertical: RFValue(10), alignItems: "center" },
+  pickBtn: { flex: 1, backgroundColor: "rgba(255,255,255,0.1)", borderColor: "rgba(255,255,255,0.12)", borderWidth: 1, borderRadius: RFValue(12), paddingVertical: RFValue(12), alignItems: "center" },
   selected: { borderColor: GOLD, backgroundColor: "rgba(255,215,0,0.12)" },
-  disabled: { opacity: 0.55 },
+  disabled: { opacity: 0.45 },
   pickTxt: { color: "#fff", fontWeight: "800" },
 });

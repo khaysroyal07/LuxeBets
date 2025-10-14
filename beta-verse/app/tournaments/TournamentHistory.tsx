@@ -1,61 +1,46 @@
-// app/tournaments/TournamentHistory.js
 import React, { useEffect, useState } from "react";
-import {
-  View, Text, StyleSheet, ImageBackground, ActivityIndicator,
-  FlatList, TouchableOpacity,
-} from "react-native";
+import { View, Text, StyleSheet, ImageBackground, ActivityIndicator, FlatList, TouchableOpacity } from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
-import { supabase } from "@/lib/supabase";
-import Constants from "expo-constants";
 import { useRouter } from "expo-router";
+import { supabase } from "@/lib/supabase";
 
 const PURPLE = "#613DC1";
 const GOLD   = "#FFD700";
 const BORDER = "rgba(255,255,255,0.1)";
 const CARD_BG = "rgba(0,0,0,0.6)";
 
-/* SportsDataIO (optional outcome) */
-const SPORT_CFG = {
-  nba:  { base: "https://api.sportsdata.io/v3/nba/scores/json",  gamesByDate: "GamesByDate" },
-  wnba: { base: "https://api.sportsdata.io/v3/wnba/scores/json", gamesByDate: "GamesByDate" },
-  mlb:  { base: "https://api.sportsdata.io/v3/mlb/scores/json",  gamesByDate: "GamesByDate" },
-  nfl:  { base: "https://api.sportsdata.io/v3/nfl/scores/json",  gamesByDate: "ScoresByDate" },
-  nhl:  { base: "https://api.sportsdata.io/v3/nhl/scores/json",  gamesByDate: "GamesByDate" },
+/* week window helper (same as tournaments) */
+const ANCHOR_WEEKDAY = 2;
+const toLocalISO = (d: Date) => {
+  const y = d.getFullYear(), m = `${d.getMonth()+1}`.padStart(2,"0"), day = `${d.getDate()}`.padStart(2,"0");
+  return `${y}-${m}-${day}`;
 };
-const SDIO_KEY =
-  process.env.EXPO_PUBLIC_SPORTSDATAIO_KEY ||
-  Constants?.expoConfig?.extra?.SPORTSDATAIO_KEY || "";
+function currentWindow(today = new Date()) {
+  const base = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const dow = base.getDay();
+  const diff = (dow - ANCHOR_WEEKDAY + 7) % 7;
+  const start = new Date(base); start.setDate(base.getDate() - diff);
+  const end = new Date(start); end.setDate(start.getDate() + 2);
+  return { startISO: toLocalISO(start), endISO: toLocalISO(end) };
+}
+const getTourISO = (t: any): string | null => {
+  if (t?.day_date) return String(t.day_date);
+  if (t?.start_at) return toLocalISO(new Date(t.start_at));
+  if (t?.join_open_at) return toLocalISO(new Date(t.join_open_at));
+  return null;
+};
+const TERMINAL = new Set(["settled","archived","cancelled"]);
 
-const MONTHS_ABBR = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
-const toSDIODate = (d) => `${d.getFullYear()}-${MONTHS_ABBR[d.getMonth()]}-${String(d.getDate()).padStart(2,"0")}`;
-const humanDate = (iso) => {
+const humanDate = (iso?: string | null) => {
   if (!iso) return "—";
   const d = new Date(iso);
-  return `${MONTHS_ABBR[d.getMonth()]} ${String(d.getDate()).padStart(2,"0")}, ${d.getFullYear()}`;
+  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
 };
-const nameFor = (t) => t?.week_label || (t?.entry_fee ? `Tournament $${t.entry_fee}` : "Tournament");
-
-function extractGameId(g) {
-  return String(
-    g.GameID ?? g.GameId ?? g.GlobalGameID ?? `${g.HomeTeam}-${g.AwayTeam}-${g.DateTime || g.Day}`
-  );
-}
-function inferWinner(g) {
-  const status = String(g.Status || "").toLowerCase();
-  const done = status.includes("final") || status.startsWith("f/");
-  const hs = g.HomeTeamScore ?? g.HomeScore ?? g.HomeTeamRuns ?? g.HomeTeamGoals ?? null;
-  const as = g.AwayTeamScore ?? g.AwayScore ?? g.AwayTeamRuns ?? g.AwayTeamGoals ?? null;
-  if (!done) return { done: false, winner: null };
-  if (hs == null || as == null) return { done: true, winner: null };
-  if (hs > as) return { done: true, winner: "home" };
-  if (as > hs) return { done: true, winner: "away" };
-  return { done: true, winner: null };
-}
 
 export default function TournamentHistory() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [rows, setRows] = useState([]);
+  const [rows, setRows] = useState<any[]>([]);
 
   useEffect(() => {
     let alive = true;
@@ -65,119 +50,52 @@ export default function TournamentHistory() {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) { if (alive) setRows([]); return; }
 
-        // 1) all my entrants
-        const { data: myEnts, error: eErr } = await supabase
-          .from("entrants")
+        // my entries
+        const { data: myEntries, error: eErr } = await supabase
+          .from("entries")
           .select("id, tournament_id, status, joined_at")
           .eq("user_id", user.id)
           .order("joined_at", { ascending: false });
         if (eErr) throw eErr;
 
-        const tIds = Array.from(new Set((myEnts || []).map(e => e.tournament_id)));
+        const tIds = Array.from(new Set((myEntries || []).map(e => e.tournament_id)));
         if (tIds.length === 0) { if (alive) setRows([]); return; }
 
-        // 2) fetch only tournaments that are HISTORY
-        //    (use your view if created; else fall back to table + filters)
-        let historyTours = [];
-        const { data: vData, error: vErr } = await supabase
-          .from("v_tournaments_history")
+        const { data: tours, error: tErr } = await supabase
+          .from("tournaments")
           .select("*")
           .in("id", tIds)
           .order("day_date", { ascending: false });
-        if (!vErr && vData) {
-          historyTours = vData;
-        } else {
-          const today = new Date().toISOString().slice(0,10);
-          const { data: tData, error: tErr } = await supabase
-            .from("tournaments")
-            .select("*")
-            .in("id", tIds)
-            .or(`status.in.(settled,cancelled),day_date.lt.${today},end_at.lte.${new Date().toISOString()}`)
-            .order("day_date", { ascending: false });
-          if (tErr) throw tErr;
-          historyTours = tData || [];
-        }
+        if (tErr) throw tErr;
 
-        if (historyTours.length === 0) { if (alive) setRows([]); return; }
+        const { startISO, endISO } = currentWindow();
 
-        // 3) map tournamentId -> entrant row (latest by joined_at)
-        const entByTid = new Map();
-        for (const e of myEnts) {
-          if (!entByTid.has(e.tournament_id)) entByTid.set(e.tournament_id, e);
-        }
-
-        // 4) optional: SportsDataIO resolution per date
-        const byDate = new Map();
-        historyTours.forEach(t => {
-          const k = t.day_date;
-          if (!k) return;
-          if (!byDate.has(k)) byDate.set(k, true);
+        // History = outside current Tue–Thu OR has terminal status
+        const history = (tours || []).filter((t: any) => {
+          const st = String(t?.status || "").toLowerCase();
+          const iso = getTourISO(t);
+          if (!iso) return true;
+          if (TERMINAL.has(st)) return true;
+          return !(iso >= startISO && iso <= endISO);
         });
 
-        const dateResultMap = new Map();
-        if (SDIO_KEY && byDate.size > 0) {
-          for (const [dayISO] of byDate) {
-            const day = new Date(dayISO);
-            const sdioDate = toSDIODate(day);
-            const lists = await Promise.all(
-              Object.values(SPORT_CFG).map(async (cfg) => {
-                const url = `${cfg.base}/${cfg.gamesByDate}/${encodeURIComponent(sdioDate)}?key=${encodeURIComponent(SDIO_KEY)}`;
-                const resp = await fetch(url).catch(() => null);
-                if (!resp || !resp.ok) return [];
-                const arr = await resp.json();
-                return Array.isArray(arr) ? arr : [];
-              })
-            );
-            const map = new Map();
-            lists.flat().forEach((g) => {
-              const id = extractGameId(g);
-              map.set(id, inferWinner(g));
-            });
-            dateResultMap.set(dayISO, map);
-          }
-        }
+        const entByTid = new Map<number, any>();
+        (myEntries || []).forEach((e) => { if (!entByTid.has(e.tournament_id)) entByTid.set(e.tournament_id, e); });
 
-        // 5) for each tournament, try to grab my pick to show outcome
-        const out = [];
-        for (const t of historyTours) {
+        const rows = history.map((t: any) => {
           const ent = entByTid.get(t.id);
-          let result = "No Pick";
-
-          // fetch my pick for that day/tournament
-          const { data: pick } = await supabase
-            .from("picks")
-            .select("game_id, selection")
-            .eq("tournament_id", t.id)
-            .eq("user_id", user.id)
-            .eq("day_date", t.day_date)
-            .maybeSingle();
-
-          if (pick?.game_id) {
-            const mapping = dateResultMap.get(t.day_date);
-            if (mapping && mapping.has(String(pick.game_id))) {
-              const r = mapping.get(String(pick.game_id));
-              if (!r.done) result = "Pending";
-              else if (r.winner === "home" && pick.selection === "home") result = "WIN";
-              else if (r.winner === "away" && pick.selection === "away") result = "WIN";
-              else if (r.winner === null) result = "PUSH/VOID";
-              else result = "LOSS";
-            } else {
-              result = SDIO_KEY ? "Pending" : "—";
-            }
-          }
-
-          out.push({
-            id: String(ent?.id ?? `${t.id}`),
-            name: nameFor(t),
+          const name = t.planet_name || (t.entry_fee ? `Tournament $${t.entry_fee}` : "Tournament");
+          return {
+            id: String(ent?.id ?? t.id),
+            name,
+            dateISO: getTourISO(t),
+            dateHuman: humanDate(getTourISO(t)),
             entryFee: t.entry_fee,
-            dateISO: t.day_date,
-            dateHuman: humanDate(t.day_date),
-            tourStatus: t.status,
-            result,
-          });
-        }
+            status: t.status || "—",
+          };
+        });
 
-        if (alive) setRows(out);
+        if (alive) setRows(rows);
       } catch (err) {
         console.warn("history error:", err);
         if (alive) setRows([]);
@@ -188,25 +106,18 @@ export default function TournamentHistory() {
     return () => { alive = false; };
   }, []);
 
-
-  const renderItem = ({ item }) => (
+  const renderItem = ({ item }: any) => (
     <View style={styles.card}>
-      <Text style={styles.name}>{item.name} • ANY</Text>
+      <Text style={styles.name}>{item.name}</Text>
+      <Text style={styles.dateTxt}>{item.dateHuman}</Text>
 
       <View style={styles.metaRow}>
         <Text style={styles.line}>
           Entry: <Text style={styles.price}>${Number(item.entryFee ?? 0).toFixed(2)}</Text>
         </Text>
-        <View style={[styles.pill, pillStyleForStatus(item.tourStatus)]}>
-          <Text style={styles.pillTxt}>{(item.tourStatus || "—").toUpperCase()}</Text>
+        <View style={[styles.pill, pillStyleForStatus(item.status)]}>
+          <Text style={styles.pillTxt}>{String(item.status || "—").toUpperCase()}</Text>
         </View>
-      </View>
-
-      <View style={styles.metaRow}>
-        <View style={[styles.pill, pillStyleForResult(item.result)]}>
-          <Text style={styles.pillTxt}>{item.result}</Text>
-        </View>
-        <Text style={[styles.line, { opacity: 0.9 }]}>{item.dateHuman}</Text>
       </View>
     </View>
   );
@@ -237,35 +148,30 @@ export default function TournamentHistory() {
   );
 }
 
-/* --- Styling helpers --- */
-function pillStyleForResult(result) {
-  switch ((result || "").toUpperCase()) {
-    case "WIN":       return { backgroundColor: "rgba(0,255,170,0.15)", borderColor: "rgba(0,255,170,0.35)" };
-    case "LOSS":      return { backgroundColor: "rgba(255,80,80,0.15)",  borderColor: "rgba(255,80,80,0.35)" };
-    case "PUSH/VOID": return { backgroundColor: "rgba(255,215,0,0.15)",  borderColor: "rgba(255,215,0,0.35)" };
-    case "PENDING":   return { backgroundColor: "rgba(97,61,193,0.18)",  borderColor: "rgba(97,61,193,0.4)" };
-    default:          return { backgroundColor: "rgba(255,255,255,0.12)", borderColor: BORDER };
-  }
-}
-function pillStyleForStatus(status) {
+/* --- pills --- */
+function pillStyleForStatus(status: string) {
   const s = (status || "").toLowerCase();
   if (s === "settled")   return { backgroundColor: "rgba(0,255,170,0.15)", borderColor: "rgba(0,255,170,0.35)" };
-  if (s === "running")   return { backgroundColor: "rgba(97,61,193,0.18)", borderColor: "rgba(97,61,193,0.4)" };
+  if (s === "in_progress" || s === "running") return { backgroundColor: "rgba(97,61,193,0.18)", borderColor: "rgba(97,61,193,0.4)" };
   if (s === "cancelled") return { backgroundColor: "rgba(255,80,80,0.15)", borderColor: "rgba(255,80,80,0.35)" };
   if (s === "locked")    return { backgroundColor: "rgba(255,215,0,0.15)", borderColor: "rgba(255,215,0,0.35)" };
   return { backgroundColor: "rgba(255,255,255,0.12)", borderColor: BORDER };
 }
 
-/* --- Styles --- */
+/* --- styles (your look) --- */
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#0d0013" },
   back:   { marginTop: RFValue(8), marginBottom: RFValue(10), color: PURPLE, fontWeight: "700", fontSize: RFValue(16) },
   title:  { color: "#fff", fontWeight: "900", fontSize: RFValue(22), marginBottom: RFValue(10) },
+
   card:   { backgroundColor: CARD_BG, padding: RFValue(16), borderRadius: RFValue(16), borderColor: BORDER, borderWidth: 1 },
-  name:   { color: "#fff", fontWeight: "900", fontSize: RFValue(16), marginBottom: RFValue(8) },
+  name:   { color: "#fff", fontWeight: "900", fontSize: RFValue(16) },
+  dateTxt:{ color: "#ccc", marginTop: RFValue(4), marginBottom: RFValue(6) },
+
   line:   { color: "#ddd", fontSize: RFValue(12) },
-  metaRow:{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: RFValue(4) },
+  metaRow:{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: RFValue(6) },
   price:  { color: GOLD, fontWeight: "800" },
+
   pill:   { paddingHorizontal: RFValue(10), paddingVertical: RFValue(4), borderRadius: RFValue(999), borderWidth: 1 },
   pillTxt:{ color: "#fff", fontWeight: "800", fontSize: RFValue(11), letterSpacing: 0.2 },
 });

@@ -12,10 +12,7 @@ import Constants from "expo-constants";
 import { supabase } from "@/lib/supabase";
 
 /* =========================================================
-   FREE/PAID SCOREBOARD HELPERS
-   - NFL via SportsDataIO (needs key)
-   - NBA/MLB/NHL/WNBA via ESPN free scoreboard
-   Only used for slate preview + deriving first kickoff time.
+   FREE/PAID SCOREBOARD HELPERS  (unchanged)
 ========================================================= */
 const SDIO_KEY = (Constants?.expoConfig?.extra as any)?.SPORTSDATAIO_KEY as string | undefined;
 
@@ -28,7 +25,6 @@ export type GameRow = {
   away: { short: string; name: string };
 };
 
-// SDIO date format: 2025-SEP-10
 const toSDioDate = (d: string | Date) => {
   const dt = new Date(d);
   const M = dt.toLocaleString("en-US", { month: "short" }).toUpperCase();
@@ -194,21 +190,24 @@ export default function TournamentsTab() {
       if (showSpinner) setLoading(true);
       setRefreshing(true);
 
-      // Pull open/visible tournaments (add .eq('is_archived', false) if you use that flag)
+      // **** KEY FIX: rely only on DB status ****
       const { data: list, error: tErr } = await supabase
         .from("tournaments")
         .select("*")
-        .order("join_open_at", { ascending: true });
+        .in("status", ["scheduled", "open", "in_progress"])
+        .order("day_date", { ascending: true })
+        .order("entry_fee", { ascending: true });
       if (tErr) throw tErr;
 
       const ids = (list || []).map((t: any) => t.id);
 
-      // Counts from entries (your actual join table)
+      // Entrant counts for the visible tournaments
       const counts: Record<string, number> = {};
       if (ids.length) {
         const { data: entrantRows, error: eErr } = await supabase
           .from("entries")
-          .select("tournament_id");
+          .select("tournament_id")
+          .in("tournament_id", ids);
         if (eErr) throw eErr;
         (entrantRows || []).forEach((r: any) => {
           counts[r.tournament_id] = (counts[r.tournament_id] || 0) + 1;
@@ -218,15 +217,22 @@ export default function TournamentsTab() {
 
       const pmap = makePlanetNameMap(merged);
 
-      // Which tournaments have I joined?
-      const { data: mine, error: mErr } = await supabase
-        .from("entries")
-        .select("tournament_id");
-      if (mErr) throw mErr;
+      // **** Also fixed: check "joined" only for the CURRENT user ****
+      const { data: { user } } = await supabase.auth.getUser();
+      let myJoined: any[] = [];
+      if (user) {
+        const { data: mine, error: mErr } = await supabase
+          .from("entries")
+          .select("tournament_id")
+          .eq("user_id", user.id)
+          .in("tournament_id", ids);
+        if (mErr) throw mErr;
+        myJoined = mine || [];
+      }
 
       setTournaments(merged);
       setPlanetById(pmap);
-      setJoinedIds(new Set((mine || []).map((r: any) => r.tournament_id)));
+      setJoinedIds(new Set(myJoined.map((r: any) => r.tournament_id)));
     } catch (e: any) {
       Alert.alert("Error", e.message || "Failed to load tournaments");
     } finally {
@@ -265,7 +271,6 @@ export default function TournamentsTab() {
       const token = session?.access_token;
       if (!token) return Alert.alert("Sign in required", "Please log in to join tournaments.");
 
-      // Edge function (Option A) — no ON CONFLICT anywhere
       const invokeJoin = async (name: string) => {
         const r = await supabase.functions.invoke(name, {
           body: { tournament_id: selectedT.id, debug: true },
@@ -278,9 +283,7 @@ export default function TournamentsTab() {
       try { resp = await invokeJoin("join_tournament"); }
       catch { resp = await invokeJoin("join-tournament"); }
 
-      if (!resp?.ok && !resp?.alreadyJoined) {
-        throw new Error(resp?.message || resp?.code || "Join failed");
-      }
+      if (!resp?.ok && !resp?.alreadyJoined) throw new Error(resp?.message || resp?.code || "Join failed");
 
       setJoinOpen(false);
       setJoinedConfirmOpen(true);
@@ -313,7 +316,6 @@ export default function TournamentsTab() {
       const closeMs = t.join_close_at ? new Date(t.join_close_at).getTime() : (derivedClose ?? null);
       const now = Date.now();
 
-      // Ignore DB t.status for display to avoid stale values
       const isJoinOpen = (openMs == null || now >= openMs) && (closeMs == null || now < closeMs);
       const status = isJoinOpen ? "Open" : (openMs && now < openMs) ? "Opens Soon" : (derivedFirstKick ? "Locked" : "Off day");
 
@@ -608,7 +610,7 @@ const TournamentCard = memo(function TournamentCard({
       }
       const now = Date.now();
 
-      // Ignore DB t.status here to avoid random "Finished"
+      // enable/disable by timestamps (status text still derived live)
       const isOpen = (openMs == null || now >= openMs) && (closeMs == null || now < closeMs);
 
       let line = "Locked";

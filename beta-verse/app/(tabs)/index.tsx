@@ -1,4 +1,4 @@
-// app/(tabs)/index.tsx — Dash (TheSportsDB only; next+past by league id)
+// app/(tabs)/index.tsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   View, Text, Image, TouchableOpacity, StyleSheet, FlatList, Dimensions,
@@ -10,99 +10,32 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useFonts } from "expo-font";
 import { BlurView } from "expo-blur";
 import { useRouter } from "expo-router";
-import Constants from "expo-constants";
+
+import {
+  SportKey, getTeams, getGamesByDate, normalizeGame, isNotEnabledError
+} from "@/lib/sportsdataio";
 
 const { width } = Dimensions.get("window");
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-/* =================== TheSportsDB (FREE) ===================
-   v1 base: https://www.thesportsdb.com/api/v1/json/{APIKEY}
-   Free demo key: 3
-=========================================================== */
-const TSD_KEY =
-  process.env.EXPO_PUBLIC_TSPORTSDB_KEY ||
-  (Constants?.expoConfig?.extra as any)?.THESPORTSDB_KEY ||
-  "3";
-const TSD_BASE = `https://www.thesportsdb.com/api/v1/json/${encodeURIComponent(TSD_KEY)}`;
-
-/* ---- Hard block + log any accidental SportsDataIO calls (safety) ---- */
-(function installFetchGuardOnce(){
-  // @ts-ignore
-  const g: any = global;
-  if (g.__LX_FETCH_GUARD_INSTALLED__) return;
-  g.__LX_FETCH_GUARD_INSTALLED__ = true;
-  const orig = g.fetch;
-  g.fetch = async (input: any, init?: any) => {
-    const url = typeof input === "string" ? input : input?.url || "";
-    if (/sportsdata\.io/i.test(url)) {
-      console.warn("🚫 Blocked SportsDataIO request:", url);
-      return new Response(JSON.stringify({ error: "SportsDataIO blocked" }), {
-        status: 418, headers: { "Content-Type": "application/json" }
-      });
-    }
-    return orig(input, init);
-  };
-})();
-
-/* ---------- Leaderboard (no dummy fallback at all) ---------- */
-const STREAKS_URL =
-  process.env.EXPO_PUBLIC_STREAKS_URL ||
-  (Constants?.expoConfig?.extra as any)?.STREAKS_URL ||
-  "";
-const STREAKS_API_KEY =
-  process.env.EXPO_PUBLIC_STREAKS_API_KEY ||
-  (Constants?.expoConfig?.extra as any)?.STREAKS_API_KEY ||
-  "";
-
-/* ---------------- Sports (use leagueId to fetch) ---------------- */
-type SportCfg = {
-  label: string;
-  leagueId: number;     // TheSportsDB league id
-  iconUrl: string;
-};
-const SPORT_CONFIG: Record<string, SportCfg> = {
-  nba:  { label: "NBA",  leagueId: 4387, iconUrl: "https://img.icons8.com/ios-filled/100/basketball.png" },
-  wnba: { label: "WNBA", leagueId: 4516, iconUrl: "https://img.icons8.com/fluency/100/basketball-2.png" },
-  mlb:  { label: "MLB",  leagueId: 4424, iconUrl: "https://img.icons8.com/ios-filled/100/baseball.png" },
-  nfl:  { label: "NFL",  leagueId: 4391, iconUrl: "https://img.icons8.com/ios-filled/100/american-football.png" },
-  nhl:  { label: "NHL",  leagueId: 4380, iconUrl: "https://img.icons8.com/ios-filled/100/ice-hockey.png" },
-};
-const SPORTS = Object.keys(SPORT_CONFIG);
+const SPORT_TABS: Array<{key: SportKey; label: string; iconUrl: string}> = [
+  { key:"nfl",  label:"NFL",  iconUrl:"https://img.icons8.com/ios-filled/100/american-football.png" },
+  { key:"nba",  label:"NBA",  iconUrl:"https://img.icons8.com/ios-filled/100/basketball.png" },
+  { key:"wnba", label:"WNBA", iconUrl:"https://img.icons8.com/fluency/100/basketball-2.png" },
+  { key:"mlb",  label:"MLB",  iconUrl:"https://img.icons8.com/ios-filled/100/baseball.png" },
+  { key:"nhl",  label:"NHL",  iconUrl:"https://img.icons8.com/ios-filled/100/ice-hockey.png" },
+];
+const SPORTS = SPORT_TABS.map(t => t.key);
 const YEAR_OPTIONS = ["Auto", 2025, 2024, 2023, 2022];
-
-const defaultTeamLogo =
-  "https://upload.wikimedia.org/wikipedia/commons/1/14/No_Image_Available.jpg";
-
-/* ---------------- Theme & Utils ---------------- */
+const DEFAULT_TIER = "20";
+const defaultTeamLogo = "https://upload.wikimedia.org/wikipedia/commons/1/14/No_Image_Available.jpg";
 const PURPLE = "#613DC1";
 const GOLD = "#FFD700";
-const DEFAULT_TIER = "20";
 
-function pad(n:number){ return String(n).padStart(2,"0"); }
-function toISODate(d: Date){ return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
-function sanitizeUrl(u?: string|null){ if(!u) return null; try{ const t=u.trim(); return t.startsWith("http://") ? "https://"+t.slice(7) : t; }catch{ return null; } }
-
-function parseGameDate(g:any){
-  const tryDate = (s?: string|null) => { if(!s) return null; const d=new Date(s); return isNaN(d.getTime())?null:d; };
-  const ts = tryDate(g?.strTimestamp); if (ts) return ts;
-  const dl = (g?.dateEventLocal||"").trim(), tl=(g?.strTimeLocal||"").trim();
-  if (dl && tl) { const d=tryDate(`${dl}T${tl}`); if (d) return d; }
-  const d = (g?.dateEvent||"").trim(), t=(g?.strTime||"").trim();
-  if (d && t) { const d2=tryDate(`${d}T${t}`); if (d2) return d2; }
-  if (d) { const d3=tryDate(`${d}T12:00`); if (d3) return d3; }
-  return null;
-}
-function statusBucketFromTSDB(progress?: string, intHomeScore?: any, intAwayScore?: any, dt?: Date|null){
-  const now=new Date();
-  const prog=(progress||"").toLowerCase();
-  if (prog.includes("live") || prog.includes("inplay") || prog.includes("in play")) return "LIVE" as const;
-  if ((intHomeScore!=null || intAwayScore!=null) && dt && dt.getTime() < now.getTime()) return "FINAL" as const;
-  if (dt && dt > now) return "UPCOMING" as const;
-  return "UPCOMING" as const;
-}
-function tagStyle(b: "LIVE"|"UPCOMING"|"FINAL"){ return b==="LIVE"?{bg:"#22c55e",fg:"#0a2915"}:b==="UPCOMING"?{bg:"#f59e0b",fg:"#2b1a00"}:{bg:"#6b7280",fg:"#0d1117"}; }
+function pad2(n:number){ return String(n).padStart(2,"0"); }
+function toISODate(d: Date){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
 function relativeWhen(ms?: number,b?: "FINAL"|"UPCOMING"|"LIVE"){
   if(!ms)return""; const now=Date.now(); const diff=ms-now; const abs=Math.abs(diff);
   const min=Math.round(abs/60000); const h=Math.floor(min/60); const m=min%60;
@@ -110,20 +43,14 @@ function relativeWhen(ms?: number,b?: "FINAL"|"UPCOMING"|"LIVE"){
   if(diff<=0) return "now"; if(h>=24) return `in ${Math.floor(h/24)}d`; if(h>=1) return `in ${h}h ${m?m+"m":""}`.trim(); return `in ${m}m`;
 }
 
-/* composite key + dedupe */
 const makeEventKey = (sportKey: string, g: any) =>
   `${sportKey}:${String(g.id ?? `${g.homeName}-${g.awayName}`)}:${String(g.rawDate ?? 0)}`;
 const uniqByKey = (sportKey: string, list: any[]) => {
   const seen = new Set<string>();
-  return (list || []).filter(g => {
-    const k = makeEventKey(sportKey, g);
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
+  return (list || []).filter(g => { const k = makeEventKey(sportKey, g); if (seen.has(k)) return false; seen.add(k); return true; });
 };
+function sanitizeUrl(u?: string|null){ if(!u) return null; try{ const t=u.trim(); return t.startsWith("http://") ? "https://"+t.slice(7) : t; }catch{ return null; } }
 
-/* Atoms */
 function TeamAvatar({ uri, name }: { uri?: string|null; name?: string }) {
   const [err, setErr] = useState(false);
   const good = !err && sanitizeUrl(uri || null);
@@ -140,26 +67,40 @@ function Chip({ label, selected, onPress, style }: any) {
   );
 }
 
-/* Screen */
+const MOCK_STREAKS = [
+  { id: "1", name: "Ava King",  streak: 8, avatarUrl: "https://i.pravatar.cc/100?img=5" },
+  { id: "2", name: "Noah Lee",  streak: 6, avatarUrl: "https://i.pravatar.cc/100?img=12" },
+  { id: "3", name: "Maya Cruz", streak: 5, avatarUrl: "https://i.pravatar.cc/100?img=32" },
+  { id: "4", name: "Owen Kim",  streak: 4, avatarUrl: "https://i.pravatar.cc/100?img=44" },
+  { id: "5", name: "Liam Fox",  streak: 3, avatarUrl: "https://i.pravatar.cc/100?img=14" },
+];
+function trophyForRank(rank:number){
+  if(rank===1) return { uri:"https://img.icons8.com/fluency/96/trophy.png" };
+  if(rank===2) return { uri:"https://img.icons8.com/color/96/silver-medal.png" };
+  if(rank===3) return { uri:"https://img.icons8.com/color/96/bronze-medal.png" };
+  return null;
+}
+
 export default function Dash(){
   const [selectedSportIndex,setSelectedSportIndex]=useState(0);
   const [selectedYear,setSelectedYear]=useState<"Auto"|number>("Auto");
 
+  const [teamsByKey,setTeamsByKey]=useState<Record<string, any>>({});
   const [events,setEvents]=useState<any[]>([]);
   const [loading,setLoading]=useState(false);
   const [note,setNote]=useState("");
+  const [notEnabled,setNotEnabled]=useState(false);
 
   const [showFilter,setShowFilter]=useState(false);
   const [quickFilter,setQuickFilter]=useState<"ALL"|"LIVE"|"UPCOMING"|"FINAL">("ALL");
   const [todayOnly,setTodayOnly]=useState(false);
   const [sortMode,setSortMode]=useState<"smart"|"timeAsc"|"timeDesc">("smart");
 
-  // leaderboard (no mock; hidden if not configured)
+  const [profileOpen, setProfileOpen] = useState(false);
   const [streakOpen, setStreakOpen] = useState(false);
   const [streaks, setStreaks] = useState<any[]>([]);
   const [streakLoading, setStreakLoading] = useState(false);
   const [streakError, setStreakError] = useState("");
-  const [profileOpen, setProfileOpen] = useState(false);
 
   const router=useRouter();
   const [fontsLoaded]=useFonts({
@@ -168,56 +109,46 @@ export default function Dash(){
     PoppinsSemiBold: require("@/assets/fonts/Poppins-SemiBold.ttf"),
     PoppinsBold: require("@/assets/fonts/Poppins-Bold.ttf"),
   });
-
-  const sportKey=SPORTS[selectedSportIndex];
-  const sportCfg=SPORT_CONFIG[sportKey];
+  const sportKey=SPORTS[selectedSportIndex] as SportKey;
 
   const go = useCallback((path: string) => {
     setProfileOpen(false);
     requestAnimationFrame(() => router.push(path as any));
   }, [router]);
 
-  /* ====== Fetch helpers (TSDB) — league-based, reliable ====== */
-  async function tsd(path: string){
-    const url = `${TSD_BASE}/${path}`;
-    const r = await fetch(url).catch(()=>null);
-    if(!r || !r.ok) {
-      console.warn("TSDB HTTP", r?.status, url);
-      return null;
+  useEffect(()=>{ let off=false; (async()=>{
+    try{
+      setTeamsByKey({});
+      const byKey = await getTeams(sportKey);
+      if(!off) setTeamsByKey(byKey);
+    }catch(e){ if(!off) setTeamsByKey({}); }
+  })(); return()=>{off=true}; },[sportKey]);
+
+  async function fetchWindowSerial(center: Date,aheadDays:number,backDays:number,stopAfter:number){
+    const out:any[]=[];
+    for(let i=0;i<=aheadDays;i++){
+      const dt=new Date(center); dt.setDate(dt.getDate()+i);
+      const arr=await getGamesByDate(sportKey, dt); out.push(...(arr||[]));
+      if(out.length>=stopAfter)break;
     }
-    try { return await r.json(); } catch { return null; }
+    if(out.length<stopAfter){
+      for(let i=1;i<=backDays;i++){
+        const dt=new Date(center); dt.setDate(dt.getDate()-i);
+        const arr=await getGamesByDate(sportKey, dt); out.push(...(arr||[]));
+        if(out.length>=stopAfter)break;
+      }
+    }
+    return out;
+  }
+  async function fetchYearSamples(year:number){
+    const sample=[new Date(`${year}-01-15`),new Date(`${year}-04-15`),new Date(`${year}-08-15`),new Date(`${year}-11-15`)];
+    let res:any[]=[]; for(const d of sample){ const c=await getGamesByDate(sportKey, d); res=res.concat(c||[]); if(res.length>=40)break; }
+    return res;
   }
 
-  // Next 15 by league id
-  async function fetchNextLeague(id: number){
-    const j = await tsd(`eventsnextleague.php?id=${encodeURIComponent(String(id))}`);
-    return Array.isArray(j?.events) ? j.events : [];
+  function enrichGames(list:any[]){
+    return (list||[]).map((g:any)=> normalizeGame(sportKey, g, teamsByKey));
   }
-  // Last 15 by league id
-  async function fetchPastLeague(id: number){
-    const j = await tsd(`eventspastleague.php?id=${encodeURIComponent(String(id))}`);
-    return Array.isArray(j?.events) ? j.events : [];
-  }
-
-  function enrich(list:any[], bucketHint?: "UPCOMING"|"FINAL"){
-    return (list||[]).map((g:any)=>{
-      const dt = parseGameDate(g);
-      const when = dt
-        ? `${dt.toLocaleDateString()} • ${dt.toLocaleTimeString([], {hour:"numeric",minute:"2-digit"})}`
-        : (g.dateEvent || "TBD");
-      const bucket = bucketHint || statusBucketFromTSDB(g.strProgress, g.intHomeScore, g.intAwayScore, dt);
-      return {
-        id: g.idEvent || `${g.strHomeTeam}-${g.strAwayTeam}-${g.dateEvent}-${g.strTime}`,
-        homeName: g.strHomeTeam, awayName: g.strAwayTeam,
-        homeLogo: defaultTeamLogo, awayLogo: defaultTeamLogo,
-        homeScore: g.intHomeScore!=null ? Number(g.intHomeScore) : null,
-        awayScore: g.intAwayScore!=null ? Number(g.intAwayScore) : null,
-        when, rawDate: dt?dt.getTime():0, bucket,
-        raw: g,
-      };
-    });
-  }
-
   function sortEnriched(arr:any[],mode:"smart"|"timeAsc"|"timeDesc"){
     if(!Array.isArray(arr))return [];
     const A=[...arr];
@@ -231,70 +162,59 @@ export default function Dash(){
     });
   }
 
-  /* -------- Events (next + past) -------- */
   useEffect(()=>{ let off=false; (async()=>{
-      setLoading(true); setEvents([]); setNote("");
+      setLoading(true); setEvents([]); setNote(""); setNotEnabled(false);
       try{
-        const lid = sportCfg.leagueId;
-
-        // Pull upcoming first; if empty, we’ll rely on past
-        const next = await fetchNextLeague(lid);
-        const past = await fetchPastLeague(lid);
-
-        let list:any[] = [];
-        if (Array.isArray(next) && next.length) {
-          list = list.concat(enrich(next, "UPCOMING"));
+        const now=new Date(); let list:any[]=[];
+        if(selectedYear==="Auto"){
+          if(todayOnly){
+            const today=await getGamesByDate(sportKey, now);
+            const e=enrichGames(today||[]); const unique=uniqByKey(sportKey,e);
+            if(!off){ setEvents(sortEnriched(unique,sortMode)); setNote(unique.length?"":"No games today."); }
+            setLoading(false); return;
+          }
+          list=await fetchWindowSerial(now,5,0,60);
+          let e=enrichGames(list);
+          let up=e.filter(g=>g.bucket!=="FINAL");
+          if(up.length===0){ setNote("Looking ahead for upcoming games…"); list=await fetchWindowSerial(now,14,0,80); e=enrichGames(list); up=e.filter(g=>g.bucket!=="FINAL"); }
+          if(up.length===0){ setNote("No upcoming found; showing recent finals…"); list=await fetchWindowSerial(now,0,7,80); e=enrichGames(list); }
+          if(!e?.length){ const yr=now.getFullYear(); setNote(`Sampling ${yr}…`); list=await fetchYearSamples(yr); e=enrichGames(list); }
+          const unique=uniqByKey(sportKey, e);
+          if(!off) setEvents(sortEnriched(unique,sortMode));
+        }else{
+          setNote(`Looking in ${selectedYear}…`);
+          const yearList=await fetchYearSamples(Number(selectedYear));
+          const e=enrichGames(yearList);
+          const unique=uniqByKey(sportKey, e);
+          if(!off){ setEvents(sortEnriched(unique,sortMode)); setNote(unique.length?"":`No results in ${selectedYear}.`); }
         }
-        if (Array.isArray(past) && past.length) {
-          list = list.concat(enrich(past, "FINAL"));
-        }
-
-        // Optional "Today" filter
-        if (todayOnly) {
-          const isoToday = toISODate(new Date());
-          list = list.filter((e:any)=> {
-            const d = e?.raw?.dateEvent || "";
-            if (d) return d === isoToday;
-            if (e?.rawDate) {
-              const nd = new Date(e.rawDate);
-              return toISODate(nd) === isoToday;
-            }
-            return false;
-          });
-        }
-
-        const unique = uniqByKey(sportKey, list);
-        const sorted = sortEnriched(unique, sortMode);
-
-        if(!off){
-          setEvents(sorted);
-          setNote(sorted.length ? "" : "No events to show (league next/past empty).");
-        }
-      }catch(e){
-        console.warn("Events error", sportCfg.label, e);
-        if(!off){ setEvents([]); setNote("No events to show (check API/network)."); }
+      }catch(e:any){
+        if(isNotEnabledError(e)){ setNotEnabled(true); setEvents([]); setNote(""); }
+        else{ if(!off){ setEvents([]); setNote("No events to show."); } }
       }finally{ if(!off) setLoading(false); }
     })(); return()=>{off=true};
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[sportKey,selectedYear,todayOnly,sortMode,TSD_KEY,sportCfg.leagueId]);
+  },[sportKey,selectedYear,todayOnly,sortMode,teamsByKey]);
 
   const shownEvents=useMemo(()=>quickFilter==="ALL"?events:events.filter(e=>e.bucket===quickFilter),[events,quickFilter]);
   if(!fontsLoaded) return null;
 
-  /* Card */
   const TeamCol = ({ name, logo }: any) => (
     <View style={styles.teamCol}>
-      <TeamAvatar uri={logo} name={name} />
+      <TeamAvatar uri={logo || defaultTeamLogo} name={name} />
       <View style={styles.teamNameBox}>
-        <Text style={styles.teamName} numberOfLines={1} ellipsizeMode="tail">
-          {name}
-        </Text>
+        <Text style={styles.teamName} numberOfLines={1} ellipsizeMode="tail">{name}</Text>
       </View>
     </View>
   );
 
   const EventCard = ({ item }: any) => {
-    const { bg, fg } = tagStyle(item.bucket);
+    const tagStyle = item.bucket==="LIVE"
+      ? { bg:"#22c55e", fg:"#0a2915" }
+      : item.bucket==="UPCOMING"
+      ? { bg:"#f59e0b", fg:"#2b1a00" }
+      : { bg:"#6b7280", fg:"#0d1117" };
+
     return (
       <View style={styles.eventWrapper}>
         <View style={styles.eventCardVertical}>
@@ -305,13 +225,10 @@ export default function Dash(){
               style={StyleSheet.absoluteFill}
             />
             <View style={styles.statusWrap}>
-              <View style={[styles.statusPill, { backgroundColor: bg }]}>
-                <Text style={[styles.statusPillText, { color: fg }]} numberOfLines={1}>
-                  {item.bucket}
-                </Text>
+              <View style={[styles.statusPill, { backgroundColor: tagStyle.bg }]}>
+                <Text style={[styles.statusPillText, { color: tagStyle.fg }]} numberOfLines={1}>{item.bucket}</Text>
               </View>
             </View>
-
             <View style={styles.mainRow}>
               <TeamCol name={item.homeName} logo={item.homeLogo} />
               <View style={styles.centerCol}>
@@ -327,16 +244,15 @@ export default function Dash(){
             </View>
           </BlurView>
         </View>
-
         <View style={styles.standingsCardVertical}>
           <View style={styles.standingBox}>
             <Text style={styles.standingTeamName} numberOfLines={1}>{item.homeName}</Text>
-            <Text style={styles.standingText} numberOfLines={1}>W-L: - - • —</Text>
+            <Text style={styles.standingText} numberOfLines={1}>W-L: — • —</Text>
           </View>
           <View style={styles.vDivider} />
           <View style={styles.standingBox}>
             <Text style={styles.standingTeamName} numberOfLines={1}>{item.awayName}</Text>
-            <Text style={styles.standingText} numberOfLines={1}>W-L: - - • —</Text>
+            <Text style={styles.standingText} numberOfLines={1}>W-L: — • —</Text>
           </View>
         </View>
       </View>
@@ -344,48 +260,35 @@ export default function Dash(){
   };
 
   const renderSportTab = ({ item: k, index }: any) => {
-    const cfg = SPORT_CONFIG[k]; const selected = selectedSportIndex===index;
+    const cfg = SPORT_TABS.find(t => t.key===k)!; const selected = selectedSportIndex===index;
     return (
       <TouchableOpacity onPress={()=>{ setSelectedSportIndex(index); setSelectedYear("Auto"); setQuickFilter("ALL"); }}
-        style={[styles.sportIconHorizontal, selected && { borderColor: GOLD, borderWidth: 2 }]}>
+        style={[styles.sportIconHorizontal, selected && { borderColor: GOLD, borderWidth: 2 }]} activeOpacity={0.85}>
         <Image source={{ uri: cfg.iconUrl }} style={[styles.sportIconSmall, { tintColor: "#fff" }]} />
         <Text style={[styles.sportNameHorizontal, selected && { color: GOLD }]} numberOfLines={1}>{cfg.label}</Text>
       </TouchableOpacity>
     );
   };
 
-  /* Streaks (real endpoint only; no mock) */
+  const STREAKS_URL = "";
+  const STREAKS_API_KEY = "";
   const loadStreaks = async () => {
-    setStreakLoading(true);
-    setStreakError("");
-    try {
-      if (!STREAKS_URL) { setStreaks([]); setStreakError("No leaderboard endpoint configured."); return; }
-      const r = await fetch(STREAKS_URL, {
-        headers: {
-          "Content-Type": "application/json",
-          ...(STREAKS_API_KEY ? { apikey: STREAKS_API_KEY, Authorization: `Bearer ${STREAKS_API_KEY}` } : {})
-        }
-      });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const j = await r.json();
-      const rows = Array.isArray(j) ? j : (j?.streaks || []);
-      setStreaks(rows || []);
-      if (!rows?.length) setStreakError("No data.");
-    } catch (e:any) {
-      console.warn("streaks error", e?.message || e);
-      setStreaks([]);
-      setStreakError("Failed to load.");
-    } finally {
-      setStreakLoading(false);
-    }
+    setStreakLoading(true); setStreakError("");
+    try{
+      let rows:any[]=[];
+      if(STREAKS_URL){
+        const r=await fetch(STREAKS_URL,{headers:{"Content-Type":"application/json", ...(STREAKS_API_KEY?{apikey:STREAKS_API_KEY,Authorization:`Bearer ${STREAKS_API_KEY}`}:{})}});
+        if(r.ok){ const j=await r.json(); rows=Array.isArray(j)?j:(j?.streaks||[]); }
+      }
+      if(!rows.length) rows=MOCK_STREAKS;
+      rows.sort((a,b)=>(b.streak||0)-(a.streak||0));
+      setStreaks(rows);
+    }catch{ setStreaks(MOCK_STREAKS); setStreakError("Using sample data."); }
+    finally{ setStreakLoading(false); }
   };
-
-  /* UI */
-  if (!fontsLoaded) return null;
 
   return (
     <ImageBackground source={require("@/assets/images/bgDash.png")} style={styles.container}>
-      {/* Top bar */}
       <View style={styles.topBar}>
         <TouchableOpacity onPress={()=>{ LayoutAnimation.easeInEaseOut(); setShowFilter(s=>!s); }} activeOpacity={0.85}>
           <View style={styles.filterTopBtn}>
@@ -397,18 +300,15 @@ export default function Dash(){
         <Text style={styles.appTitle}>LuxeBETS</Text>
 
         <View style={{ flexDirection: "row", gap: RFValue(12) }}>
-          {!!STREAKS_URL && (
-            <TouchableOpacity onPress={() => { setStreakOpen(true); loadStreaks(); }} activeOpacity={0.85}>
-              <Image source={{ uri: "https://img.icons8.com/ios-filled/50/leaderboard.png" }} style={[styles.iconSmall, { tintColor: GOLD }]} />
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity onPress={() => { setStreakOpen(true); loadStreaks(); }} activeOpacity={0.85}>
+            <Image source={{ uri: "https://img.icons8.com/ios-filled/50/leaderboard.png" }} style={[styles.iconSmall, { tintColor: GOLD }]} />
+          </TouchableOpacity>
           <TouchableOpacity onPress={() => setProfileOpen((v)=>!v)} activeOpacity={0.85}>
             <Image source={{ uri: "https://img.icons8.com/ios-filled/50/user.png" }} style={[styles.iconSmall, { tintColor: "#fff" }]} />
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Filter panel */}
       {showFilter && (
         <View style={styles.filterPanel}>
           <Text style={styles.filterTitle}>Quick Filter</Text>
@@ -448,14 +348,15 @@ export default function Dash(){
         </View>
       )}
 
-      {/* Profile dropdown menu */}
       {profileOpen && (
         <View style={[StyleSheet.absoluteFill, { zIndex: 40 }]} pointerEvents="box-none">
           <Pressable style={styles.overlayTap} onPress={()=>setProfileOpen(false)} />
           <BlurView intensity={70} tint="dark" style={styles.profileMenu}>
             <Pressable style={styles.menuItem} onPress={() => go("/user/profile")}>
               <Image source={{ uri: "https://img.icons8.com/ios-glyphs/30/user--v1.png" }} style={styles.menuIcon} />
-              <Text style={styles.menuText}>Profile</Text>
+              <TouchableOpacity onPress={() => router.push("/profile")}>
+                <Text style={styles.menuText}>Profile</Text>
+              </TouchableOpacity>
             </Pressable>
             <View style={styles.menuDivider} />
             <Pressable style={styles.menuItem} onPress={() => go("/user/settings")}>
@@ -466,7 +367,6 @@ export default function Dash(){
         </View>
       )}
 
-      {/* Streaks modal */}
       <Modal transparent animationType="fade" visible={streakOpen} onRequestClose={()=>setStreakOpen(false)}>
         <View style={styles.modalBackdrop}>
           <BlurView intensity={80} tint="dark" style={styles.modalCard}>
@@ -486,16 +386,23 @@ export default function Dash(){
               data={streaks}
               keyExtractor={(it, idx)=>String(it?.id ?? idx)}
               refreshControl={<RefreshControl refreshing={streakLoading} onRefresh={loadStreaks} tintColor="#fff" />}
-              renderItem={({ item }) => (
-                <View style={styles.rankRow}>
-                  <Text style={styles.rankNum}>{item.rank ?? "-"}</Text>
-                  <Image source={{ uri: item.avatarUrl || defaultTeamLogo }} style={styles.userAvatar} />
-                  <View style={{ flex:1 }}>
-                    <Text style={styles.rankName} numberOfLines={1}>{item.name ?? "Player"}</Text>
+              renderItem={({ item, index }) => {
+                const trophy = trophyForRank(index+1);
+                const max = Math.max(1, streaks[0]?.streak || 1);
+                const barW = Math.max(10, (item.streak / max) * (width * 0.5));
+                return (
+                  <View style={styles.rankRow}>
+                    <Text style={styles.rankNum}>{index+1}</Text>
+                    {trophy ? <Image source={trophy} style={styles.trophy} /> : <View style={{ width: RFValue(24) }} />}
+                    <Image source={{ uri: item.avatarUrl || defaultTeamLogo }} style={styles.userAvatar} />
+                    <View style={{ flex:1 }}>
+                      <Text style={styles.rankName} numberOfLines={1}>{item.name}</Text>
+                      <View style={styles.progressTrack}><View style={[styles.progressBar, { width: barW }]} /></View>
+                    </View>
+                    <Text style={styles.rankStreak}>W{item.streak}</Text>
                   </View>
-                  <Text style={styles.rankStreak}>W{item.streak ?? 0}</Text>
-                </View>
-              )}
+                );
+              }}
               ListEmptyComponent={!streakLoading ? (<Text style={styles.modalNote}>No players yet.</Text>) : null}
               contentContainerStyle={{ paddingBottom: RFValue(8) }}
               showsVerticalScrollIndicator={false}
@@ -523,6 +430,7 @@ export default function Dash(){
               contentContainerStyle={{ paddingHorizontal: RFValue(10), paddingVertical: RFValue(8) }}
             />
             {loading ? <ActivityIndicator size="small" color={PURPLE} style={{ marginVertical: RFValue(10) }} /> : null}
+            {!!notEnabled && <Text style={{ color:"#fff", fontFamily:"Poppins", paddingHorizontal:RFValue(14), marginBottom:RFValue(6), opacity:0.8 }}>This league isn’t enabled on your SportsDataIO key yet.</Text>}
             {!!note && <Text style={{ color:"#fff", fontFamily:"Poppins", paddingHorizontal:RFValue(14), marginBottom:RFValue(6), opacity:0.8 }}>{note}</Text>}
           </>
         }
@@ -537,7 +445,7 @@ export default function Dash(){
   );
 }
 
-/* ---------------- Styles ---------------- */
+/* ---------------- Styles (your originals) ---------------- */
 const styles = StyleSheet.create({
   container:{ flex:1, width:"100%", height:"100%" },
 
@@ -546,7 +454,7 @@ const styles = StyleSheet.create({
   iconSmall:{ width:RFValue(28), height:RFValue(28) },
   appTitle:{ fontFamily:"PoppinsBold", fontSize:RFValue(20), color:"white" },
 
-  filterTopBtn:{ flexDirection:"row", alignItems:"center", backgroundColor:GOLD,
+  filterTopBtn:{ flexDirection:"row", alignItems:"center", backgroundColor:"#FFD700",
     paddingVertical:RFValue(6), paddingHorizontal:RFValue(10), borderRadius:RFValue(12),
     shadowColor:"#000", shadowOpacity:0.15, shadowRadius:6, shadowOffset:{ width:0, height:2 } },
   filterTopBtnText:{ fontFamily:"PoppinsMedium", fontSize:RFValue(12), marginLeft:RFValue(6), color:"#111" },
@@ -605,16 +513,12 @@ const styles = StyleSheet.create({
   vDivider:{ width:1, height:RFValue(24), backgroundColor:"rgba(255,255,255,0.08)" },
 
   avatarFallback:{ width:RFValue(56), height:RFValue(56), borderRadius:999, alignItems:"center", justifyContent:"center",
-    borderWidth:1, borderColor:"#fff", backgroundColor:"#FFD70022" },
+    borderWidth:1, borderColor:"#fff", backgroundColor:"rgba(255,215,0,0.15)" },
   avatarInitials:{ fontFamily:"PoppinsSemiBold", color:"#FFD700", fontSize:RFValue(15) },
 
   overlayTap:{ ...StyleSheet.absoluteFillObject },
-  profileMenu:{
-    position:"absolute", top:RFValue(92), right:RFValue(14),
-    width:RFValue(170), borderRadius:RFValue(14), overflow:"hidden",
-    backgroundColor:"rgba(30,30,30,0.9)", borderWidth:1, borderColor:"rgba(255,255,255,0.08)",
-    zIndex: 5, elevation: 8
-  },
+  profileMenu:{ position:"absolute", top:RFValue(92), right:RFValue(14), width:RFValue(170), borderRadius:RFValue(14), overflow:"hidden",
+    backgroundColor:"rgba(30,30,30,0.9)", borderWidth:1, borderColor:"rgba(255,255,255,0.08)", zIndex: 5, elevation: 8 },
   menuItem:{ flexDirection:"row", alignItems:"center", paddingVertical:RFValue(10), paddingHorizontal:RFValue(12) },
   menuIcon:{ width:RFValue(18), height:RFValue(18), tintColor:"#fff", marginRight:RFValue(8) },
   menuText:{ color:"#fff", fontFamily:"PoppinsMedium", fontSize:RFValue(14) },
@@ -631,9 +535,9 @@ const styles = StyleSheet.create({
 
   rankRow:{ flexDirection:"row", alignItems:"center", paddingVertical:RFValue(8), gap:RFValue(8) },
   rankNum:{ width:RFValue(22), textAlign:"center", color:"#fff", fontFamily:"PoppinsSemiBold" },
+  trophy:{ width:RFValue(24), height:RFValue(24) },
   userAvatar:{ width:RFValue(36), height:RFValue(36), borderRadius:999, borderWidth:1, borderColor:"rgba(255,255,255,0.2)" },
   rankName:{ color:"#fff", fontFamily:"PoppinsMedium", fontSize:RFValue(13) },
-  rankStreak:{ color:"#fff", fontFamily:"PoppinsSemiBold" },
   progressTrack:{ height:RFValue(6), backgroundColor:"rgba(255,255,255,0.1)", borderRadius:RFValue(999), marginTop:RFValue(4), overflow:"hidden" },
-  progressBar:{ height:"100%", backgroundColor:GOLD },
+  progressBar:{ height:"100%", backgroundColor:"#FFD700" },
 });
