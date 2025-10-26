@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState, memo } from "react";
+import React, { useEffect, useMemo, useRef, useState, memo, useCallback } from "react";
 import {
   View, Text, TouchableOpacity, StyleSheet, Modal, ScrollView,
   ImageBackground, ActivityIndicator, Alert, TextInput, Platform,
@@ -110,12 +110,12 @@ const GOLD = "#FFD700";
 const PURPLE = "#613DC1";
 const DARK = "#1a1a1a";
 
-const PLANET_BY_RANK = ["Tournament of Mars", "Tournament of Jupiter", "Tournament of Saturn"];
 const FEE_TO_PLANET: Record<string, string> = {
-  "20": PLANET_BY_RANK[0],
-  "50": PLANET_BY_RANK[1],
-  "100": PLANET_BY_RANK[2],
+  "20": "Tournament of Mars",
+  "50": "Tournament of Jupiter",
+  "100": "Tournament of Saturn",
 };
+
 const PROMO_CODES: Record<string, number> = { LUXE10: 10, VIP20: 20, BETA30: 30 };
 
 const fmtMoney = (n: any) => `$${Number(n || 0).toFixed(2)}`;
@@ -129,24 +129,36 @@ const timeUntil = (ms: number) => {
   return `${mm}m`;
 };
 
-function makePlanetNameMap(list: any[]): Map<number, string> {
-  const group = new Map<string, any[]>();
-  for (const t of list) {
-    const key = String(t.day_date);
-    const arr = group.get(key) || [];
-    arr.push(t);
-    group.set(key, arr);
+// ---- UTC-safe helpers for the "current" Tue→Thu window ----
+const pad = (n: number) => String(n).padStart(2, "0");
+const toISO_UTC = (d: Date) =>
+  `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+
+function addDaysUTC(src: Date, days: number) {
+  const d = new Date(Date.UTC(src.getUTCFullYear(), src.getUTCMonth(), src.getUTCDate()));
+  d.setUTCDate(d.getUTCDate() + days);
+  return d;
+}
+
+/**
+ * If today is Tue–Thu → THIS Tue–Thu
+ * If Sun–Mon → UPCOMING Tue–Thu
+ * If Fri–Sat → NEXT Tue–Thu
+ */
+function currentTueThuWindowUTC(today = new Date()) {
+  const dow = today.getUTCDay(); // 0=Sun..6=Sat
+  let start: Date;
+
+  if (dow >= 2 && dow <= 4) {
+    start = addDaysUTC(today, -(dow - 2));
+  } else if (dow === 0 || dow === 1) {
+    start = addDaysUTC(today, 2 - dow);
+  } else {
+    start = addDaysUTC(today, 9 - dow);
   }
-  const map = new Map<number, string>();
-  group.forEach((arr) => {
-    arr.sort((a, b) => Number(a.entry_fee) - Number(b.entry_fee));
-    arr.forEach((t, idx) => {
-      const fee = Number(t.entry_fee);
-      const fallback = FEE_TO_PLANET[String(fee)] || `Tournament $${fee}`;
-      map.set(t.id, PLANET_BY_RANK[idx] || fallback);
-    });
-  });
-  return map;
+
+  const end = addDaysUTC(start, 2); // Thu
+  return { startISO: toISO_UTC(start), endISO: toISO_UTC(end) };
 }
 
 /* =========================================================
@@ -158,8 +170,7 @@ export default function TournamentsTab() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [tournaments, setTournaments] = useState<any[]>([]);
-  const [planetById, setPlanetById] = useState<Map<number, string>>(new Map());
-  const [joinedIds, setJoinedIds] = useState<Set<number | string>>(new Set());
+  const [joinedIds, setJoinedIds] = useState<Set<string>>(new Set());
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Join modal
@@ -185,63 +196,71 @@ export default function TournamentsTab() {
 
   const tickRef = useRef<any>(null);
 
-  const loadTournaments = async (showSpinner = true) => {
+  /* =========================================================
+     Load tournaments aligned to new schema
+  ========================================================= */
+  const loadTournaments = useCallback(async (showSpinner = true) => {
     try {
       if (showSpinner) setLoading(true);
       setRefreshing(true);
 
-      // **** KEY FIX: rely only on DB status ****
+      const { startISO, endISO } = currentTueThuWindowUTC(new Date());
+
+      // 1) phase-aware tournaments from the view
       const { data: list, error: tErr } = await supabase
-        .from("tournaments")
-        .select("*")
-        .in("status", ["scheduled", "open", "in_progress"])
-        .order("day_date", { ascending: true })
-        .order("entry_fee", { ascending: true });
+        .from("tournament_phase")
+        .select("id, tier, title, entry_fee_cents, start_date, end_date, join_open_at, join_close_at, phase")
+        .gte("start_date", startISO)
+        .lte("start_date", endISO)
+        .in("phase", ["upcoming", "open"])
+        .order("start_date", { ascending: true })
+        .order("entry_fee_cents", { ascending: true });
       if (tErr) throw tErr;
 
-      const ids = (list || []).map((t: any) => t.id);
+      const ids = (list || []).map((t: any) => t.id as string);
 
-      // Entrant counts for the visible tournaments
-      const counts: Record<string, number> = {};
+      // 2) entrants counts via RPC (no table read)
+      let counts: Record<string, number> = {};
       if (ids.length) {
-        const { data: entrantRows, error: eErr } = await supabase
-          .from("entries")
-          .select("tournament_id")
-          .in("tournament_id", ids);
-        if (eErr) throw eErr;
-        (entrantRows || []).forEach((r: any) => {
-          counts[r.tournament_id] = (counts[r.tournament_id] || 0) + 1;
-        });
+        const { data: cntRows, error: cErr } = await supabase.rpc("entries_counts", { ids });
+        if (cErr) throw cErr;
+        (cntRows || []).forEach((r: any) => { counts[r.tournament_id] = r.entrants; });
       }
-      const merged = (list || []).map((t: any) => ({ ...t, entrants_total: counts[t.id] ?? 0 }));
 
-      const pmap = makePlanetNameMap(merged);
-
-      // **** Also fixed: check "joined" only for the CURRENT user ****
+      // 3) which ones I joined (RPC; requires auth but doesn't read table directly)
       const { data: { user } } = await supabase.auth.getUser();
-      let myJoined: any[] = [];
-      if (user) {
-        const { data: mine, error: mErr } = await supabase
-          .from("entries")
-          .select("tournament_id")
-          .eq("user_id", user.id)
-          .in("tournament_id", ids);
+      let myJoinedIds: string[] = [];
+      if (user && ids.length) {
+        const { data: mine, error: mErr } = await supabase.rpc("my_joined", { ids });
         if (mErr) throw mErr;
-        myJoined = mine || [];
+        myJoinedIds = (mine || []).map((r: any) => r.tournament_id as string);
       }
+
+      // 4) normalize for UI
+      const merged = (list || []).map((t: any) => ({
+        id: t.id as string,
+        tier: t.tier,
+        planet_name: t.title || (FEE_TO_PLANET[String(Number(t.entry_fee_cents)/100)] ?? "Tournament"),
+        entry_fee: Number(t.entry_fee_cents) / 100,
+        start_date: t.start_date,
+        end_date: t.end_date,
+        join_open_at: t.join_open_at,
+        join_close_at: t.join_close_at,
+        phase: t.phase,
+        entrants_total: counts[t.id] ?? 0,
+      }));
 
       setTournaments(merged);
-      setPlanetById(pmap);
-      setJoinedIds(new Set(myJoined.map((r: any) => r.tournament_id)));
+      setJoinedIds(new Set(myJoinedIds));
     } catch (e: any) {
       Alert.alert("Error", e.message || "Failed to load tournaments");
     } finally {
       setRefreshing(false);
       if (showSpinner) setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { loadTournaments(true); }, []);
+  useEffect(() => { loadTournaments(true); }, [loadTournaments]);
   useEffect(() => {
     tickRef.current && clearInterval(tickRef.current);
     // refresh countdowns every 30s
@@ -250,7 +269,7 @@ export default function TournamentsTab() {
   }, []);
 
   const planetTitle = (t: any) =>
-    t?.planet_name || planetById.get(t.id) ||
+    t?.planet_name ||
     (FEE_TO_PLANET[String(Number(t.entry_fee || 0))] || `Tournament $${Number(t.entry_fee || 0)}`);
 
   const openJoin = (t: any) => {
@@ -264,36 +283,84 @@ export default function TournamentsTab() {
   const discountPct = useMemo(() => (appliedPromo ? PROMO_CODES[appliedPromo] || 0 : 0), [appliedPromo]);
   const discounted = useMemo(() => Math.max(0, entryFee - entryFee * (discountPct / 100)), [entryFee, discountPct]);
 
-  const confirmJoin = async () => {
-    try {
-      setBusyJoin(true);
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-      if (!token) return Alert.alert("Sign in required", "Please log in to join tournaments.");
+// Requires: supabase, Constants, Alert, and these setters/state in scope:
+// setBusyJoin, setJoinOpen, setJoinedConfirmOpen, setJoinedIds, selectedT
 
-      const invokeJoin = async (name: string) => {
-        const r = await supabase.functions.invoke(name, {
-          body: { tournament_id: selectedT.id, debug: true },
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (r.error) throw r.error;
-        return typeof r.data === "string" ? JSON.parse(r.data as any) : (r.data as any);
-      };
-      let resp: any = null;
-      try { resp = await invokeJoin("join_tournament"); }
-      catch { resp = await invokeJoin("join-tournament"); }
+async function confirmJoin() {
+  try {
+    setBusyJoin(true);
 
-      if (!resp?.ok && !resp?.alreadyJoined) throw new Error(resp?.message || resp?.code || "Join failed");
-
-      setJoinOpen(false);
-      setJoinedConfirmOpen(true);
-      setJoinedIds(prev => new Set([...Array.from(prev), selectedT.id]));
-    } catch (e: any) {
-      Alert.alert("Unable to join", e.message || String(e));
-    } finally {
-      setBusyJoin(false);
+    // 1) must be signed in
+    const { data: { session } } = await supabase.auth.getSession();
+    
+    const token = session?.access_token;
+    if (!token) {
+      Alert.alert("Sign in required", "Please log in to join tournaments.");
+      return;
     }
-  };
+
+    const tid = String(selectedT?.id || "");
+    if (!tid) {
+      Alert.alert("Unable to join", "Missing tournament id.");
+      return;
+    }
+
+    // 2) resolve Edge URL + keys from app config
+    const extra: any =
+      (Constants as any)?.expoConfig?.extra ??
+      (Constants as any)?.manifest?.extra ?? {};
+
+    const SUPABASE_URL: string = String(extra.SUPABASE_URL || "").replace(/\/+$/, "");
+    const FUNCTIONS_URL: string | undefined = extra.FUNCTIONS_URL ? String(extra.FUNCTIONS_URL).replace(/\/+$/, "") : undefined; // optional override
+    const ANON_KEY: string = String(extra.SUPABASE_ANON_KEY || "");
+    if (!SUPABASE_URL || !ANON_KEY) {
+      Alert.alert("Config error", "Missing SUPABASE_URL or SUPABASE_ANON_KEY.");
+      return;
+    }
+
+    // prefer explicit FUNCTIONS_URL if you set one; otherwise use Supabase route
+    const base = FUNCTIONS_URL || `${SUPABASE_URL}/functions/v1`;
+    const url = `${base}/join_tournament`;
+
+    // 3) headers we fully control
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "authorization": `Bearer ${token}`,  // critical
+      "apikey": ANON_KEY,                  // helpful for Supabase proxy
+    };
+
+    // 4) POST with JSON body (Android-safe: stringify)
+    const bodyJson = JSON.stringify({ tournament_id: tid, id: tid });
+
+    let res = await fetch(url, { method: "POST", headers, body: bodyJson });
+
+    // 5) Fallback: some clients strip POST bodies → use query param + empty body
+    if (!res.ok) {
+      const qUrl = `${url}?tournament_id=${encodeURIComponent(tid)}`;
+      res = await fetch(qUrl, { method: "POST", headers, body: "" });
+    }
+
+    // 6) parse and handle
+    const text = await res.text();
+    let data: any;
+    try { data = JSON.parse(text); } catch { data = { ok: false, message: text || res.statusText }; }
+
+    if (!res.ok || (!data?.ok && !data?.alreadyJoined)) {
+      throw new Error(data?.message || `Join failed (${res.status})`);
+    }
+
+    // success
+    setJoinOpen(false);
+    setJoinedConfirmOpen(true);
+    setJoinedIds(prev => new Set([...Array.from(prev), tid]));
+  } catch (e: any) {
+    Alert.alert("Unable to join", e?.message || String(e));
+  } finally {
+    setBusyJoin(false);
+  }
+}
+
+
 
   const openStatus = async (t: any) => {
     try {
@@ -304,7 +371,6 @@ export default function TournamentsTab() {
       const prizePool = entrants != null ? entrants * fee : null;
 
       const dayISO =
-        t?.day_date ||
         (t?.start_date ? new Date(t.start_date).toISOString().slice(0, 10) : null) ||
         (t?.join_open_at ? new Date(t.join_open_at).toISOString().slice(0, 10) : null) ||
         new Date().toISOString().slice(0, 10);
@@ -345,7 +411,6 @@ export default function TournamentsTab() {
     setSlateMsg("");
 
     const dayISO =
-      t?.day_date ||
       (t?.start_date ? new Date(t.start_date).toISOString().slice(0, 10) : null) ||
       (t?.join_open_at ? new Date(t.join_open_at).toISOString().slice(0, 10) : null) ||
       new Date().toISOString().slice(0, 10);
@@ -423,7 +488,7 @@ export default function TournamentsTab() {
               <TournamentCard
                 key={t.id}
                 t={t}
-                planetTitle={planetTitle}
+                planetTitle={(x) => x.planet_name}
                 joined={joinedIds.has(t.id)}
                 onOpenJoin={() => openJoin(t)}
                 onOpenStatus={() => openStatus(t)}
@@ -442,7 +507,7 @@ export default function TournamentsTab() {
           <View style={styles.modal}>
             <Text style={styles.modalTitle}>Join {selectedT?.displayName || ""}</Text>
 
-            <Row label="Entry Fee" value={fmtMoney(entryFee)} />
+            <Row label="Entry Fee" value={fmtMoney(selectedT?.fee || 0)} />
             <Row
               label="Promo Code"
               valueNode={
@@ -476,7 +541,11 @@ export default function TournamentsTab() {
               }
             />
 
-            <Row label="Amount to Withdraw" valueElStyle={{ color: GOLD }} value={fmtMoney(discounted)} />
+            <Row
+              label="Amount to Withdraw"
+              valueElStyle={{ color: GOLD }}
+              value={fmtMoney(Math.max(0, (selectedT?.fee || 0) - (selectedT?.fee || 0) * ((appliedPromo ? PROMO_CODES[appliedPromo] || 0 : 0) / 100)))}
+            />
             <Text style={styles.disclaimer}>This will be withdrawn from your funds (payments wiring later).</Text>
 
             <TouchableOpacity disabled={busyJoin} onPress={confirmJoin} style={[styles.confirmBtn, busyJoin && { opacity: 0.7 }]}>
@@ -559,7 +628,7 @@ export default function TournamentsTab() {
                 ListFooterComponent={<View style={{ height: RFValue(6) }} />}
               />
             ) : (
-              <Text style={styles.slateEmpty}>{slateMsg || "No games found."}</Text>
+              <Text style={styles.slateEmpty}>No games found.</Text>
             )}
 
             <TouchableOpacity onPress={() => setSlateOpen(false)} style={styles.closeBig}>
@@ -593,7 +662,6 @@ const TournamentCard = memo(function TournamentCard({
   const title = planetTitle(t);
 
   const dayISO =
-    t?.day_date ||
     (t?.start_date ? new Date(t.start_date).toISOString().slice(0, 10) : null) ||
     (t?.join_open_at ? new Date(t.join_open_at).toISOString().slice(0, 10) : null) ||
     new Date().toISOString().slice(0, 10);
@@ -671,7 +739,7 @@ function Row({ label, value, valueNode, valueElStyle }: any) {
 
 /* ---------- Styles (kept your style) ---------- */
 const styles = StyleSheet.create({
-  background: { flex: 1 },
+  background: { flex: 1, backgroundColor: "#0d0013" },
   loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
   topRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: RFValue(16) },
   title: { fontSize: RFValue(22), fontWeight: "700", color: "#fff" },

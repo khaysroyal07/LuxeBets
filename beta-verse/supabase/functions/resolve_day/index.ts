@@ -1,40 +1,90 @@
+// supabase/functions/resolve_day/index.ts
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const SDIO_KEY = Deno.env.get("SPORTSDATAIO_KEY")!;
-const supabase = createClient(SUPABASE_URL, SERVICE_ROLE);
+const sb = createClient(SUPABASE_URL, SERVICE_ROLE);
 
-const MONTHS_ABBR = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
-const toSDIODate = (d: Date) =>
-  `${d.getFullYear()}-${MONTHS_ABBR[d.getMonth()]}-${String(d.getDate()).padStart(2,"0")}`;
+const toDayISO = (d: Date | string) => {
+  const dt = typeof d === "string" ? new Date(d) : d;
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
 
 serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
-    const dateStr: string = body?.date;
-    const day = dateStr ? new Date(`${dateStr}T00:00:00`) : new Date();
+    const dayISO: string = body?.date ? toDayISO(body.date) : toDayISO(new Date());
 
-    const { data: tournaments } = await supabase
+    // active tournaments (any status except archived/cancelled/settled)
+    const { data: tours, error: tErr } = await sb
       .from("tournaments")
-      .select("id, day_date, status")
-      .eq("day_date", day.toISOString().slice(0,10))
-      .in("status", ["open","running"]);
+      .select("id")
+      .eq("day_date", dayISO)
+      .not("status", "in", "('archived','cancelled','settled')");
+    if (tErr) throw tErr;
 
-    if (!tournaments?.length) {
-      return new Response(JSON.stringify({ ok: true, msg: "No tournaments" }), { status: 200 });
+    const tIds = (tours ?? []).map((t: any) => t.id);
+    if (!tIds.length) {
+      return new Response(JSON.stringify({ ok: true, msg: "no active tournaments", dayISO }), { status: 200 });
     }
 
-    // TODO: fetch SportsDataIO scores and update picks + entrants
-    // For demo: just close tournaments
-    for (const t of tournaments) {
-      await supabase.from("tournaments").update({ status: "settled" }).eq("id", t.id);
+    // losers for that day (already graded by sync_results)
+    const { data: losers, error: lErr } = await sb
+      .from("picks")
+      .select("id, entry_id, tournament_id")
+      .in("tournament_id", tIds)
+      .eq("day_date", dayISO)
+      .eq("result", "loss");
+    if (lErr) throw lErr;
+
+    if (!losers?.length) {
+      return new Response(JSON.stringify({ ok: true, eliminated_added: 0, dayISO }), { status: 200 });
     }
 
-    return new Response(JSON.stringify({ ok: true, resolved: tournaments.length }), { status: 200 });
+    // skip already eliminated for the day
+    const { data: existing, error: exErr } = await sb
+      .from("eliminations")
+      .select("entry_id, tournament_id")
+      .eq("day_date", dayISO)
+      .in("entry_id", losers.map((p) => p.entry_id));
+    if (exErr) throw exErr;
+
+    const already = new Set((existing ?? []).map((x: any) => `${x.entry_id}:${x.tournament_id}`));
+    const toInsert = losers
+      .filter((p) => !already.has(`${p.entry_id}:${p.tournament_id}`))
+      .map((p) => ({
+        entry_id: p.entry_id,
+        tournament_id: p.tournament_id,
+        day_date: dayISO,
+        reason: "lost",
+      }));
+
+    if (toInsert.length) {
+      const { error: insErr } = await sb.from("eliminations").insert(toInsert);
+      if (insErr) throw insErr;
+    }
+
+    // (Optional) keep entries.status mirrored for UI
+    const losingEntryIds = toInsert.map((r) => r.entry_id);
+    if (losingEntryIds.length) {
+      const { error: eUpdErr } = await sb.from("entries").update({ status: "eliminated" }).in("id", losingEntryIds);
+      if (eUpdErr) throw eUpdErr;
+    }
+
+    // 🚫 no tournament status updates here
+    return new Response(JSON.stringify({ ok: true, eliminated_added: toInsert.length, dayISO }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   } catch (e) {
-    return new Response(JSON.stringify({ ok: false, error: String(e) }), { status: 500 });
+    return new Response(JSON.stringify({ ok: false, error: String(e) }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 });
