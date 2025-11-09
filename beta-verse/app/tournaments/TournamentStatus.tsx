@@ -1,4 +1,3 @@
-// app/tournaments/TournamentStatus.js
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import {
   View, Text, StyleSheet, ImageBackground, ActivityIndicator,
@@ -7,7 +6,6 @@ import {
 import { RFValue } from "react-native-responsive-fontsize";
 import { useRouter } from "expo-router";
 import { supabase } from "@/lib/supabase";
-import Constants from "expo-constants";
 import { LinearGradient } from "expo-linear-gradient";
 
 const PURPLE = "#613DC1";
@@ -17,153 +15,41 @@ const PINK   = "#FF79C6";
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
 
-/* ---------------- Keys / Config ---------------- */
-const SDIO_KEY =
-  process.env.EXPO_PUBLIC_SPORTSDATAIO_KEY ||
-  (Constants?.expoConfig?.extra?.SPORTSDATAIO_KEY) || "";
+/* ---------------- helpers that only use your current schema ---------------- */
+const pad = (n: number) => String(n).padStart(2, "0");
+const toISO_UTC = (d: Date) =>
+  `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 
-/* ESPN (free) sport slugs */
-const ESPN = { NBA: "nba", MLB: "mlb", NHL: "nhl", WNBA: "wnba" };
+function addDaysUTC(src: Date, days: number) {
+  const d = new Date(Date.UTC(src.getUTCFullYear(), src.getUTCMonth(), src.getUTCDate()));
+  d.setUTCDate(d.getUTCDate() + days);
+  return d;
+}
+/** If Tue–Thu → this window; Fri–Sat → next Tue–Thu; Sun–Mon → upcoming Tue–Thu (UTC) */
+function currentTueThuWindowUTC(today = new Date()) {
+  const dow = today.getUTCDay(); // 0=Sun..6=Sat
+  let start;
+  if (dow >= 2 && dow <= 4) start = addDaysUTC(today, -(dow - 2));
+  else if (dow === 0 || dow === 1) start = addDaysUTC(today, 2 - dow);
+  else start = addDaysUTC(today, 9 - dow); // Fri/Sat → next Tue
+  const end = addDaysUTC(start, 2);
+  return { startISO: toISO_UTC(start), endISO: toISO_UTC(end) };
+}
 
-/* SDIO for NFL (optional by key) */
-const SDIO = {
-  nfl:  { base: "https://api.sportsdata.io/v3/nfl/scores/json",  byDate: "ScoresByDate" },
-  mlb:  { base: "https://api.sportsdata.io/v3/mlb/scores/json",  byDate: "GamesByDate" },
-  nba:  { base: "https://api.sportsdata.io/v3/nba/scores/json",  byDate: "GamesByDate" },
-  nhl:  { base: "https://api.sportsdata.io/v3/nhl/scores/json",  byDate: "GamesByDate" },
-  wnba: { base: "https://api.sportsdata.io/v3/wnba/scores/json", byDate: "GamesByDate" },
-};
+const nameFor = (t: any) => t?.title || (t?.entry_fee_cents ? `Tournament $${t.entry_fee_cents/100}` : "Tournament");
 
-const MONTHS_ABBR = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
-const toSDIODate = (d) => `${d.getFullYear()}-${MONTHS_ABBR[d.getMonth()]}-${String(d.getDate()).padStart(2,"0")}`;
-
-const nameFor = (t) => t?.week_label || (t?.entry_fee ? `Tournament $${t.entry_fee}` : "Tournament");
-
-/* ---------- status helpers (same UX/logic) ---------- */
-const ms = (v) => (v ? new Date(v).getTime() : null);
-
-/** Returns {uiStatus, canPick, openMs, closeMs} */
-function computeUiStatus(t) {
+function computeUiStatusFromDates(t: any) {
   const now = Date.now();
-  const openMs  = ms(t?.join_open_at);
-  let closeMs   = ms(t?.join_close_at);
-  const startMs = ms(t?.start_at);
-  const endMs   = ms(t?.end_at);
+  const startMs = t?.start_date ? new Date(`${t.start_date}T00:00:00Z`).getTime() : null;
+  const endMs   = t?.end_date   ? new Date(`${t.end_date}T23:59:59Z`).getTime()   : null;
 
-  if (!closeMs && startMs) closeMs = startMs - 30 * 60 * 1000;
-
-  const status = String(t?.status || "").toLowerCase();
-
-  if (status === "settled" || (endMs && now >= endMs)) {
-    return { uiStatus: "Settled", canPick: false, openMs, closeMs };
-  }
-  if (status === "running" || (startMs && now >= startMs && (!endMs || now < endMs))) {
-    return { uiStatus: "Running", canPick: false, openMs, closeMs };
-  }
-  if (openMs && now < openMs) {
-    return { uiStatus: "Opens Soon", canPick: false, openMs, closeMs };
-  }
-  if (closeMs && now >= closeMs) {
-    return { uiStatus: "Closed", canPick: false, openMs, closeMs };
-  }
-  if (status === "locked") {
-    return { uiStatus: "Closed", canPick: false, openMs, closeMs };
-  }
-  return { uiStatus: "Open", canPick: true, openMs, closeMs };
+  if (endMs && now > endMs)        return { uiStatus: "Settled", canPick: false };
+  if (startMs && now >= startMs && (!endMs || now <= endMs)) return { uiStatus: "Running", canPick: false };
+  if (startMs && now < startMs)    return { uiStatus: "Open",    canPick: true  };
+  return { uiStatus: "Open", canPick: true };
 }
 
-/* ===================================================================
-   SCORE INDEX (caches per day)
-=================================================================== */
-const scoreCache = new Map(); // dayISO -> { [eventId]: { done, winner } }
-
-const toDayISO = (d) => {
-  const dt = new Date(d);
-  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;
-};
-
-async function fetchESPNDay(sportSlug, dayISO) {
-  const yyyymmdd = dayISO.replace(/-/g, "");
-  const url = `https://site.api.espn.com/apis/v2/sports/${sportSlug}/${sportSlug}/scoreboard?dates=${yyyymmdd}`;
-  const r = await fetch(url).catch(() => null);
-  if (!r || !r.ok) return [];
-  const j = await r.json().catch(() => ({}));
-  return Array.isArray(j?.events) ? j.events : [];
-}
-
-function parseESPNOutcome(ev) {
-  const c = ev?.competitions?.[0];
-  const hc = c?.competitors?.find((t) => t?.homeAway === "home");
-  const ac = c?.competitors?.find((t) => t?.homeAway === "away");
-  const hs = hc?.score != null ? Number(hc.score) : null;
-  const as = ac?.score != null ? Number(ac.score) : null;
-  const state = (ev?.status?.type?.state || "").toLowerCase(); // 'pre'|'in'|'post'
-  const done = state === "post";
-  let winner = null;
-  if (done && hs != null && as != null) {
-    winner = hs > as ? "home" : as > hs ? "away" : null;
-  }
-  return { id: String(ev?.id || c?.id), done, winner };
-}
-
-async function fetchNFL_SDIO(dayISO) {
-  if (!SDIO_KEY) return [];
-  const sdioDate = toSDIODate(new Date(dayISO));
-  const url = `${SDIO.nfl.base}/${SDIO.nfl.byDate}/${encodeURIComponent(sdioDate)}?key=${encodeURIComponent(SDIO_KEY)}`;
-  const r = await fetch(url).catch(() => null);
-  if (!r || !r.ok) return [];
-  const arr = await r.json().catch(() => []);
-  return Array.isArray(arr) ? arr : [];
-}
-
-function parseSDIOOutcome(game) {
-  const id = String(game?.GameID ?? game?.GameKey ?? `${game?.HomeTeam}-${game?.AwayTeam}-${game?.Date}`);
-  const st = String(game?.Status || "").toLowerCase();
-  theDone:
-  // Some feeds use "Final", others "F/OT", normalize heuristically:
-  {}
-  const done = st.includes("final") || st.startsWith("f/");
-  const hs = game?.HomeTeamScore ?? game?.HomeScore ?? game?.HomeTeamRuns ?? game?.HomeTeamGoals ?? null;
-  const as = game?.AwayTeamScore ?? game?.AwayScore ?? game?.AwayTeamRuns ?? game?.AwayTeamGoals ?? null;
-  let winner = null;
-  if (done && hs != null && as != null) {
-    winner = hs > as ? "home" : as > hs ? "away" : null;
-  }
-  return { id, done, winner };
-}
-
-async function buildScoreIndex(dayISO) {
-  if (scoreCache.has(dayISO)) return scoreCache.get(dayISO);
-  const index = {};
-
-  const [nba, mlb, nhl, wnba] = await Promise.all([
-    fetchESPNDay(ESPN.NBA, dayISO),
-    fetchESPNDay(ESPN.MLB, dayISO),
-    fetchESPNDay(ESPN.NHL, dayISO),
-    fetchESPNDay(ESPN.WNBA, dayISO),
-  ]);
-  [...nba, ...mlb, ...nhl, ...wnba].forEach((ev) => {
-    const { id, done, winner } = parseESPNOutcome(ev);
-    if (id) index[String(id)] = { done, winner };
-  });
-
-  const nflArr = await fetchNFL_SDIO(dayISO);
-  nflArr.forEach((g) => {
-    const { id, done, winner } = parseSDIOOutcome(g);
-    if (id) index[String(id)] = { done, winner };
-  });
-
-  scoreCache.set(dayISO, index);
-  return index;
-}
-
-async function findGameOutcome(dayDate, gameId) {
-  const dayISO = toDayISO(dayDate);
-  const idx = await buildScoreIndex(dayISO);
-  return idx[String(gameId)] || null;
-}
-
-/* ======================= Animated Galaxy Bits ======================= */
+/* ======================= simple background stars (visual only) ======================= */
 function useTwinkleStars(count = 26, yMinPct = 0.15, yMaxPct = 0.85) {
   const stars = useMemo(() => {
     return new Array(count).fill(0).map((_, i) => {
@@ -213,21 +99,13 @@ function GalaxyOverlay() {
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="none">
-      {/* Parallax aurora / nebula sweeps */}
       <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ translateY }] }]}>
         <LinearGradient
           colors={["rgba(97,61,193,0.22)", "rgba(255,215,0,0.08)", "rgba(70,232,255,0.12)"]}
           start={{ x: 0.05, y: 0.0 }} end={{ x: 0.95, y: 1.0 }}
           style={{ width: "125%", height: "120%", position: "absolute", top: -RFValue(70), left: -RFValue(24) }}
         />
-        <LinearGradient
-          colors={["rgba(255,121,198,0.12)","rgba(0,0,0,0)","rgba(97,61,193,0.10)"]}
-          start={{ x: 0.2, y: 0.1 }} end={{ x: 1.0, y: 0.9 }}
-          style={{ width: "110%", height: "100%", position: "absolute", top: RFValue(40), left: -RFValue(10) }}
-        />
       </Animated.View>
-
-      {/* Far stars */}
       {starsFar.map((s) => (
         <Animated.View
           key={`far-${s.id}`}
@@ -241,7 +119,6 @@ function GalaxyOverlay() {
           }}
         />
       ))}
-      {/* Near stars with glow */}
       {starsNear.map((s) => (
         <Animated.View
           key={`near-${s.id}`}
@@ -263,45 +140,20 @@ function GalaxyOverlay() {
   );
 }
 
-/* ====================== Filter helpers (logic only) ====================== */
-// UTC-safe Tue→Thu window
-const pad = (n) => String(n).padStart(2, "0");
-const toISO_UTC = (d) =>
-  `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
-function addDaysUTC(src, days) {
-  const d = new Date(Date.UTC(src.getUTCFullYear(), src.getUTCMonth(), src.getUTCDate()));
-  d.setUTCDate(d.getUTCDate() + days);
-  return d;
-}
-/** If Tue–Thu → this window; Fri–Sat → next Tue–Thu; Sun–Mon → upcoming Tue–Thu */
-function currentTueThuWindowUTC(today = new Date()) {
-  const dow = today.getUTCDay(); // 0=Sun..6=Sat
-  let start;
-  if (dow >= 2 && dow <= 4) start = addDaysUTC(today, -(dow - 2));
-  else if (dow === 0 || dow === 1) start = addDaysUTC(today, 2 - dow);
-  else start = addDaysUTC(today, 9 - dow); // Fri/Sat → next Tue
-  const end = addDaysUTC(start, 2);
-  return { startISO: toISO_UTC(start), endISO: toISO_UTC(end) };
-}
-const inSet = (s, arr) => arr.includes(String(s || "").toLowerCase());
-
 /* ===================================================================
    Screen
 =================================================================== */
 export default function TournamentStatus() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [cards, setCards] = useState([]);
+  const [cards, setCards] = useState<any[]>([]);
+  const [filter, setFilter] = useState<"current"|"past"|"all">("current");
 
-  // Filter (Current default). Options: current | past | all
-  const [filter, setFilter] = useState("current");
-
-  // derived current week label (for header text)
   const weekLabel = useMemo(() => {
     const { startISO, endISO } = currentTueThuWindowUTC(new Date());
     const s = new Date(startISO + "T00:00:00Z");
     const e = new Date(endISO + "T00:00:00Z");
-    const fmt = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const fmt = (d: Date) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
     return `${fmt(s)} – ${fmt(e)}`;
   }, []);
 
@@ -312,79 +164,86 @@ export default function TournamentStatus() {
       const uid = user?.id;
       if (!uid) { setCards([]); setLoading(false); return; }
 
-      const { data: entries, error } = await supabase
-        .from("entrants")
-        .select("id, user_id, status, joined_at, tournaments(*)")
+      // 1) my entries
+      const { data: entries, error: eErr } = await supabase
+        .from("entries")
+        .select("id, user_id, tournament_id, status, created_at")
         .eq("user_id", uid)
-        .order("joined_at", { ascending: false });
-      if (error) throw error;
+        .order("created_at", { ascending: false });
+      if (eErr) throw eErr;
 
-      const enriched = [];
+      const tIds = Array.from(new Set((entries || []).map((e: any) => e.tournament_id)));
+      if (tIds.length === 0) { setCards([]); setLoading(false); return; }
+
+      // 2) tournaments (new schema)
+      const { data: tours, error: tErr } = await supabase
+        .from("tournaments")
+        .select("id, title, entry_fee_cents, start_date, end_date")
+        .in("id", tIds);
+      if (tErr) throw tErr;
+
+      const tById = new Map<string, any>();
+      (tours || []).forEach((t: any) => tById.set(String(t.id), t));
+
+      // 3) enrich w/ one pick for the tournament day (by created_at day window)
+      const rows: any[] = [];
       for (const e of entries || []) {
-        const t = e.tournaments || {};
-        const ui = computeUiStatus(t);
+        const t = tById.get(String(e.tournament_id));
+        if (!t) continue;
 
-        const { data: p } = await supabase
-          .from("picks")
-          .select("game_id, selection, result")
-          .eq("tournament_id", t.id)
-          .eq("user_id", e.user_id)
-          .eq("day_date", t.day_date)
-          .maybeSingle();
+        const ui = computeUiStatusFromDates(t);
+        const dayISO = String(t.start_date || t.day_date || ""); // prefer start_date
+
+        // derive window bounds in UTC for that day
+        const from = dayISO ? `${dayISO}T00:00:00Z` : undefined;
+        const to   = dayISO ? `${dayISO}T23:59:59Z` : undefined;
+
+        let pick: any = null;
+        if (from && to) {
+          const { data: p } = await supabase
+            .from("picks")
+            .select("game_id, selection, result, created_at")
+            .eq("entry_id", e.id)
+            .gte("created_at", from)
+            .lte("created_at", to)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          pick = p || null;
+        }
 
         let correct = 0, wrong = 0, pending = 0;
         let eliminated = String(e.status || "").toLowerCase() === "eliminated";
 
-        if (p) {
-          if (p.result === "win") {
-            correct = 1;
-          } else if (p.result === "loss") {
-            wrong = 1; eliminated = true;
-          } else {
-            const outcome = p.game_id ? await findGameOutcome(new Date(t.day_date), p.game_id) : null;
-            if (outcome) {
-              if (!outcome.done) pending = 1;
-              else if (outcome.winner === p.selection) correct = 1;
-              else if (outcome.winner && outcome.winner !== p.selection) { wrong = 1; eliminated = true; }
-            } else {
-              pending = ui.canPick ? 1 : 0;
-            }
-          }
+        if (pick) {
+          const res = String(pick.result || "pending").toLowerCase();
+          if (res === "win") correct = 1;
+          else if (res === "loss") { wrong = 1; eliminated = true; }
+          else pending = ui.canPick ? 1 : 0;
         } else {
           pending = ui.canPick ? 1 : 0;
         }
 
-        if (eliminated) {
-          if (correct === 0 && wrong === 0) wrong = 1;
-          pending = 0;
-        }
-
-        enriched.push({
+        rows.push({
           entryId: e.id,
-          day_date: t.day_date,
-          t_status: String(t.status || "").toLowerCase(),
           name: nameFor(t),
-          opens: ui.openMs ? new Date(ui.openMs).toLocaleString() : "—",
-          closes: ui.closeMs ? new Date(ui.closeMs).toLocaleString() : "—",
+          day_date: dayISO,
           uiStatus: ui.uiStatus,
           canPick: ui.canPick,
           correct, wrong, pending,
           eliminated,
+          opens: dayISO ? new Date(`${dayISO}T00:00:00Z`).toLocaleString() : "—",
+          closes: t?.end_date ? new Date(`${t.end_date}T23:59:59Z`).toLocaleString() : "—",
         });
       }
 
-      // Apply filter (no upcoming)
+      // filter
       const { startISO, endISO } = currentTueThuWindowUTC(new Date());
-      const filtered = enriched.filter((r) => {
+      const filtered = rows.filter((r) => {
         const day = r.day_date || "";
-        const st  = r.t_status;
-        if (filter === "current") {
-          return day >= startISO && day <= endISO && !inSet(st, ["archived","cancelled"]);
-        }
-        if (filter === "past") {
-          return day < startISO || inSet(st, ["settled","archived","cancelled"]);
-        }
-        return true; // all
+        if (filter === "current") return day >= startISO && day <= endISO;
+        if (filter === "past")    return day < startISO;
+        return true;
       });
 
       setCards(filtered);
@@ -398,12 +257,12 @@ export default function TournamentStatus() {
 
   useEffect(() => { fetchRows(); }, [fetchRows]);
 
-  const goManage = useCallback((id, canPick) => {
+  const goManage = useCallback((id: string, canPick: boolean) => {
     if (!canPick) return;
+    // Manage by entry id
     router.push({ pathname: "/entries/[entryId]", params: { entryId: String(id) } });
   }, [router]);
 
-  /* -------------------- Header visuals -------------------- */
   const headerShine = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     Animated.loop(
@@ -413,7 +272,6 @@ export default function TournamentStatus() {
       ])
     ).start();
   }, [headerShine]);
-
   const shineTranslate = headerShine.interpolate({ inputRange: [0,1], outputRange: [-40, 40] });
 
   if (loading) {
@@ -426,7 +284,6 @@ export default function TournamentStatus() {
 
   return (
     <ImageBackground source={require("@/assets/images/bgDash.png")} style={{ flex: 1 }} resizeMode="cover">
-      {/* galaxy overlay */}
       <GalaxyOverlay />
 
       <FlatList
@@ -439,7 +296,6 @@ export default function TournamentStatus() {
               <Text style={styles.back}>← Back</Text>
             </TouchableOpacity>
 
-            {/* Frosted / glassy header panel */}
             <View style={headerStyles.glass}>
               <LinearGradient
                 colors={["rgba(255,255,255,0.06)", "rgba(255,255,255,0.02)"]}
@@ -451,17 +307,15 @@ export default function TournamentStatus() {
                 Current window: <Text style={{ color: GOLD, fontWeight: "900" }}>{weekLabel}</Text>
               </Text>
 
-              {/* filter chips */}
               <View style={chipStyles.row}>
                 <Chip active={filter === "current"} label="Current" onPress={() => setFilter("current")} />
-                <Chip active={filter === "past"} label="Past (Joined)" onPress={() => setFilter("past")} />
-                <Chip active={filter === "all"} label="All" onPress={() => setFilter("all")} />
+                <Chip active={filter === "past"}    label="Past (Joined)" onPress={() => setFilter("past")} />
+                <Chip active={filter === "all"}     label="All" onPress={() => setFilter("all")} />
                 <TouchableOpacity onPress={fetchRows} style={chipStyles.refreshBtn}>
                   <Text style={chipStyles.refreshTxt}>⟳ Refresh</Text>
                 </TouchableOpacity>
               </View>
 
-              {/* subtle animated shine line */}
               <View style={headerStyles.divider}>
                 <Animated.View style={[headerStyles.shine, { transform: [{ translateX: shineTranslate }] }]} />
               </View>
@@ -492,10 +346,9 @@ export default function TournamentStatus() {
   );
 }
 
-/* ---------- Card component with neon border + shimmer ---------- */
+/* ---------- Card & small UI bits (unchanged look) ---------- */
 function Card({ name, opens, closes, uiStatus, correct, pending, wrong, eliminated, canPick, onManage }) {
   const shimmer = useRef(new Animated.Value(0)).current;
-
   useEffect(() => {
     Animated.loop(
       Animated.sequence([
@@ -506,7 +359,6 @@ function Card({ name, opens, closes, uiStatus, correct, pending, wrong, eliminat
   }, [shimmer]);
 
   const shimmerTranslate = shimmer.interpolate({ inputRange: [0,1], outputRange: [-80, 80] });
-
   const statusColor =
     uiStatus === "Open" ? GOLD :
     uiStatus === "Running" ? "#4ADE80" :
@@ -515,46 +367,33 @@ function Card({ name, opens, closes, uiStatus, correct, pending, wrong, eliminat
 
   return (
     <View style={styles.card}>
-      {/* neon border glow */}
       <LinearGradient
         colors={["rgba(97,61,193,0.45)","rgba(255,215,0,0.22)","rgba(70,232,255,0.28)"]}
         start={{x:0,y:0}} end={{x:1,y:1}}
         style={styles.cardGradient}
       />
-      {/* animated diagonal shimmer */}
       <Animated.View pointerEvents="none"
         style={[
           styles.shimmerStripe,
           { transform: [{ translateX: shimmerTranslate }, { rotate: "-18deg" }] }
         ]}
       />
-
-      {/* status ribbon */}
       <View style={[styles.ribbon, { borderColor: statusColor }]}>
         <Text style={[styles.ribbonTxt, { color: statusColor }]} numberOfLines={1}>
           {uiStatus}
         </Text>
       </View>
-
-      <Text style={styles.name} numberOfLines={1} ellipsizeMode="tail">
-        {name}
-      </Text>
-
+      <Text style={styles.name} numberOfLines={1} ellipsizeMode="tail">{name}</Text>
       <Text style={styles.sub} numberOfLines={3}>
-        <Text>Opens: </Text>
-        <Text style={styles.subStrong}>{opens}</Text>
-        <Text>  •  Closes: </Text>
-        <Text style={styles.subStrong}>{closes}</Text>
-        <Text>  •  Status: </Text>
-        <Text style={[styles.subStrong, { color: statusColor }]}>{uiStatus}</Text>
+        <Text>Opens: </Text><Text style={styles.subStrong}>{opens}</Text>
+        <Text>  •  Closes: </Text><Text style={styles.subStrong}>{closes}</Text>
+        <Text>  •  Status: </Text><Text style={[styles.subStrong, { color: statusColor }]}>{uiStatus}</Text>
       </Text>
-
       <View style={styles.pills}>
         <Pill color="#22c55e" label="Correct" value={correct} />
         <Pill color="#f59e0b" label="Pending" value={pending} />
         <Pill color="#ef4444" label="Wrong" value={wrong} />
       </View>
-
       <View
         style={[
           styles.banner,
@@ -567,19 +406,13 @@ function Card({ name, opens, closes, uiStatus, correct, pending, wrong, eliminat
           {eliminated ? "Eliminated" : "Still Alive"}
         </Text>
       </View>
-
-      <TouchableOpacity
-        onPress={onManage}
-        disabled={!canPick}
-        style={[styles.manageBtn, !canPick && { backgroundColor: "#555" }]}
-      >
+      <TouchableOpacity onPress={onManage} disabled={!canPick} style={[styles.manageBtn, !canPick && { backgroundColor: "#555" }]}>
         <Text style={styles.manageTxt}>{canPick ? "Make / Manage Pick" : "Pick Locked"}</Text>
       </TouchableOpacity>
     </View>
   );
 }
 
-/* ---------- UI bits ---------- */
 function Pill({ color, label, value }) {
   return (
     <View style={[pillStyles.pill, { borderColor: color, backgroundColor: "rgba(255,255,255,0.05)" }]}>
@@ -588,16 +421,11 @@ function Pill({ color, label, value }) {
     </View>
   );
 }
-
 function Chip({ active, label, onPress }) {
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.9}>
       <LinearGradient
-        colors={
-          active
-            ? [PURPLE, "#7A68E9"]
-            : ["rgba(0,0,0,0.45)", "rgba(0,0,0,0.35)"]
-        }
+        colors={active ? [PURPLE, "#7A68E9"] : ["rgba(0,0,0,0.45)", "rgba(0,0,0,0.35)"]}
         start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
         style={[chipStyles.chip, active && chipStyles.chipActive]}
       >
@@ -636,17 +464,7 @@ const styles = StyleSheet.create({
     borderRadius: RFValue(12),
     backgroundColor: "rgba(255,255,255,0.06)",
   },
-
-  ribbon: {
-    position: "absolute",
-    right: RFValue(12),
-    top: RFValue(12),
-    paddingVertical: RFValue(4),
-    paddingHorizontal: RFValue(10),
-    borderRadius: RFValue(10),
-    borderWidth: 1,
-    backgroundColor: "rgba(0,0,0,0.35)",
-  },
+  ribbon: { position: "absolute", right: RFValue(12), top: RFValue(12), paddingVertical: RFValue(4), paddingHorizontal: RFValue(10), borderRadius: RFValue(10), borderWidth: 1, backgroundColor: "rgba(0,0,0,0.35)" },
   ribbonTxt: { fontWeight: "900", fontSize: RFValue(10), letterSpacing: 0.5 },
 
   name: { color: "#fff", fontWeight: "900", fontSize: RFValue(17), marginBottom: RFValue(6) },
@@ -657,97 +475,33 @@ const styles = StyleSheet.create({
   banner: { marginTop: RFValue(12), padding: RFValue(10), borderRadius: RFValue(12), borderWidth: 1, alignItems: "center" },
   bannerText: { fontWeight: "900", fontSize: RFValue(12) },
 
-  manageBtn: {
-    backgroundColor: PURPLE,
-    paddingVertical: RFValue(10),
-    borderRadius: RFValue(12),
-    alignItems: "center",
-    marginTop: RFValue(12),
-    shadowColor: PURPLE,
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-  },
+  manageBtn: { backgroundColor: PURPLE, paddingVertical: RFValue(10), borderRadius: RFValue(12), alignItems: "center", marginTop: RFValue(12), shadowColor: PURPLE, shadowOpacity: 0.35, shadowRadius: 8, shadowOffset: { width: 0, height: 4 } },
   manageTxt: { color: "#fff", fontWeight: "900" },
+
+  empty: { color: "#ddd", marginTop: RFValue(10) },
 });
 
 const pillStyles = StyleSheet.create({
-  pill: {
-    flexDirection: "column",
-    alignItems: "center",
-    borderRadius: RFValue(12),
-    borderWidth: 1,
-    paddingVertical: RFValue(8),
-    paddingHorizontal: RFValue(10),
-    minWidth: RFValue(88),
-  },
+  pill: { flexDirection: "column", alignItems: "center", borderRadius: RFValue(12), borderWidth: 1, paddingVertical: RFValue(8), paddingHorizontal: RFValue(10), minWidth: RFValue(88) },
   val: { fontSize: RFValue(16), fontWeight: "900" },
   lab: { color: "#ddd", fontSize: RFValue(11), marginTop: RFValue(2) },
 });
 
 const chipStyles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center", gap: RFValue(8), marginTop: RFValue(8), flexWrap: "wrap" },
-  chip: {
-    paddingVertical: RFValue(6),
-    paddingHorizontal: RFValue(12),
-    borderRadius: RFValue(999),
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.18)",
-  },
-  chipActive: {
-    borderColor: "rgba(255,255,255,0.28)",
-    shadowColor: PURPLE,
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-  },
+  chip: { paddingVertical: RFValue(6), paddingHorizontal: RFValue(12), borderRadius: RFValue(999), borderWidth: 1, borderColor: "rgba(255,255,255,0.18)" },
+  chipActive: { borderColor: "rgba(255,255,255,0.28)", shadowColor: PURPLE, shadowOpacity: 0.35, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } },
   chipTxt: { color: "#ddd", fontWeight: "800", fontSize: RFValue(12), letterSpacing: 0.2 },
   chipTxtActive: { color: "#fff" },
-  refreshBtn: {
-    paddingVertical: RFValue(6),
-    paddingHorizontal: RFValue(12),
-    borderRadius: RFValue(999),
-    backgroundColor: "rgba(0,0,0,0.55)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.18)",
-  },
+  refreshBtn: { paddingVertical: RFValue(6), paddingHorizontal: RFValue(12), borderRadius: RFValue(999), backgroundColor: "rgba(0,0,0,0.55)", borderWidth: 1, borderColor: "rgba(255,255,255,0.18)" },
   refreshTxt: { color: "#fff", fontWeight: "900", fontSize: RFValue(12) },
 });
 
 const headerStyles = StyleSheet.create({
   wrap: { marginBottom: RFValue(12) },
-  glass: {
-    backgroundColor: "rgba(0,0,0,0.45)",
-    borderRadius: RFValue(16),
-    padding: RFValue(14),
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    shadowColor: "#000",
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-  },
-  title: {
-    fontSize: RFValue(22),
-    fontWeight: "900",
-    color: "#fff",
-    marginBottom: RFValue(4),
-    textShadowColor: "rgba(0,0,0,0.35)",
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 6,
-  },
+  glass: { backgroundColor: "rgba(0,0,0,0.45)", borderRadius: RFValue(16), padding: RFValue(14), borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 8, shadowOffset: { width: 0, height: 4 } },
+  title: { fontSize: RFValue(22), fontWeight: "900", color: "#fff", marginBottom: RFValue(4) },
   sub: { color: "#ddd", fontSize: RFValue(12) },
-  divider: {
-    height: RFValue(2),
-    marginTop: RFValue(12),
-    borderRadius: RFValue(2),
-    overflow: "hidden",
-    backgroundColor: "rgba(255,255,255,0.06)",
-  },
-  shine: {
-    width: RFValue(80),
-    height: RFValue(2),
-    borderRadius: RFValue(2),
-    backgroundColor: "rgba(255,255,255,0.36)",
-  },
+  divider: { height: RFValue(2), marginTop: RFValue(12), borderRadius: RFValue(2), overflow: "hidden", backgroundColor: "rgba(255,255,255,0.06)" },
+  shine: { width: RFValue(80), height: RFValue(2), borderRadius: RFValue(2), backgroundColor: "rgba(255,255,255,0.36)" },
 });

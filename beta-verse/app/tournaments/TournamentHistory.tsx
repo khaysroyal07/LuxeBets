@@ -9,8 +9,8 @@ const GOLD   = "#FFD700";
 const BORDER = "rgba(255,255,255,0.1)";
 const CARD_BG = "rgba(0,0,0,0.6)";
 
-/* week window helper (same as tournaments) */
-const ANCHOR_WEEKDAY = 2;
+/* week window helper using tournaments.start_date */
+const ANCHOR_WEEKDAY = 2; // Tue
 const toLocalISO = (d: Date) => {
   const y = d.getFullYear(), m = `${d.getMonth()+1}`.padStart(2,"0"), day = `${d.getDate()}`.padStart(2,"0");
   return `${y}-${m}-${day}`;
@@ -19,18 +19,10 @@ function currentWindow(today = new Date()) {
   const base = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const dow = base.getDay();
   const diff = (dow - ANCHOR_WEEKDAY + 7) % 7;
-  const start = new Date(base); start.setDate(base.getDate() - diff);
+  const start = new Date(base); start.setDate(start.getDate() - diff);
   const end = new Date(start); end.setDate(start.getDate() + 2);
   return { startISO: toLocalISO(start), endISO: toLocalISO(end) };
 }
-const getTourISO = (t: any): string | null => {
-  if (t?.day_date) return String(t.day_date);
-  if (t?.start_at) return toLocalISO(new Date(t.start_at));
-  if (t?.join_open_at) return toLocalISO(new Date(t.join_open_at));
-  return null;
-};
-const TERMINAL = new Set(["settled","archived","cancelled"]);
-
 const humanDate = (iso?: string | null) => {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -53,45 +45,43 @@ export default function TournamentHistory() {
         // my entries
         const { data: myEntries, error: eErr } = await supabase
           .from("entries")
-          .select("id, tournament_id, status, joined_at")
+          .select("id, tournament_id, status, created_at")
           .eq("user_id", user.id)
-          .order("joined_at", { ascending: false });
+          .order("created_at", { ascending: false });
         if (eErr) throw eErr;
 
         const tIds = Array.from(new Set((myEntries || []).map(e => e.tournament_id)));
         if (tIds.length === 0) { if (alive) setRows([]); return; }
 
+        // tournaments (new schema)
         const { data: tours, error: tErr } = await supabase
           .from("tournaments")
-          .select("*")
+          .select("id, title, entry_fee_cents, start_date, end_date")
           .in("id", tIds)
-          .order("day_date", { ascending: false });
+          .order("start_date", { ascending: false });
         if (tErr) throw tErr;
 
         const { startISO, endISO } = currentWindow();
 
-        // History = outside current Tue–Thu OR has terminal status
+        // History = outside current Tue–Thu
         const history = (tours || []).filter((t: any) => {
-          const st = String(t?.status || "").toLowerCase();
-          const iso = getTourISO(t);
-          if (!iso) return true;
-          if (TERMINAL.has(st)) return true;
+          const iso = String(t?.start_date || "");
           return !(iso >= startISO && iso <= endISO);
         });
 
-        const entByTid = new Map<number, any>();
-        (myEntries || []).forEach((e) => { if (!entByTid.has(e.tournament_id)) entByTid.set(e.tournament_id, e); });
+        const entByTid = new Map<string, any>();
+        (myEntries || []).forEach((e) => { if (!entByTid.has(String(e.tournament_id))) entByTid.set(String(e.tournament_id), e); });
 
         const rows = history.map((t: any) => {
-          const ent = entByTid.get(t.id);
-          const name = t.planet_name || (t.entry_fee ? `Tournament $${t.entry_fee}` : "Tournament");
+          const ent = entByTid.get(String(t.id));
+          const name = t.title || (t.entry_fee_cents ? `Tournament $${t.entry_fee_cents/100}` : "Tournament");
           return {
             id: String(ent?.id ?? t.id),
             name,
-            dateISO: getTourISO(t),
-            dateHuman: humanDate(getTourISO(t)),
-            entryFee: t.entry_fee,
-            status: t.status || "—",
+            dateISO: t.start_date,
+            dateHuman: humanDate(t.start_date),
+            entryFee: t.entry_fee_cents ? t.entry_fee_cents/100 : 0,
+            status: ent?.status || "—",
           };
         });
 
@@ -151,14 +141,13 @@ export default function TournamentHistory() {
 /* --- pills --- */
 function pillStyleForStatus(status: string) {
   const s = (status || "").toLowerCase();
-  if (s === "settled")   return { backgroundColor: "rgba(0,255,170,0.15)", borderColor: "rgba(0,255,170,0.35)" };
-  if (s === "in_progress" || s === "running") return { backgroundColor: "rgba(97,61,193,0.18)", borderColor: "rgba(97,61,193,0.4)" };
-  if (s === "cancelled") return { backgroundColor: "rgba(255,80,80,0.15)", borderColor: "rgba(255,80,80,0.35)" };
-  if (s === "locked")    return { backgroundColor: "rgba(255,215,0,0.15)", borderColor: "rgba(255,215,0,0.35)" };
+  if (s === "winner")     return { backgroundColor: "rgba(0,255,170,0.15)", borderColor: "rgba(0,255,170,0.35)" };
+  if (s === "eliminated") return { backgroundColor: "rgba(255,80,80,0.15)", borderColor: "rgba(255,80,80,0.35)" };
+  if (s === "active")     return { backgroundColor: "rgba(97,61,193,0.18)", borderColor: "rgba(97,61,193,0.4)" };
   return { backgroundColor: "rgba(255,255,255,0.12)", borderColor: BORDER };
 }
 
-/* --- styles (your look) --- */
+/* --- styles --- */
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#0d0013" },
   back:   { marginTop: RFValue(8), marginBottom: RFValue(10), color: PURPLE, fontWeight: "700", fontSize: RFValue(16) },

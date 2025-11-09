@@ -300,7 +300,7 @@ export default function Dash(){
         <Text style={styles.appTitle}>LuxeBETS</Text>
 
         <View style={{ flexDirection: "row", gap: RFValue(12) }}>
-          <TouchableOpacity onPress={() => { setStreakOpen(true); loadStreaks(); }} activeOpacity={0.85}>
+          <TouchableOpacity  onPress={() => router.push("/leaderboard")} activeOpacity={0.85}>
             <Image source={{ uri: "https://img.icons8.com/ios-filled/50/leaderboard.png" }} style={[styles.iconSmall, { tintColor: GOLD }]} />
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setProfileOpen((v)=>!v)} activeOpacity={0.85}>

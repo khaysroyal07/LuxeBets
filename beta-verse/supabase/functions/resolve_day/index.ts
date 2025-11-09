@@ -1,90 +1,127 @@
 // supabase/functions/resolve_day/index.ts
-// deno-lint-ignore-file no-explicit-any
+// POINTS-ONLY RESOLVER (no elimination)
+
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE);
 
-const toDayISO = (d: Date | string) => {
-  const dt = typeof d === "string" ? new Date(d) : d;
-  const y = dt.getFullYear();
-  const m = String(dt.getMonth() + 1).padStart(2, "0");
-  const day = String(dt.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+type PickRow = {
+  entry_id: string;
+  game_day: string | null;
+  is_correct: boolean | null;
+  difficulty: string | null;
 };
+
+// --- helpers ---
+
+function yesterdayUTCISO(): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10); // 'YYYY-MM-DD'
+}
+
+function difficultyPoints(diff: string | null): number {
+  switch ((diff || "").toLowerCase()) {
+    case "medium":
+      return 2;
+    case "hard":
+      return 3;
+    case "extreme":
+      return 5;
+    case "easy":
+    default:
+      return 1;
+  }
+}
 
 serve(async (req) => {
   try {
-    const body = await req.json().catch(() => ({}));
-    const dayISO: string = body?.date ? toDayISO(body.date) : toDayISO(new Date());
-
-    // active tournaments (any status except archived/cancelled/settled)
-    const { data: tours, error: tErr } = await sb
-      .from("tournaments")
-      .select("id")
-      .eq("day_date", dayISO)
-      .not("status", "in", "('archived','cancelled','settled')");
-    if (tErr) throw tErr;
-
-    const tIds = (tours ?? []).map((t: any) => t.id);
-    if (!tIds.length) {
-      return new Response(JSON.stringify({ ok: true, msg: "no active tournaments", dayISO }), { status: 200 });
+    if (req.method !== "POST") {
+      return new Response("Method not allowed", { status: 405 });
     }
 
-    // losers for that day (already graded by sync_results)
-    const { data: losers, error: lErr } = await sb
+    const body = (await req.json().catch(() => ({}))) as {
+      day?: string;
+    };
+
+    // TARGET_DAY is the last day we want to include in cumulative scoring.
+    const TARGET_DAY = body.day ?? yesterdayUTCISO(); // 'YYYY-MM-DD'
+
+    console.log("[resolve_day] running for TARGET_DAY:", TARGET_DAY);
+
+    // 1) Pull ALL picks up to and including TARGET_DAY.
+    //    We only care about whether they were correct and what difficulty.
+    const { data: picks, error: picksErr } = await sb
       .from("picks")
-      .select("id, entry_id, tournament_id")
-      .in("tournament_id", tIds)
-      .eq("day_date", dayISO)
-      .eq("result", "loss");
-    if (lErr) throw lErr;
+      .select("entry_id, game_day, is_correct, difficulty")
+      .lte("game_day", TARGET_DAY);
 
-    if (!losers?.length) {
-      return new Response(JSON.stringify({ ok: true, eliminated_added: 0, dayISO }), { status: 200 });
+    if (picksErr) {
+      console.error("[resolve_day] picksErr", picksErr);
+      return new Response(
+        JSON.stringify({ error: picksErr.message }),
+        { status: 500 },
+      );
     }
 
-    // skip already eliminated for the day
-    const { data: existing, error: exErr } = await sb
-      .from("eliminations")
-      .select("entry_id, tournament_id")
-      .eq("day_date", dayISO)
-      .in("entry_id", losers.map((p) => p.entry_id));
-    if (exErr) throw exErr;
+    const rows = (picks ?? []) as PickRow[];
 
-    const already = new Set((existing ?? []).map((x: any) => `${x.entry_id}:${x.tournament_id}`));
-    const toInsert = losers
-      .filter((p) => !already.has(`${p.entry_id}:${p.tournament_id}`))
-      .map((p) => ({
-        entry_id: p.entry_id,
-        tournament_id: p.tournament_id,
-        day_date: dayISO,
-        reason: "lost",
-      }));
+    // 2) Aggregate points per entry (cumulative over all days <= TARGET_DAY).
+    const pointsByEntry = new Map<string, number>();
 
-    if (toInsert.length) {
-      const { error: insErr } = await sb.from("eliminations").insert(toInsert);
-      if (insErr) throw insErr;
+    for (const p of rows) {
+      if (!p.entry_id) continue;
+      if (!p.is_correct) continue; // only count correct picks
+
+      const pts = difficultyPoints(p.difficulty);
+      const cur = pointsByEntry.get(p.entry_id) ?? 0;
+      pointsByEntry.set(p.entry_id, cur + pts);
     }
 
-    // (Optional) keep entries.status mirrored for UI
-    const losingEntryIds = toInsert.map((r) => r.entry_id);
-    if (losingEntryIds.length) {
-      const { error: eUpdErr } = await sb.from("entries").update({ status: "eliminated" }).in("id", losingEntryIds);
-      if (eUpdErr) throw eUpdErr;
+    console.log(
+      "[resolve_day] entries with points:",
+      pointsByEntry.size,
+    );
+
+    // 3) Write totals back to entries.points_total.
+    //    This is idempotent: we always SET to the computed total, not increment.
+    for (const [entryId, totalPts] of pointsByEntry.entries()) {
+      const { error: updErr } = await sb
+        .from("entries")
+        .update({ points_total: totalPts })
+        .eq("id", entryId);
+
+      if (updErr) {
+        console.error(
+          "[resolve_day] failed to update entry",
+          entryId,
+          updErr,
+        );
+      }
     }
 
-    // 🚫 no tournament status updates here
-    return new Response(JSON.stringify({ ok: true, eliminated_added: toInsert.length, dayISO }), {
+    // 4) Optional: ensure entries with no correct picks yet stay at 0
+    // (they already default to 0, so nothing required here).
+
+    // 5) Return a simple summary to the caller / cron
+    const summary = {
+      target_day: TARGET_DAY,
+      entries_scored: pointsByEntry.size,
+    };
+
+    return new Response(JSON.stringify(summary), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
-  } catch (e) {
-    return new Response(JSON.stringify({ ok: false, error: String(e) }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+  } catch (err) {
+    console.error("[resolve_day] unexpected error", err);
+    return new Response(
+      JSON.stringify({ error: String(err) }),
+      { status: 500 },
+    );
   }
 });

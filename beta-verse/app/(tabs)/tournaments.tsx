@@ -199,66 +199,78 @@ export default function TournamentsTab() {
   /* =========================================================
      Load tournaments aligned to new schema
   ========================================================= */
-  const loadTournaments = useCallback(async (showSpinner = true) => {
-    try {
-      if (showSpinner) setLoading(true);
-      setRefreshing(true);
+const loadTournaments = useCallback(async (showSpinner = true) => {
+  try {
+    if (showSpinner) setLoading(true);
+    setRefreshing(true);
 
-      const { startISO, endISO } = currentTueThuWindowUTC(new Date());
+    const nowIso = new Date().toISOString();
 
-      // 1) phase-aware tournaments from the view
-      const { data: list, error: tErr } = await supabase
-        .from("tournament_phase")
-        .select("id, tier, title, entry_fee_cents, start_date, end_date, join_open_at, join_close_at, phase")
-        .gte("start_date", startISO)
-        .lte("start_date", endISO)
-        .in("phase", ["upcoming", "open"])
-        .order("start_date", { ascending: true })
-        .order("entry_fee_cents", { ascending: true });
-      if (tErr) throw tErr;
+    const { data: list, error: tErr } = await supabase
+      .from("tournament_phase")
+      .select(
+        "id, tier, title, entry_fee_cents, start_date, end_date, join_open_at, join_close_at, phase"
+      )
+      // show tournaments that are not finished yet
+      .gte("join_close_at", nowIso)
+      .in("phase", ["upcoming", "open"])
+      .order("start_date", { ascending: true })
+      .order("entry_fee_cents", { ascending: true });
 
-      const ids = (list || []).map((t: any) => t.id as string);
+    if (tErr) throw tErr;
 
-      // 2) entrants counts via RPC (no table read)
-      let counts: Record<string, number> = {};
-      if (ids.length) {
-        const { data: cntRows, error: cErr } = await supabase.rpc("entries_counts", { ids });
-        if (cErr) throw cErr;
-        (cntRows || []).forEach((r: any) => { counts[r.tournament_id] = r.entrants; });
-      }
+    const ids = (list || []).map((t: any) => t.id as string);
 
-      // 3) which ones I joined (RPC; requires auth but doesn't read table directly)
-      const { data: { user } } = await supabase.auth.getUser();
-      let myJoinedIds: string[] = [];
-      if (user && ids.length) {
-        const { data: mine, error: mErr } = await supabase.rpc("my_joined", { ids });
-        if (mErr) throw mErr;
-        myJoinedIds = (mine || []).map((r: any) => r.tournament_id as string);
-      }
-
-      // 4) normalize for UI
-      const merged = (list || []).map((t: any) => ({
-        id: t.id as string,
-        tier: t.tier,
-        planet_name: t.title || (FEE_TO_PLANET[String(Number(t.entry_fee_cents)/100)] ?? "Tournament"),
-        entry_fee: Number(t.entry_fee_cents) / 100,
-        start_date: t.start_date,
-        end_date: t.end_date,
-        join_open_at: t.join_open_at,
-        join_close_at: t.join_close_at,
-        phase: t.phase,
-        entrants_total: counts[t.id] ?? 0,
-      }));
-
-      setTournaments(merged);
-      setJoinedIds(new Set(myJoinedIds));
-    } catch (e: any) {
-      Alert.alert("Error", e.message || "Failed to load tournaments");
-    } finally {
-      setRefreshing(false);
-      if (showSpinner) setLoading(false);
+    let counts: Record<string, number> = {};
+    if (ids.length) {
+      const { data: cntRows, error: cErr } = await supabase.rpc(
+        "entries_counts",
+        { ids }
+      );
+      if (cErr) throw cErr;
+      (cntRows || []).forEach((r: any) => {
+        counts[r.tournament_id] = r.entrants;
+      });
     }
-  }, []);
+
+    const { data: { user } } = await supabase.auth.getUser();
+    let myJoinedIds: string[] = [];
+    if (user && ids.length) {
+      const { data: mine, error: mErr } = await supabase.rpc("my_joined", {
+        ids,
+      });
+      if (mErr) throw mErr;
+      myJoinedIds = (mine || []).map(
+        (r: any) => r.tournament_id as string
+      );
+    }
+
+    const merged = (list || []).map((t: any) => ({
+      id: t.id as string,
+      tier: t.tier,
+      planet_name:
+        t.title ||
+        (FEE_TO_PLANET[String(Number(t.entry_fee_cents) / 100)] ??
+          "Tournament"),
+      entry_fee: Number(t.entry_fee_cents) / 100,
+      start_date: t.start_date,
+      end_date: t.end_date,
+      join_open_at: t.join_open_at,
+      join_close_at: t.join_close_at,
+      phase: t.phase,
+      entrants_total: counts[t.id] ?? 0,
+    }));
+
+    setTournaments(merged);
+    setJoinedIds(new Set(myJoinedIds));
+  } catch (e: any) {
+    Alert.alert("Error", e.message || "Failed to load tournaments");
+  } finally {
+    setRefreshing(false);
+    if (showSpinner) setLoading(false);
+  }
+}, []);
+
 
   useEffect(() => { loadTournaments(true); }, [loadTournaments]);
   useEffect(() => {

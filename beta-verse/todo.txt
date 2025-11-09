@@ -1,0 +1,14 @@
+1. Fix Current Entires
+2. Fix Status
+3. Fix History
+4. Fix settlement Logic
+5. Finish Wallet
+6. Test
+7. Fix Progile
+8. FINISHED with draft one
+
+updated
+I need to fix picks modal
+fix Status
+new logic leaderboard
+Tournamnet history and status
