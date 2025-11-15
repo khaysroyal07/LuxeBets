@@ -154,3 +154,36 @@ entrypoint = "./functions/resolve_tournament_results/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/resolve_tournament_results/*.html" ]
+
+[functions.resolve_results]
+enabled = true
+verify_jwt = true
+import_map = "./functions/resolve_results/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/resolve_results/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/resolve_results/*.html" ]
+
+[functions.refresh_leaderboards]
+enabled = true
+verify_jwt = true
+import_map = "./functions/refresh_leaderboards/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/refresh_leaderboards/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/refresh_leaderboards/*.html" ]
+
+[functions.update_leaderboards]
+enabled = true
+verify_jwt = true
+import_map = "./functions/update_leaderboards/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/update_leaderboards/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/update_leaderboards/*.html" ]

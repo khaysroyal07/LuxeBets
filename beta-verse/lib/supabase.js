@@ -10,6 +10,7 @@ function getExtra() {
     {}
   );
 }
+
 const extra = getExtra();
 
 export const SUPABASE_URL =
@@ -24,12 +25,27 @@ export const SUPABASE_ANON_KEY =
   process.env.SUPABASE_ANON_KEY ??
   "";
 
-// Derive Functions base if not provided (iOS requires https:)
-const fromExtraOrEnv = (extra.FUNCTIONS_URL || process.env.FUNCTIONS_URL || "").replace(/\/+$/, "");
-const fallbackFromSupabase =
-  (typeof SUPABASE_URL === "string" && SUPABASE_URL.startsWith("http"))
-    ? `https://${new URL(SUPABASE_URL).host}.functions.supabase.co`
-    : "";
-export const FUNCTIONS_BASE = fromExtraOrEnv || fallbackFromSupabase;
+/**
+ * Edge Functions base URL
+ * Priority:
+ *   1) extra.FUNCTIONS_BASE / extra.FUNCTIONS_URL / env
+ *   2) fall back to `${SUPABASE_URL}/functions/v1`
+ */
+const rawFunctionsBase =
+  extra.FUNCTIONS_BASE ??
+  extra.FUNCTIONS_URL ??
+  process.env.EXPO_PUBLIC_FUNCTIONS_BASE ??
+  process.env.FUNCTIONS_BASE ??
+  "";
+
+let functionsBase = rawFunctionsBase.replace(/\/+$/, "");
+
+if (!functionsBase && SUPABASE_URL) {
+  // default to standard supabase pattern
+  const cleaned = SUPABASE_URL.replace(/\/+$/, "");
+  functionsBase = `${cleaned}/functions/v1`;
+}
+
+export const FUNCTIONS_BASE = functionsBase;
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);

@@ -1,9 +1,21 @@
 // app/(tabs)/index.tsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
-  View, Text, Image, TouchableOpacity, StyleSheet, FlatList, Dimensions,
-  ActivityIndicator, ImageBackground, LayoutAnimation, Platform, UIManager,
-  Pressable, Modal, RefreshControl
+  View,
+  Text,
+  Image,
+  TouchableOpacity,
+  StyleSheet,
+  FlatList,
+  Dimensions,
+  ActivityIndicator,
+  ImageBackground,
+  LayoutAnimation,
+  Platform,
+  UIManager,
+  Pressable,
+  Modal,
+  RefreshControl,
 } from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
 import { LinearGradient } from "expo-linear-gradient";
@@ -12,89 +24,202 @@ import { BlurView } from "expo-blur";
 import { useRouter } from "expo-router";
 
 import {
-  SportKey, getTeams, getGamesByDate, normalizeGame, isNotEnabledError
+  SportKey,
+  getTeams,
+  getGamesByDate,
+  normalizeGame,
+  isNotEnabledError,
 } from "@/lib/sportsdataio";
 
 const { width } = Dimensions.get("window");
-if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
+if (
+  Platform.OS === "android" &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-const SPORT_TABS: Array<{key: SportKey; label: string; iconUrl: string}> = [
-  { key:"nfl",  label:"NFL",  iconUrl:"https://img.icons8.com/ios-filled/100/american-football.png" },
-  { key:"nba",  label:"NBA",  iconUrl:"https://img.icons8.com/ios-filled/100/basketball.png" },
-  { key:"wnba", label:"WNBA", iconUrl:"https://img.icons8.com/fluency/100/basketball-2.png" },
-  { key:"mlb",  label:"MLB",  iconUrl:"https://img.icons8.com/ios-filled/100/baseball.png" },
-  { key:"nhl",  label:"NHL",  iconUrl:"https://img.icons8.com/ios-filled/100/ice-hockey.png" },
+const SPORT_TABS: Array<{ key: SportKey; label: string; iconUrl: string }> = [
+  {
+    key: "nfl",
+    label: "NFL",
+    iconUrl: "https://img.icons8.com/ios-filled/100/american-football.png",
+  },
+  {
+    key: "nba",
+    label: "NBA",
+    iconUrl: "https://img.icons8.com/ios-filled/100/basketball.png",
+  },
+  {
+    key: "wnba",
+    label: "WNBA",
+    iconUrl: "https://img.icons8.com/fluency/100/basketball-2.png",
+  },
+  {
+    key: "mlb",
+    label: "MLB",
+    iconUrl: "https://img.icons8.com/ios-filled/100/baseball.png",
+  },
+  {
+    key: "nhl",
+    label: "NHL",
+    iconUrl: "https://img.icons8.com/ios-filled/100/ice-hockey.png",
+  },
 ];
-const SPORTS = SPORT_TABS.map(t => t.key);
+const SPORTS = SPORT_TABS.map((t) => t.key);
 const YEAR_OPTIONS = ["Auto", 2025, 2024, 2023, 2022];
 const DEFAULT_TIER = "20";
-const defaultTeamLogo = "https://upload.wikimedia.org/wikipedia/commons/1/14/No_Image_Available.jpg";
+const defaultTeamLogo =
+  "https://upload.wikimedia.org/wikipedia/commons/1/14/No_Image_Available.jpg";
 const PURPLE = "#613DC1";
 const GOLD = "#FFD700";
 
-function pad2(n:number){ return String(n).padStart(2,"0"); }
-function toISODate(d: Date){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
-function relativeWhen(ms?: number,b?: "FINAL"|"UPCOMING"|"LIVE"){
-  if(!ms)return""; const now=Date.now(); const diff=ms-now; const abs=Math.abs(diff);
-  const min=Math.round(abs/60000); const h=Math.floor(min/60); const m=min%60;
-  if(b==="FINAL"){ if(h>=24) return `${Math.floor(h/24)}d ago`; if(h>=1) return `${h}h ago`; return `${m}m ago`; }
-  if(diff<=0) return "now"; if(h>=24) return `in ${Math.floor(h/24)}d`; if(h>=1) return `in ${h}h ${m?m+"m":""}`.trim(); return `in ${m}m`;
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+function relativeWhen(ms?: number, b?: "FINAL" | "UPCOMING" | "LIVE") {
+  if (!ms) return "";
+  const now = Date.now();
+  const diff = ms - now;
+  const abs = Math.abs(diff);
+  const min = Math.round(abs / 60000);
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+
+  if (b === "FINAL") {
+    if (h >= 24) return `${Math.floor(h / 24)}d ago`;
+    if (h >= 1) return `${h}h ago`;
+    return `${m}m ago`;
+  }
+  if (diff <= 0) return "now";
+  if (h >= 24) return `in ${Math.floor(h / 24)}d`;
+  if (h >= 1) return `in ${h}h ${m ? m + "m" : ""}`.trim();
+  return `in ${m}m`;
 }
 
 const makeEventKey = (sportKey: string, g: any) =>
-  `${sportKey}:${String(g.id ?? `${g.homeName}-${g.awayName}`)}:${String(g.rawDate ?? 0)}`;
+  `${sportKey}:${String(g.id ?? `${g.homeName}-${g.awayName}`)}:${String(
+    g.rawDate ?? 0
+  )}`;
 const uniqByKey = (sportKey: string, list: any[]) => {
   const seen = new Set<string>();
-  return (list || []).filter(g => { const k = makeEventKey(sportKey, g); if (seen.has(k)) return false; seen.add(k); return true; });
+  return (list || []).filter((g) => {
+    const k = makeEventKey(sportKey, g);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 };
-function sanitizeUrl(u?: string|null){ if(!u) return null; try{ const t=u.trim(); return t.startsWith("http://") ? "https://"+t.slice(7) : t; }catch{ return null; } }
+function sanitizeUrl(u?: string | null) {
+  if (!u) return null;
+  try {
+    const t = u.trim();
+    return t.startsWith("http://") ? "https://" + t.slice(7) : t;
+  } catch {
+    return null;
+  }
+}
 
-function TeamAvatar({ uri, name }: { uri?: string|null; name?: string }) {
+function TeamAvatar({ uri, name }: { uri?: string | null; name?: string }) {
   const [err, setErr] = useState(false);
   const good = !err && sanitizeUrl(uri || null);
-  if (good) return <Image source={{ uri: good }} onError={() => setErr(true)} style={styles.teamLogo} />;
-  const initials=(name||"").split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]?.toUpperCase()).join("")||"??";
-  return (<View style={styles.avatarFallback}><Text style={styles.avatarInitials}>{initials}</Text></View>);
+  if (good)
+    return (
+      <Image
+        source={{ uri: good }}
+        onError={() => setErr(true)}
+        style={styles.teamLogo}
+      />
+    );
+  const initials =
+    (name || "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase())
+      .join("") || "??";
+  return (
+    <View style={styles.avatarFallback}>
+      <Text style={styles.avatarInitials}>{initials}</Text>
+    </View>
+  );
 }
+
 function Chip({ label, selected, onPress, style }: any) {
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.85}
-      style={[styles.chip, selected && styles.chipSelected, style]}>
-      <Text style={[styles.chipText, selected && styles.chipTextSelected]} numberOfLines={1}>{label}</Text>
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.85}
+      style={[styles.chip, selected && styles.chipSelected, style]}
+    >
+      <Text
+        style={[styles.chipText, selected && styles.chipTextSelected]}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
     </TouchableOpacity>
   );
 }
 
 const MOCK_STREAKS = [
-  { id: "1", name: "Ava King",  streak: 8, avatarUrl: "https://i.pravatar.cc/100?img=5" },
-  { id: "2", name: "Noah Lee",  streak: 6, avatarUrl: "https://i.pravatar.cc/100?img=12" },
-  { id: "3", name: "Maya Cruz", streak: 5, avatarUrl: "https://i.pravatar.cc/100?img=32" },
-  { id: "4", name: "Owen Kim",  streak: 4, avatarUrl: "https://i.pravatar.cc/100?img=44" },
-  { id: "5", name: "Liam Fox",  streak: 3, avatarUrl: "https://i.pravatar.cc/100?img=14" },
+  {
+    id: "1",
+    name: "Ava King",
+    streak: 8,
+    avatarUrl: "https://i.pravatar.cc/100?img=5",
+  },
+  {
+    id: "2",
+    name: "Noah Lee",
+    streak: 6,
+    avatarUrl: "https://i.pravatar.cc/100?img=12",
+  },
+  {
+    id: "3",
+    name: "Maya Cruz",
+    streak: 5,
+    avatarUrl: "https://i.pravatar.cc/100?img=32",
+  },
+  {
+    id: "4",
+    name: "Owen Kim",
+    streak: 4,
+    avatarUrl: "https://i.pravatar.cc/100?img=44",
+  },
+  {
+    id: "5",
+    name: "Liam Fox",
+    streak: 3,
+    avatarUrl: "https://i.pravatar.cc/100?img=14",
+  },
 ];
-function trophyForRank(rank:number){
-  if(rank===1) return { uri:"https://img.icons8.com/fluency/96/trophy.png" };
-  if(rank===2) return { uri:"https://img.icons8.com/color/96/silver-medal.png" };
-  if(rank===3) return { uri:"https://img.icons8.com/color/96/bronze-medal.png" };
+function trophyForRank(rank: number) {
+  if (rank === 1)
+    return { uri: "https://img.icons8.com/fluency/96/trophy.png" };
+  if (rank === 2)
+    return { uri: "https://img.icons8.com/color/96/silver-medal.png" };
+  if (rank === 3)
+    return { uri: "https://img.icons8.com/color/96/bronze-medal.png" };
   return null;
 }
 
-export default function Dash(){
-  const [selectedSportIndex,setSelectedSportIndex]=useState(0);
-  const [selectedYear,setSelectedYear]=useState<"Auto"|number>("Auto");
+export default function Dash() {
+  const [selectedSportIndex, setSelectedSportIndex] = useState(0);
+  const [selectedYear, setSelectedYear] = useState<"Auto" | number>("Auto");
 
-  const [teamsByKey,setTeamsByKey]=useState<Record<string, any>>({});
-  const [events,setEvents]=useState<any[]>([]);
-  const [loading,setLoading]=useState(false);
-  const [note,setNote]=useState("");
-  const [notEnabled,setNotEnabled]=useState(false);
+  const [teamsByKey, setTeamsByKey] = useState<Record<string, any>>({});
+  const [events, setEvents] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [note, setNote] = useState("");
+  const [notEnabled, setNotEnabled] = useState(false);
 
-  const [showFilter,setShowFilter]=useState(false);
-  const [quickFilter,setQuickFilter]=useState<"ALL"|"LIVE"|"UPCOMING"|"FINAL">("ALL");
-  const [todayOnly,setTodayOnly]=useState(false);
-  const [sortMode,setSortMode]=useState<"smart"|"timeAsc"|"timeDesc">("smart");
+  const [showFilter, setShowFilter] = useState(false);
+  const [quickFilter, setQuickFilter] =
+    useState<"ALL" | "LIVE" | "UPCOMING" | "FINAL">("ALL");
+  const [todayOnly, setTodayOnly] = useState(false);
+  const [sortMode, setSortMode] =
+    useState<"smart" | "timeAsc" | "timeDesc">("smart");
 
   const [profileOpen, setProfileOpen] = useState(false);
   const [streakOpen, setStreakOpen] = useState(false);
@@ -102,131 +227,235 @@ export default function Dash(){
   const [streakLoading, setStreakLoading] = useState(false);
   const [streakError, setStreakError] = useState("");
 
-  const router=useRouter();
-  const [fontsLoaded]=useFonts({
+  const router = useRouter();
+  const [fontsLoaded] = useFonts({
     Poppins: require("@/assets/fonts/Poppins-Regular.ttf"),
     PoppinsMedium: require("@/assets/fonts/Poppins-Medium.ttf"),
     PoppinsSemiBold: require("@/assets/fonts/Poppins-SemiBold.ttf"),
     PoppinsBold: require("@/assets/fonts/Poppins-Bold.ttf"),
   });
-  const sportKey=SPORTS[selectedSportIndex] as SportKey;
+  const sportKey = SPORTS[selectedSportIndex] as SportKey;
 
-  const go = useCallback((path: string) => {
-    setProfileOpen(false);
-    requestAnimationFrame(() => router.push(path as any));
-  }, [router]);
+  const go = useCallback(
+    (path: string) => {
+      setProfileOpen(false);
+      requestAnimationFrame(() => router.push(path as any));
+    },
+    [router]
+  );
 
-  useEffect(()=>{ let off=false; (async()=>{
-    try{
-      setTeamsByKey({});
-      const byKey = await getTeams(sportKey);
-      if(!off) setTeamsByKey(byKey);
-    }catch(e){ if(!off) setTeamsByKey({}); }
-  })(); return()=>{off=true}; },[sportKey]);
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      try {
+        setTeamsByKey({});
+        const byKey = await getTeams(sportKey);
+        if (!off) setTeamsByKey(byKey);
+      } catch (e) {
+        if (!off) setTeamsByKey({});
+      }
+    })();
+    return () => {
+      off = true;
+    };
+  }, [sportKey]);
 
-  async function fetchWindowSerial(center: Date,aheadDays:number,backDays:number,stopAfter:number){
-    const out:any[]=[];
-    for(let i=0;i<=aheadDays;i++){
-      const dt=new Date(center); dt.setDate(dt.getDate()+i);
-      const arr=await getGamesByDate(sportKey, dt); out.push(...(arr||[]));
-      if(out.length>=stopAfter)break;
+  async function fetchWindowSerial(
+    center: Date,
+    aheadDays: number,
+    backDays: number,
+    stopAfter: number
+  ) {
+    const out: any[] = [];
+    for (let i = 0; i <= aheadDays; i++) {
+      const dt = new Date(center);
+      dt.setDate(dt.getDate() + i);
+      const arr = await getGamesByDate(sportKey, dt);
+      out.push(...(arr || []));
+      if (out.length >= stopAfter) break;
     }
-    if(out.length<stopAfter){
-      for(let i=1;i<=backDays;i++){
-        const dt=new Date(center); dt.setDate(dt.getDate()-i);
-        const arr=await getGamesByDate(sportKey, dt); out.push(...(arr||[]));
-        if(out.length>=stopAfter)break;
+    if (out.length < stopAfter) {
+      for (let i = 1; i <= backDays; i++) {
+        const dt = new Date(center);
+        dt.setDate(dt.getDate() - i);
+        const arr = await getGamesByDate(sportKey, dt);
+        out.push(...(arr || []));
+        if (out.length >= stopAfter) break;
       }
     }
     return out;
   }
-  async function fetchYearSamples(year:number){
-    const sample=[new Date(`${year}-01-15`),new Date(`${year}-04-15`),new Date(`${year}-08-15`),new Date(`${year}-11-15`)];
-    let res:any[]=[]; for(const d of sample){ const c=await getGamesByDate(sportKey, d); res=res.concat(c||[]); if(res.length>=40)break; }
+
+  async function fetchYearSamples(year: number) {
+    const sample = [
+      new Date(`${year}-01-15`),
+      new Date(`${year}-04-15`),
+      new Date(`${year}-08-15`),
+      new Date(`${year}-11-15`),
+    ];
+    let res: any[] = [];
+    for (const d of sample) {
+      const c = await getGamesByDate(sportKey, d);
+      res = res.concat(c || []);
+      if (res.length >= 40) break;
+    }
     return res;
   }
 
-  function enrichGames(list:any[]){
-    return (list||[]).map((g:any)=> normalizeGame(sportKey, g, teamsByKey));
+  function enrichGames(list: any[]) {
+    return (list || []).map((g: any) => normalizeGame(sportKey, g, teamsByKey));
   }
-  function sortEnriched(arr:any[],mode:"smart"|"timeAsc"|"timeDesc"){
-    if(!Array.isArray(arr))return [];
-    const A=[...arr];
-    if(mode==="timeAsc") return A.sort((a,b)=>(a.rawDate||0)-(b.rawDate||0));
-    if(mode==="timeDesc")return A.sort((a,b)=>(b.rawDate||0)-(a.rawDate||0));
-    const score:{[k:string]:number}={LIVE:0,UPCOMING:1,FINAL:2};
-    return A.sort((a,b)=>{
-      if(score[a.bucket]!==score[b.bucket]) return score[a.bucket]-score[b.bucket];
-      if(a.bucket==="FINAL"&&b.bucket==="FINAL") return (b.rawDate||0)-(a.rawDate||0);
-      return (a.rawDate||0)-(b.rawDate||0);
+  function sortEnriched(arr: any[], mode: "smart" | "timeAsc" | "timeDesc") {
+    if (!Array.isArray(arr)) return [];
+    const A = [...arr];
+    if (mode === "timeAsc")
+      return A.sort((a, b) => (a.rawDate || 0) - (b.rawDate || 0));
+    if (mode === "timeDesc")
+      return A.sort((a, b) => (b.rawDate || 0) - (a.rawDate || 0));
+    const score: { [k: string]: number } = { LIVE: 0, UPCOMING: 1, FINAL: 2 };
+    return A.sort((a, b) => {
+      if (score[a.bucket] !== score[b.bucket])
+        return score[a.bucket] - score[b.bucket];
+      if (a.bucket === "FINAL" && b.bucket === "FINAL")
+        return (b.rawDate || 0) - (a.rawDate || 0);
+      return (a.rawDate || 0) - (b.rawDate || 0);
     });
   }
 
-  useEffect(()=>{ let off=false; (async()=>{
-      setLoading(true); setEvents([]); setNote(""); setNotEnabled(false);
-      try{
-        const now=new Date(); let list:any[]=[];
-        if(selectedYear==="Auto"){
-          if(todayOnly){
-            const today=await getGamesByDate(sportKey, now);
-            const e=enrichGames(today||[]); const unique=uniqByKey(sportKey,e);
-            if(!off){ setEvents(sortEnriched(unique,sortMode)); setNote(unique.length?"":"No games today."); }
-            setLoading(false); return;
-          }
-          list=await fetchWindowSerial(now,5,0,60);
-          let e=enrichGames(list);
-          let up=e.filter(g=>g.bucket!=="FINAL");
-          if(up.length===0){ setNote("Looking ahead for upcoming games…"); list=await fetchWindowSerial(now,14,0,80); e=enrichGames(list); up=e.filter(g=>g.bucket!=="FINAL"); }
-          if(up.length===0){ setNote("No upcoming found; showing recent finals…"); list=await fetchWindowSerial(now,0,7,80); e=enrichGames(list); }
-          if(!e?.length){ const yr=now.getFullYear(); setNote(`Sampling ${yr}…`); list=await fetchYearSamples(yr); e=enrichGames(list); }
-          const unique=uniqByKey(sportKey, e);
-          if(!off) setEvents(sortEnriched(unique,sortMode));
-        }else{
-          setNote(`Looking in ${selectedYear}…`);
-          const yearList=await fetchYearSamples(Number(selectedYear));
-          const e=enrichGames(yearList);
-          const unique=uniqByKey(sportKey, e);
-          if(!off){ setEvents(sortEnriched(unique,sortMode)); setNote(unique.length?"":`No results in ${selectedYear}.`); }
-        }
-      }catch(e:any){
-        if(isNotEnabledError(e)){ setNotEnabled(true); setEvents([]); setNote(""); }
-        else{ if(!off){ setEvents([]); setNote("No events to show."); } }
-      }finally{ if(!off) setLoading(false); }
-    })(); return()=>{off=true};
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[sportKey,selectedYear,todayOnly,sortMode,teamsByKey]);
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      setLoading(true);
+      setEvents([]);
+      setNote("");
+      setNotEnabled(false);
+      try {
+        const now = new Date();
+        let list: any[] = [];
 
-  const shownEvents=useMemo(()=>quickFilter==="ALL"?events:events.filter(e=>e.bucket===quickFilter),[events,quickFilter]);
-  if(!fontsLoaded) return null;
+        if (selectedYear === "Auto") {
+          if (todayOnly) {
+            const today = await getGamesByDate(sportKey, now);
+            const e = enrichGames(today || []);
+            const unique = uniqByKey(sportKey, e);
+            if (!off) {
+              setEvents(sortEnriched(unique, sortMode));
+              setNote(unique.length ? "" : "No games today.");
+            }
+            setLoading(false);
+            return;
+          }
+
+          list = await fetchWindowSerial(now, 5, 0, 60);
+          let e = enrichGames(list);
+          let up = e.filter((g) => g.bucket !== "FINAL");
+          if (up.length === 0) {
+            setNote("Looking ahead for upcoming games…");
+            list = await fetchWindowSerial(now, 14, 0, 80);
+            e = enrichGames(list);
+            up = e.filter((g) => g.bucket !== "FINAL");
+          }
+          if (up.length === 0) {
+            setNote("No upcoming found; showing recent finals…");
+            list = await fetchWindowSerial(now, 0, 7, 80);
+            e = enrichGames(list);
+          }
+          if (!e?.length) {
+            const yr = now.getFullYear();
+            setNote(`Sampling ${yr}…`);
+            list = await fetchYearSamples(yr);
+            e = enrichGames(list);
+          }
+          const unique = uniqByKey(sportKey, e);
+          if (!off) setEvents(sortEnriched(unique, sortMode));
+        } else {
+          setNote(`Looking in ${selectedYear}…`);
+          const yearList = await fetchYearSamples(Number(selectedYear));
+          const e = enrichGames(yearList);
+          const unique = uniqByKey(sportKey, e);
+          if (!off) {
+            setEvents(sortEnriched(unique, sortMode));
+            setNote(unique.length ? "" : `No results in ${selectedYear}.`);
+          }
+        }
+      } catch (e: any) {
+        if (isNotEnabledError(e)) {
+          setNotEnabled(true);
+          setEvents([]);
+          setNote("");
+        } else {
+          if (!off) {
+            setEvents([]);
+            setNote("No events to show.");
+          }
+        }
+      } finally {
+        if (!off) setLoading(false);
+      }
+    })();
+    return () => {
+      off = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sportKey, selectedYear, todayOnly, sortMode, teamsByKey]);
+
+  const shownEvents = useMemo(
+    () =>
+      quickFilter === "ALL"
+        ? events
+        : events.filter((e) => e.bucket === quickFilter),
+    [events, quickFilter]
+  );
+
+  if (!fontsLoaded) return null;
 
   const TeamCol = ({ name, logo }: any) => (
     <View style={styles.teamCol}>
       <TeamAvatar uri={logo || defaultTeamLogo} name={name} />
       <View style={styles.teamNameBox}>
-        <Text style={styles.teamName} numberOfLines={1} ellipsizeMode="tail">{name}</Text>
+        <Text
+          style={styles.teamName}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+        >
+          {name}
+        </Text>
       </View>
     </View>
   );
 
   const EventCard = ({ item }: any) => {
-    const tagStyle = item.bucket==="LIVE"
-      ? { bg:"#22c55e", fg:"#0a2915" }
-      : item.bucket==="UPCOMING"
-      ? { bg:"#f59e0b", fg:"#2b1a00" }
-      : { bg:"#6b7280", fg:"#0d1117" };
+    const tagStyle =
+      item.bucket === "LIVE"
+        ? { bg: "#22c55e", fg: "#0a2915" }
+        : item.bucket === "UPCOMING"
+        ? { bg: "#f59e0b", fg: "#2b1a00" }
+        : { bg: "#6b7280", fg: "#0d1117" };
 
     return (
       <View style={styles.eventWrapper}>
         <View style={styles.eventCardVertical}>
           <BlurView intensity={60} tint="dark" style={styles.eventBgVertical}>
             <LinearGradient
-              colors={["rgba(70,7,89,0.9)","rgba(74,46,153,0.5)","rgba(46,29,91,0.8)"]}
-              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+              colors={[
+                "rgba(63,0,94,0.95)",
+                "rgba(61,34,139,0.9)",
+                "rgba(9,9,22,0.95)",
+              ]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
               style={StyleSheet.absoluteFill}
             />
             <View style={styles.statusWrap}>
-              <View style={[styles.statusPill, { backgroundColor: tagStyle.bg }]}>
-                <Text style={[styles.statusPillText, { color: tagStyle.fg }]} numberOfLines={1}>{item.bucket}</Text>
+              <View
+                style={[styles.statusPill, { backgroundColor: tagStyle.bg }]}
+              >
+                <Text
+                  style={[styles.statusPillText, { color: tagStyle.fg }]}
+                  numberOfLines={1}
+                >
+                  {item.bucket}
+                </Text>
               </View>
             </View>
             <View style={styles.mainRow}>
@@ -236,8 +465,16 @@ export default function Dash(){
                   {item.homeScore ?? "-"} - {item.awayScore ?? "-"}
                 </Text>
                 <View style={styles.centerMetaBox}>
-                  <Text style={styles.dateText} numberOfLines={1} ellipsizeMode="tail">{item.when}</Text>
-                  <Text style={styles.relativeText} numberOfLines={1}>{relativeWhen(item.rawDate, item.bucket)}</Text>
+                  <Text
+                    style={styles.dateText}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {item.when}
+                  </Text>
+                  <Text style={styles.relativeText} numberOfLines={1}>
+                    {relativeWhen(item.rawDate, item.bucket)}
+                  </Text>
                 </View>
               </View>
               <TeamCol name={item.awayName} logo={item.awayLogo} />
@@ -246,13 +483,21 @@ export default function Dash(){
         </View>
         <View style={styles.standingsCardVertical}>
           <View style={styles.standingBox}>
-            <Text style={styles.standingTeamName} numberOfLines={1}>{item.homeName}</Text>
-            <Text style={styles.standingText} numberOfLines={1}>W-L: — • —</Text>
+            <Text style={styles.standingTeamName} numberOfLines={1}>
+              {item.homeName}
+            </Text>
+            <Text style={styles.standingText} numberOfLines={1}>
+              W-L: — • —
+            </Text>
           </View>
           <View style={styles.vDivider} />
           <View style={styles.standingBox}>
-            <Text style={styles.standingTeamName} numberOfLines={1}>{item.awayName}</Text>
-            <Text style={styles.standingText} numberOfLines={1}>W-L: — • —</Text>
+            <Text style={styles.standingTeamName} numberOfLines={1}>
+              {item.awayName}
+            </Text>
+            <Text style={styles.standingText} numberOfLines={1}>
+              W-L: — • —
+            </Text>
           </View>
         </View>
       </View>
@@ -260,12 +505,34 @@ export default function Dash(){
   };
 
   const renderSportTab = ({ item: k, index }: any) => {
-    const cfg = SPORT_TABS.find(t => t.key===k)!; const selected = selectedSportIndex===index;
+    const cfg = SPORT_TABS.find((t) => t.key === k)!;
+    const selected = selectedSportIndex === index;
     return (
-      <TouchableOpacity onPress={()=>{ setSelectedSportIndex(index); setSelectedYear("Auto"); setQuickFilter("ALL"); }}
-        style={[styles.sportIconHorizontal, selected && { borderColor: GOLD, borderWidth: 2 }]} activeOpacity={0.85}>
-        <Image source={{ uri: cfg.iconUrl }} style={[styles.sportIconSmall, { tintColor: "#fff" }]} />
-        <Text style={[styles.sportNameHorizontal, selected && { color: GOLD }]} numberOfLines={1}>{cfg.label}</Text>
+      <TouchableOpacity
+        onPress={() => {
+          setSelectedSportIndex(index);
+          setSelectedYear("Auto");
+          setQuickFilter("ALL");
+        }}
+        style={[
+          styles.sportIconHorizontal,
+          selected && { borderColor: GOLD, borderWidth: 2 },
+        ]}
+        activeOpacity={0.85}
+      >
+        <Image
+          source={{ uri: cfg.iconUrl }}
+          style={[styles.sportIconSmall, { tintColor: "#fff" }]}
+        />
+        <Text
+          style={[
+            styles.sportNameHorizontal,
+            selected && { color: GOLD },
+          ]}
+          numberOfLines={1}
+        >
+          {cfg.label}
+        </Text>
       </TouchableOpacity>
     );
   };
@@ -273,137 +540,395 @@ export default function Dash(){
   const STREAKS_URL = "";
   const STREAKS_API_KEY = "";
   const loadStreaks = async () => {
-    setStreakLoading(true); setStreakError("");
-    try{
-      let rows:any[]=[];
-      if(STREAKS_URL){
-        const r=await fetch(STREAKS_URL,{headers:{"Content-Type":"application/json", ...(STREAKS_API_KEY?{apikey:STREAKS_API_KEY,Authorization:`Bearer ${STREAKS_API_KEY}`}:{})}});
-        if(r.ok){ const j=await r.json(); rows=Array.isArray(j)?j:(j?.streaks||[]); }
+    setStreakLoading(true);
+    setStreakError("");
+    try {
+      let rows: any[] = [];
+      if (STREAKS_URL) {
+        const r = await fetch(STREAKS_URL, {
+          headers: {
+            "Content-Type": "application/json",
+            ...(STREAKS_API_KEY
+              ? {
+                  apikey: STREAKS_API_KEY,
+                  Authorization: `Bearer ${STREAKS_API_KEY}`,
+                }
+              : {}),
+          },
+        });
+        if (r.ok) {
+          const j = await r.json();
+          rows = Array.isArray(j) ? j : j?.streaks || [];
+        }
       }
-      if(!rows.length) rows=MOCK_STREAKS;
-      rows.sort((a,b)=>(b.streak||0)-(a.streak||0));
+      if (!rows.length) rows = MOCK_STREAKS;
+      rows.sort((a, b) => (b.streak || 0) - (a.streak || 0));
       setStreaks(rows);
-    }catch{ setStreaks(MOCK_STREAKS); setStreakError("Using sample data."); }
-    finally{ setStreakLoading(false); }
+    } catch {
+      setStreaks(MOCK_STREAKS);
+      setStreakError("Using sample data.");
+    } finally {
+      setStreakLoading(false);
+    }
   };
 
-  return (
-    <ImageBackground source={require("@/assets/images/bgDash.png")} style={styles.container}>
-      <View style={styles.topBar}>
-        <TouchableOpacity onPress={()=>{ LayoutAnimation.easeInEaseOut(); setShowFilter(s=>!s); }} activeOpacity={0.85}>
-          <View style={styles.filterTopBtn}>
-            <Image source={{ uri: "https://img.icons8.com/ios-filled/50/filter--v1.png" }} style={{ width: RFValue(18), height: RFValue(18), tintColor: "#111" }} />
-            <Text style={styles.filterTopBtnText} numberOfLines={1}>Filters</Text>
+  const HeroTournamentCard = () => (
+    <TouchableOpacity
+      activeOpacity={0.9}
+      onPress={() =>
+        router.push({
+          pathname: "/tournaments",
+          params: { tier: DEFAULT_TIER },
+        } as any)
+      }
+    >
+      <BlurView intensity={60} tint="dark" style={styles.heroCardBlur}>
+        <LinearGradient
+          colors={[
+            "rgba(138,68,255,0.95)",
+            "rgba(82,15,130,0.95)",
+            "rgba(5,0,40,0.9)",
+          ]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <View style={styles.heroContent}>
+          <View style={styles.heroLeft}>
+            <Text style={styles.heroTitle}>Luxe Weekly</Text>
+            <Text style={styles.heroSubtitle}>
+              Tap any matchup or hit “Enter” to join this week’s galaxy
+              tournament.
+            </Text>
+            <View style={styles.heroTagsRow}>
+              <View style={styles.heroPill}>
+                <Text style={styles.heroPillText}>Entry from ${DEFAULT_TIER}</Text>
+              </View>
+              <View style={[styles.heroPill, { backgroundColor: "#22c55e" }]}>
+                <Text style={[styles.heroPillText, { color: "#022c1a" }]}>
+                  Points • No elim
+                </Text>
+              </View>
+            </View>
           </View>
-        </TouchableOpacity>
+          <View style={styles.heroRight}>
+            <Text style={styles.heroSparkles}>✨</Text>
+            <TouchableOpacity
+              style={styles.heroCta}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.heroCtaText}>Enter now</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </BlurView>
+    </TouchableOpacity>
+  );
 
-        <Text style={styles.appTitle}>LuxeBETS</Text>
+  return (
+    <ImageBackground
+      source={require("@/assets/images/bgDash.png")}
+      style={styles.container}
+      imageStyle={{ resizeMode: "cover" }}
+    >
+      {/* TOP BAR */}
+      <View style={styles.topBar}>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <Text style={styles.appTitle}>LuxeBETS</Text>
+          <Text style={styles.appSubtitle}> • Galaxy Picks</Text>
+        </View>
 
         <View style={{ flexDirection: "row", gap: RFValue(12) }}>
-          <TouchableOpacity  onPress={() => router.push("/leaderboard")} activeOpacity={0.85}>
-            <Image source={{ uri: "https://img.icons8.com/ios-filled/50/leaderboard.png" }} style={[styles.iconSmall, { tintColor: GOLD }]} />
+          <TouchableOpacity
+            onPress={() => {
+              setStreakOpen(true);
+              loadStreaks();
+            }}
+            activeOpacity={0.85}
+          >
+            <Image
+              source={{
+                uri: "https://img.icons8.com/fluency/96/fire-element.png",
+              }}
+              style={[styles.iconSmall, { tintColor: undefined }]}
+            />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => setProfileOpen((v)=>!v)} activeOpacity={0.85}>
-            <Image source={{ uri: "https://img.icons8.com/ios-filled/50/user.png" }} style={[styles.iconSmall, { tintColor: "#fff" }]} />
+
+          <TouchableOpacity
+            onPress={() => router.push("/leaderboard")}
+            activeOpacity={0.85}
+          >
+            <Image
+              source={{
+                uri: "https://img.icons8.com/ios-filled/50/leaderboard.png",
+              }}
+              style={[styles.iconSmall, { tintColor: GOLD }]}
+            />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => setProfileOpen((v) => !v)}
+            activeOpacity={0.85}
+          >
+            <Image
+              source={{ uri: "https://img.icons8.com/ios-filled/50/user.png" }}
+              style={[styles.iconSmall, { tintColor: "#fff" }]}
+            />
           </TouchableOpacity>
         </View>
       </View>
 
+      {/* FILTER BUTTON ROW */}
+      <View style={styles.filterRowTop}>
+        <TouchableOpacity
+          onPress={() => {
+            LayoutAnimation.easeInEaseOut();
+            setShowFilter((s) => !s);
+          }}
+          activeOpacity={0.85}
+        >
+          <View style={styles.filterTopBtn}>
+            <Image
+              source={{
+                uri: "https://img.icons8.com/ios-filled/50/filter--v1.png",
+              }}
+              style={{
+                width: RFValue(18),
+                height: RFValue(18),
+                tintColor: "#111",
+              }}
+            />
+            <Text style={styles.filterTopBtnText} numberOfLines={1}>
+              Filters
+            </Text>
+          </View>
+        </TouchableOpacity>
+
+        <Text style={styles.currentLeagueLabel}>
+          {SPORT_TABS[selectedSportIndex].label} •{" "}
+          {quickFilter === "ALL" ? "All games" : `${quickFilter} only`}
+        </Text>
+      </View>
+
+      {/* FILTER PANEL */}
       {showFilter && (
-        <View style={styles.filterPanel}>
-          <Text style={styles.filterTitle}>Quick Filter</Text>
-          <View style={styles.filterRow}>
-            {["ALL","LIVE","UPCOMING","FINAL"].map(q=>(
-              <Chip key={q} label={q} selected={quickFilter===q as any} onPress={()=>setQuickFilter(q as any)} style={{ marginBottom: RFValue(6) }} />
+        <BlurView intensity={80} tint="dark" style={styles.filterPanel}>
+          <LinearGradient
+            colors={[
+              "rgba(25,0,40,0.95)",
+              "rgba(71,21,117,0.95)",
+              "rgba(6,8,34,0.98)",
+            ]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+          <Text style={styles.filterTitle}>Quick filter</Text>
+          <View style={styles.filterRowChips}>
+            {["ALL", "LIVE", "UPCOMING", "FINAL"].map((q) => (
+              <Chip
+                key={q}
+                label={q}
+                selected={quickFilter === (q as any)}
+                onPress={() => setQuickFilter(q as any)}
+                style={{ marginBottom: RFValue(6) }}
+              />
             ))}
           </View>
 
-          <Text style={[styles.filterTitle,{marginTop:RFValue(8)}]}>Time</Text>
-          <View style={styles.filterRow}>
-            <Chip label={todayOnly ? "Today ✓" : "Today"} selected={todayOnly} onPress={()=>setTodayOnly(v=>!v)} />
+          <Text style={[styles.filterTitle, { marginTop: RFValue(8) }]}>
+            Time
+          </Text>
+          <View style={styles.filterRowChips}>
+            <Chip
+              label={todayOnly ? "Today ✓" : "Today"}
+              selected={todayOnly}
+              onPress={() => setTodayOnly((v) => !v)}
+            />
           </View>
 
-          <Text style={[styles.filterTitle,{marginTop:RFValue(8)}]}>Year</Text>
-          <View style={styles.filterRow}>
-            {YEAR_OPTIONS.map((y:any)=>(
-              <Chip key={String(y)} label={String(y)} selected={selectedYear===y} onPress={()=>setSelectedYear(y)} style={{ marginBottom: RFValue(6) }} />
+          <Text style={[styles.filterTitle, { marginTop: RFValue(8) }]}>
+            Year
+          </Text>
+          <View style={styles.filterRowChips}>
+            {YEAR_OPTIONS.map((y: any) => (
+              <Chip
+                key={String(y)}
+                label={String(y)}
+                selected={selectedYear === y}
+                onPress={() => setSelectedYear(y)}
+                style={{ marginBottom: RFValue(6) }}
+              />
             ))}
           </View>
 
-          <Text style={[styles.filterTitle,{marginTop:RFValue(8)}]}>Sort</Text>
-          <View style={styles.filterRow}>
-            <Chip label="Smart" selected={sortMode==="smart"} onPress={()=>setSortMode("smart")} />
-            <Chip label="Time ↑" selected={sortMode==="timeAsc"} onPress={()=>setSortMode("timeAsc")} />
-            <Chip label="Time ↓" selected={sortMode==="timeDesc"} onPress={()=>setSortMode("timeDesc")} />
+          <Text style={[styles.filterTitle, { marginTop: RFValue(8) }]}>
+            Sort
+          </Text>
+          <View style={styles.filterRowChips}>
+            <Chip
+              label="Smart"
+              selected={sortMode === "smart"}
+              onPress={() => setSortMode("smart")}
+            />
+            <Chip
+              label="Time ↑"
+              selected={sortMode === "timeAsc"}
+              onPress={() => setSortMode("timeAsc")}
+            />
+            <Chip
+              label="Time ↓"
+              selected={sortMode === "timeDesc"}
+              onPress={() => setSortMode("timeDesc")}
+            />
           </View>
 
-          <View style={{ flexDirection:"row", justifyContent:"flex-end", marginTop: RFValue(8) }}>
+          <View
+            style={{
+              flexDirection: "row",
+              justifyContent: "flex-end",
+              marginTop: RFValue(8),
+            }}
+          >
             <TouchableOpacity
-              onPress={()=>{ setQuickFilter("ALL"); setTodayOnly(false); setSortMode("smart"); setSelectedYear("Auto"); setNote(""); LayoutAnimation.easeInEaseOut(); setShowFilter(false); }}
-              style={styles.resetBtn} activeOpacity={0.85}
+              onPress={() => {
+                setQuickFilter("ALL");
+                setTodayOnly(false);
+                setSortMode("smart");
+                setSelectedYear("Auto");
+                setNote("");
+                LayoutAnimation.easeInEaseOut();
+                setShowFilter(false);
+              }}
+              style={styles.resetBtn}
+              activeOpacity={0.85}
             >
               <Text style={styles.resetBtnText}>Reset</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </BlurView>
       )}
 
+      {/* PROFILE MENU */}
       {profileOpen && (
-        <View style={[StyleSheet.absoluteFill, { zIndex: 40 }]} pointerEvents="box-none">
-          <Pressable style={styles.overlayTap} onPress={()=>setProfileOpen(false)} />
+        <View
+          style={[StyleSheet.absoluteFill, { zIndex: 40 }]}
+          pointerEvents="box-none"
+        >
+          <Pressable
+            style={styles.overlayTap}
+            onPress={() => setProfileOpen(false)}
+          />
           <BlurView intensity={70} tint="dark" style={styles.profileMenu}>
-            <Pressable style={styles.menuItem} onPress={() => go("/user/profile")}>
-              <Image source={{ uri: "https://img.icons8.com/ios-glyphs/30/user--v1.png" }} style={styles.menuIcon} />
-              <TouchableOpacity onPress={() => router.push("/profile")}>
-                <Text style={styles.menuText}>Profile</Text>
-              </TouchableOpacity>
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => go("/user/profile")}
+            >
+              <Image
+                source={{
+                  uri: "https://img.icons8.com/ios-glyphs/30/user--v1.png",
+                }}
+                style={styles.menuIcon}
+              />
+              <Text style={styles.menuText}>Profile</Text>
             </Pressable>
             <View style={styles.menuDivider} />
-            <Pressable style={styles.menuItem} onPress={() => go("/user/settings")}>
-              <Image source={{ uri: "https://img.icons8.com/ios-glyphs/30/settings.png" }} style={styles.menuIcon} />
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => go("/user/settings")}
+            >
+              <Image
+                source={{
+                  uri: "https://img.icons8.com/ios-glyphs/30/settings.png",
+                }}
+                style={styles.menuIcon}
+              />
               <Text style={styles.menuText}>Settings</Text>
             </Pressable>
           </BlurView>
         </View>
       )}
 
-      <Modal transparent animationType="fade" visible={streakOpen} onRequestClose={()=>setStreakOpen(false)}>
+      {/* STREAK MODAL */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={streakOpen}
+        onRequestClose={() => setStreakOpen(false)}
+      >
         <View style={styles.modalBackdrop}>
           <BlurView intensity={80} tint="dark" style={styles.modalCard}>
             <LinearGradient
-              colors={["rgba(97,61,193,0.25)", "rgba(44,7,53,0.25)"]}
-              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+              colors={[
+                "rgba(97,61,193,0.35)",
+                "rgba(44,7,53,0.35)",
+              ]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
               style={StyleSheet.absoluteFill}
             />
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Winning Streaks</Text>
-              <TouchableOpacity onPress={()=>setStreakOpen(false)} style={styles.modalClose}>
+              <Text style={styles.modalTitle}>Winning streaks</Text>
+              <TouchableOpacity
+                onPress={() => setStreakOpen(false)}
+                style={styles.modalClose}
+              >
                 <Text style={styles.modalCloseText}>✕</Text>
               </TouchableOpacity>
             </View>
-            {!!streakError && <Text style={styles.modalNote}>{streakError}</Text>}
+            {!!streakError && (
+              <Text style={styles.modalNote}>{streakError}</Text>
+            )}
             <FlatList
               data={streaks}
-              keyExtractor={(it, idx)=>String(it?.id ?? idx)}
-              refreshControl={<RefreshControl refreshing={streakLoading} onRefresh={loadStreaks} tintColor="#fff" />}
+              keyExtractor={(it, idx) => String(it?.id ?? idx)}
+              refreshControl={
+                <RefreshControl
+                  refreshing={streakLoading}
+                  onRefresh={loadStreaks}
+                  tintColor="#fff"
+                />
+              }
               renderItem={({ item, index }) => {
-                const trophy = trophyForRank(index+1);
+                const trophy = trophyForRank(index + 1);
                 const max = Math.max(1, streaks[0]?.streak || 1);
-                const barW = Math.max(10, (item.streak / max) * (width * 0.5));
+                const barW = Math.max(
+                  10,
+                  (item.streak / max) * (width * 0.5)
+                );
                 return (
                   <View style={styles.rankRow}>
-                    <Text style={styles.rankNum}>{index+1}</Text>
-                    {trophy ? <Image source={trophy} style={styles.trophy} /> : <View style={{ width: RFValue(24) }} />}
-                    <Image source={{ uri: item.avatarUrl || defaultTeamLogo }} style={styles.userAvatar} />
-                    <View style={{ flex:1 }}>
-                      <Text style={styles.rankName} numberOfLines={1}>{item.name}</Text>
-                      <View style={styles.progressTrack}><View style={[styles.progressBar, { width: barW }]} /></View>
+                    <Text style={styles.rankNum}>{index + 1}</Text>
+                    {trophy ? (
+                      <Image source={trophy} style={styles.trophy} />
+                    ) : (
+                      <View style={{ width: RFValue(24) }} />
+                    )}
+                    <Image
+                      source={{
+                        uri: item.avatarUrl || defaultTeamLogo,
+                      }}
+                      style={styles.userAvatar}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.rankName} numberOfLines={1}>
+                        {item.name}
+                      </Text>
+                      <View style={styles.progressTrack}>
+                        <View
+                          style={[styles.progressBar, { width: barW }]}
+                        />
+                      </View>
                     </View>
                     <Text style={styles.rankStreak}>W{item.streak}</Text>
                   </View>
                 );
               }}
-              ListEmptyComponent={!streakLoading ? (<Text style={styles.modalNote}>No players yet.</Text>) : null}
+              ListEmptyComponent={
+                !streakLoading ? (
+                  <Text style={styles.modalNote}>No players yet.</Text>
+                ) : null
+              }
               contentContainerStyle={{ paddingBottom: RFValue(8) }}
               showsVerticalScrollIndicator={false}
             />
@@ -411,32 +936,78 @@ export default function Dash(){
         </View>
       </Modal>
 
+      {/* MAIN LIST */}
       <FlatList
         data={shownEvents}
-        keyExtractor={(item)=> makeEventKey(sportKey, item)}
-        renderItem={({item})=>(
+        keyExtractor={(item) => makeEventKey(sportKey, item)}
+        renderItem={({ item }) => (
           <TouchableOpacity
             activeOpacity={0.9}
-            onPress={()=>router.push({ pathname: "/tournaments", params: { tier: DEFAULT_TIER } } as any)}
+            onPress={() =>
+              router.push({
+                pathname: "/tournaments",
+                params: { tier: DEFAULT_TIER },
+              } as any)
+            }
           >
             <EventCard item={item} />
           </TouchableOpacity>
         )}
         ListHeaderComponent={
           <>
+            <HeroTournamentCard />
+
             <FlatList
-              data={SPORTS} horizontal showsHorizontalScrollIndicator={false}
-              keyExtractor={(k)=>k} renderItem={renderSportTab}
-              contentContainerStyle={{ paddingHorizontal: RFValue(10), paddingVertical: RFValue(8) }}
+              data={SPORTS}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyExtractor={(k) => k}
+              renderItem={renderSportTab}
+              contentContainerStyle={{
+                paddingHorizontal: RFValue(10),
+                paddingVertical: RFValue(8),
+              }}
             />
-            {loading ? <ActivityIndicator size="small" color={PURPLE} style={{ marginVertical: RFValue(10) }} /> : null}
-            {!!notEnabled && <Text style={{ color:"#fff", fontFamily:"Poppins", paddingHorizontal:RFValue(14), marginBottom:RFValue(6), opacity:0.8 }}>This league isn’t enabled on your SportsDataIO key yet.</Text>}
-            {!!note && <Text style={{ color:"#fff", fontFamily:"Poppins", paddingHorizontal:RFValue(14), marginBottom:RFValue(6), opacity:0.8 }}>{note}</Text>}
+
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionTitle}>
+                {SPORT_TABS[selectedSportIndex].label} games
+              </Text>
+              <Text style={styles.sectionSubtitle}>
+                Scroll through today’s galaxy slate
+              </Text>
+            </View>
+
+            {loading ? (
+              <ActivityIndicator
+                size="small"
+                color={GOLD}
+                style={{ marginVertical: RFValue(10) }}
+              />
+            ) : null}
+
+            {!!notEnabled && (
+              <Text
+                style={styles.infoText}
+              >
+                This league isn’t enabled on your SportsDataIO key yet.
+              </Text>
+            )}
+
+            {!!note && (
+              <Text
+                style={styles.infoText}
+              >
+                {note}
+              </Text>
+            )}
           </>
         }
-        ListEmptyComponent={!loading ? (
-          <Text style={{ color:"#fff", fontFamily:"Poppins", textAlign:"center", marginTop:RFValue(24), opacity:0.7 }}>No events to show.</Text>
-        ) : null}
+        ListEmptyComponent={
+          !loading ? (
+            <Text style={styles.emptyText}>No events to show.</Text>
+          ) : null
+        }
         ListFooterComponent={<View style={{ height: RFValue(40) }} />}
         contentContainerStyle={{ paddingBottom: RFValue(96) }}
         showsVerticalScrollIndicator={false}
@@ -445,99 +1016,519 @@ export default function Dash(){
   );
 }
 
-/* ---------------- Styles (your originals) ---------------- */
+/* ---------------- Styles ---------------- */
 const styles = StyleSheet.create({
-  container:{ flex:1, width:"100%", height:"100%" },
+  container: { flex: 1, width: "100%", height: "100%" },
 
-  topBar:{ flexDirection:"row", justifyContent:"space-between", alignItems:"center",
-    paddingHorizontal:RFValue(16), paddingTop:RFValue(48), paddingBottom:RFValue(12) },
-  iconSmall:{ width:RFValue(28), height:RFValue(28) },
-  appTitle:{ fontFamily:"PoppinsBold", fontSize:RFValue(20), color:"white" },
+  topBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: RFValue(16),
+    paddingTop: RFValue(48),
+    paddingBottom: RFValue(4),
+  },
+  iconSmall: { width: RFValue(26), height: RFValue(26) },
+  appTitle: {
+    fontFamily: "PoppinsBold",
+    fontSize: RFValue(22),
+    color: "white",
+  },
+  appSubtitle: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(12),
+    color: "rgba(255,255,255,0.8)",
+  },
 
-  filterTopBtn:{ flexDirection:"row", alignItems:"center", backgroundColor:"#FFD700",
-    paddingVertical:RFValue(6), paddingHorizontal:RFValue(10), borderRadius:RFValue(12),
-    shadowColor:"#000", shadowOpacity:0.15, shadowRadius:6, shadowOffset:{ width:0, height:2 } },
-  filterTopBtnText:{ fontFamily:"PoppinsMedium", fontSize:RFValue(12), marginLeft:RFValue(6), color:"#111" },
+  filterRowTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: RFValue(16),
+    paddingBottom: RFValue(6),
+  },
+  currentLeagueLabel: {
+    fontFamily: "Poppins",
+    fontSize: RFValue(11),
+    color: "rgba(255,255,255,0.8)",
+  },
 
-  filterPanel:{ marginHorizontal:RFValue(10), marginTop:RFValue(4), marginBottom:RFValue(4),
-    backgroundColor:"rgba(35,35,35,0.9)", borderRadius:RFValue(14), padding:RFValue(10),
-    borderColor:"rgba(255,255,255,0.08)", borderWidth:1 },
-  filterTitle:{ color:"#fff", fontFamily:"PoppinsSemiBold", fontSize:RFValue(12), marginBottom:RFValue(4) },
-  filterRow:{ flexDirection:"row", flexWrap:"wrap" },
+  filterTopBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: GOLD,
+    paddingVertical: RFValue(6),
+    paddingHorizontal: RFValue(10),
+    borderRadius: RFValue(999),
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  filterTopBtnText: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(12),
+    marginLeft: RFValue(6),
+    color: "#111",
+  },
 
-  chip:{ paddingHorizontal:RFValue(12), paddingVertical:RFValue(6), marginRight:RFValue(6), marginTop:RFValue(6),
-    borderRadius:RFValue(12), borderWidth:1, borderColor:"rgba(255,255,255,0.2)", backgroundColor:"#2c0735" },
-  chipSelected:{ backgroundColor:"#613DC1", borderColor:"#FFD700" },
-  chipText:{ fontFamily:"PoppinsMedium", fontSize:RFValue(12), color:"#fff" },
-  chipTextSelected:{ color:"#FFD700", fontWeight:"700" },
-  resetBtn:{ paddingHorizontal:RFValue(12), paddingVertical:RFValue(6), borderRadius:RFValue(10), backgroundColor:"#FFD700" },
-  resetBtnText:{ fontFamily:"PoppinsSemiBold", color:"#111", fontSize:RFValue(12) },
+  filterPanel: {
+    marginHorizontal: RFValue(12),
+    marginTop: RFValue(4),
+    marginBottom: RFValue(8),
+    borderRadius: RFValue(18),
+    padding: RFValue(10),
+    borderColor: "rgba(255,255,255,0.16)",
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  filterTitle: {
+    color: "#fff",
+    fontFamily: "PoppinsSemiBold",
+    fontSize: RFValue(12),
+    marginBottom: RFValue(4),
+  },
+  filterRowChips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
 
-  sportIconHorizontal:{ flexDirection:"row", alignItems:"center", paddingVertical:RFValue(6),
-    paddingHorizontal:RFValue(14), borderRadius:RFValue(16), marginHorizontal:RFValue(6), backgroundColor:"#2c0735" },
-  sportIconSmall:{ width:RFValue(28), height:RFValue(28), marginRight:RFValue(8) },
-  sportNameHorizontal:{ fontFamily:"PoppinsMedium", fontSize:RFValue(14), color:"#fff" },
+  chip: {
+    paddingHorizontal: RFValue(12),
+    paddingVertical: RFValue(6),
+    marginRight: RFValue(6),
+    marginTop: RFValue(6),
+    borderRadius: RFValue(12),
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+    backgroundColor: "#1b0630",
+  },
+  chipSelected: {
+    backgroundColor: PURPLE,
+    borderColor: GOLD,
+  },
+  chipText: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(12),
+    color: "#fff",
+  },
+  chipTextSelected: { color: GOLD, fontWeight: "700" },
+  resetBtn: {
+    paddingHorizontal: RFValue(12),
+    paddingVertical: RFValue(6),
+    borderRadius: RFValue(999),
+    backgroundColor: GOLD,
+  },
+  resetBtnText: {
+    fontFamily: "PoppinsSemiBold",
+    color: "#111",
+    fontSize: RFValue(12),
+  },
 
-  eventWrapper:{marginTop:20, marginBottom:RFValue(20), alignItems:"center",display:"flex",justifyContent:"center" },
-  eventCardVertical:{ width:width*0.9, borderRadius:RFValue(20), overflow:"hidden",alignItems:"center",display:"flex",justifyContent:"center", marginBottom:RFValue(10), borderColor:"rgba(255,255,255,0.3)", borderWidth:0.5 },
-  eventBgVertical:{ borderRadius:20, paddingHorizontal:RFValue(12), paddingBottom:RFValue(12),
-    paddingTop:RFValue(32), minHeight:RFValue(138), position:"relative" },
+  sportIconHorizontal: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: RFValue(6),
+    paddingHorizontal: RFValue(14),
+    borderRadius: RFValue(16),
+    marginHorizontal: RFValue(6),
+    backgroundColor: "rgba(12,3,30,0.9)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  sportIconSmall: {
+    width: RFValue(26),
+    height: RFValue(26),
+    marginRight: RFValue(8),
+  },
+  sportNameHorizontal: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(14),
+    color: "#fff",
+  },
 
-  statusWrap:{ position:"absolute", top:RFValue(8), left:0, right:0, alignItems:"center", zIndex:2 },
-  statusPill:{ minWidth:RFValue(60), paddingHorizontal:RFValue(10), paddingVertical:RFValue(2),
-    borderRadius:RFValue(999), alignItems:"center", justifyContent:"center" },
-  statusPillText:{ fontFamily:"PoppinsSemiBold", fontSize:RFValue(10) },
+  heroCardBlur: {
+    width: width * 0.94,
+    alignSelf: "center",
+    borderRadius: RFValue(22),
+    marginTop: RFValue(6),
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+  },
+  heroContent: {
+    flexDirection: "row",
+    paddingHorizontal: RFValue(14),
+    paddingVertical: RFValue(12),
+  },
+  heroLeft: { flex: 1, paddingRight: RFValue(8) },
+  heroRight: {
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+  },
+  heroTitle: {
+    fontFamily: "PoppinsBold",
+    fontSize: RFValue(16),
+    color: "#fff",
+    marginBottom: RFValue(2),
+  },
+  heroSubtitle: {
+    fontFamily: "Poppins",
+    fontSize: RFValue(11),
+    color: "rgba(255,255,255,0.9)",
+  },
+  heroTagsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginTop: RFValue(8),
+    gap: RFValue(6),
+  },
+  heroPill: {
+    paddingHorizontal: RFValue(10),
+    paddingVertical: RFValue(4),
+    borderRadius: RFValue(999),
+    backgroundColor: "rgba(255,215,0,0.18)",
+  },
+  heroPillText: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(10),
+    color: GOLD,
+  },
+  heroSparkles: {
+    fontSize: RFValue(26),
+    marginBottom: RFValue(10),
+  },
+  heroCta: {
+    paddingHorizontal: RFValue(14),
+    paddingVertical: RFValue(6),
+    borderRadius: RFValue(999),
+    backgroundColor: GOLD,
+  },
+  heroCtaText: {
+    fontFamily: "PoppinsSemiBold",
+    fontSize: RFValue(12),
+    color: "#111",
+  },
 
-  mainRow:{ flexDirection:"row", alignItems:"center", justifyContent:"space-between", width:"100%" },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    paddingHorizontal: RFValue(16),
+    marginTop: RFValue(4),
+  },
+  sectionTitle: {
+    fontFamily: "PoppinsSemiBold",
+    fontSize: RFValue(14),
+    color: "#fff",
+  },
+  sectionSubtitle: {
+    fontFamily: "Poppins",
+    fontSize: RFValue(10),
+    color: "rgba(255,255,255,0.7)",
+  },
 
-  teamCol:{width:RFValue(56), alignItems:"center" },
-  teamLogo:{ width:RFValue(56), height:RFValue(56), borderRadius:999, marginBottom:RFValue(6), borderWidth:1, borderColor:"#fff" },
-  teamNameBox:{ height:RFValue(16), justifyContent:"center", alignItems:"center", maxWidth:RFValue(100) },
-  teamName:{ fontFamily:"PoppinsMedium", fontSize:RFValue(11), lineHeight:RFValue(14), color:"white", textAlign:"center" },
+  infoText: {
+    color: "#fff",
+    fontFamily: "Poppins",
+    paddingHorizontal: RFValue(16),
+    marginBottom: RFValue(6),
+    opacity: 0.8,
+  },
+  emptyText: {
+    color: "#fff",
+    fontFamily: "Poppins",
+    textAlign: "center",
+    marginTop: RFValue(24),
+    opacity: 0.7,
+  },
 
-  centerCol:{ flex:1, minWidth:RFValue(140), alignItems:"center", justifyContent:"center", paddingHorizontal:RFValue(6) },
-  scoreText:{ fontFamily: Platform.OS === "android" ? "monospace" : "PoppinsSemiBold",
-    fontSize:RFValue(22), lineHeight:RFValue(26), color:"white",
-    ...(Platform.OS === "ios" ? { fontVariant: ["tabular-nums"] } : { letterSpacing: 0.5 }),
-    textAlign:"center" },
-  centerMetaBox:{ marginTop:RFValue(2), height:RFValue(26), alignItems:"center", justifyContent:"space-between" },
-  dateText:{ fontFamily:"Poppins", fontSize:RFValue(10), lineHeight:RFValue(12), color:"white" },
-  relativeText:{ fontFamily:"PoppinsMedium", fontSize:RFValue(10), lineHeight:RFValue(12), color:"#FFD700" },
+  eventWrapper: {
+    marginTop: RFValue(20),
+    marginBottom: RFValue(16),
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  eventCardVertical: {
+    width: width * 0.9,
+    borderRadius: RFValue(20),
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: RFValue(10),
+    borderColor: "rgba(255,255,255,0.3)",
+    borderWidth: 0.5,
+  },
+  eventBgVertical: {
+    borderRadius: 20,
+    paddingHorizontal: RFValue(12),
+    paddingBottom: RFValue(12),
+    paddingTop: RFValue(32),
+    minHeight: RFValue(138),
+    position: "relative",
+  },
 
-  standingsCardVertical:{ width:width*0.9, backgroundColor:"rgba(35,35,35,0.9)", borderRadius:RFValue(16),
-    padding:RFValue(10), flexDirection:"row", justifyContent:"space-between", alignItems:"center",
-    borderWidth:1, borderColor:"rgba(255,255,255,0.08)" },
-  standingBox:{ alignItems:"center", flex:1, paddingHorizontal:RFValue(4) },
-  standingTeamName:{ fontFamily:"PoppinsSemiBold", color:"white", fontSize:RFValue(12), marginBottom:RFValue(2), textAlign:"center" },
-  standingText:{ fontFamily:"Poppins", color:"white", fontSize:RFValue(11), textAlign:"center", opacity:0.9 },
-  vDivider:{ width:1, height:RFValue(24), backgroundColor:"rgba(255,255,255,0.08)" },
+  statusWrap: {
+    position: "absolute",
+    top: RFValue(8),
+    left: 0,
+    right: 0,
+    alignItems: "center",
+    zIndex: 2,
+  },
+  statusPill: {
+    minWidth: RFValue(60),
+    paddingHorizontal: RFValue(10),
+    paddingVertical: RFValue(2),
+    borderRadius: RFValue(999),
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statusPillText: {
+    fontFamily: "PoppinsSemiBold",
+    fontSize: RFValue(10),
+  },
 
-  avatarFallback:{ width:RFValue(56), height:RFValue(56), borderRadius:999, alignItems:"center", justifyContent:"center",
-    borderWidth:1, borderColor:"#fff", backgroundColor:"rgba(255,215,0,0.15)" },
-  avatarInitials:{ fontFamily:"PoppinsSemiBold", color:"#FFD700", fontSize:RFValue(15) },
+  mainRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    width: "100%",
+  },
 
-  overlayTap:{ ...StyleSheet.absoluteFillObject },
-  profileMenu:{ position:"absolute", top:RFValue(92), right:RFValue(14), width:RFValue(170), borderRadius:RFValue(14), overflow:"hidden",
-    backgroundColor:"rgba(30,30,30,0.9)", borderWidth:1, borderColor:"rgba(255,255,255,0.08)", zIndex: 5, elevation: 8 },
-  menuItem:{ flexDirection:"row", alignItems:"center", paddingVertical:RFValue(10), paddingHorizontal:RFValue(12) },
-  menuIcon:{ width:RFValue(18), height:RFValue(18), tintColor:"#fff", marginRight:RFValue(8) },
-  menuText:{ color:"#fff", fontFamily:"PoppinsMedium", fontSize:RFValue(14) },
-  menuDivider:{ height:1, backgroundColor:"rgba(255,255,255,0.08)" },
+  teamCol: { width: RFValue(56), alignItems: "center" },
+  teamLogo: {
+    width: RFValue(56),
+    height: RFValue(56),
+    borderRadius: 999,
+    marginBottom: RFValue(6),
+    borderWidth: 1,
+    borderColor: "#fff",
+  },
+  teamNameBox: {
+    height: RFValue(16),
+    justifyContent: "center",
+    alignItems: "center",
+    maxWidth: RFValue(100),
+  },
+  teamName: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(11),
+    lineHeight: RFValue(14),
+    color: "white",
+    textAlign: "center",
+  },
 
-  modalBackdrop:{ flex:1, backgroundColor:"rgba(0,0,0,0.45)", justifyContent:"center", alignItems:"center", padding:RFValue(16) },
-  modalCard:{ width:"100%", maxWidth:600, maxHeight:"80%", borderRadius:RFValue(18), overflow:"hidden",
-    backgroundColor:"rgba(25,25,25,0.95)", borderWidth:1, borderColor:"rgba(255,255,255,0.08)", padding:RFValue(12) },
-  modalHeader:{ flexDirection:"row", alignItems:"center", justifyContent:"space-between", marginBottom:RFValue(6) },
-  modalTitle:{ color:"#fff", fontFamily:"PoppinsBold", fontSize:RFValue(18) },
-  modalClose:{ width:RFValue(32), height:RFValue(32), borderRadius:999, alignItems:"center", justifyContent:"center", backgroundColor:"rgba(255,255,255,0.08)" },
-  modalCloseText:{ color:"#fff", fontSize:RFValue(16), fontFamily:"PoppinsSemiBold" },
-  modalNote:{ color:"#fff", opacity:0.75, fontFamily:"Poppins", marginBottom:RFValue(6) },
+  centerCol: {
+    flex: 1,
+    minWidth: RFValue(140),
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: RFValue(6),
+  },
+  scoreText: {
+    fontFamily:
+      Platform.OS === "android" ? "monospace" : "PoppinsSemiBold",
+    fontSize: RFValue(22),
+    lineHeight: RFValue(26),
+    color: "white",
+    ...(Platform.OS === "ios"
+      ? { fontVariant: ["tabular-nums"] }
+      : { letterSpacing: 0.5 }),
+    textAlign: "center",
+  },
+  centerMetaBox: {
+    marginTop: RFValue(2),
+    height: RFValue(26),
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  dateText: {
+    fontFamily: "Poppins",
+    fontSize: RFValue(10),
+    lineHeight: RFValue(12),
+    color: "white",
+  },
+  relativeText: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(10),
+    lineHeight: RFValue(12),
+    color: GOLD,
+  },
 
-  rankRow:{ flexDirection:"row", alignItems:"center", paddingVertical:RFValue(8), gap:RFValue(8) },
-  rankNum:{ width:RFValue(22), textAlign:"center", color:"#fff", fontFamily:"PoppinsSemiBold" },
-  trophy:{ width:RFValue(24), height:RFValue(24) },
-  userAvatar:{ width:RFValue(36), height:RFValue(36), borderRadius:999, borderWidth:1, borderColor:"rgba(255,255,255,0.2)" },
-  rankName:{ color:"#fff", fontFamily:"PoppinsMedium", fontSize:RFValue(13) },
-  progressTrack:{ height:RFValue(6), backgroundColor:"rgba(255,255,255,0.1)", borderRadius:RFValue(999), marginTop:RFValue(4), overflow:"hidden" },
-  progressBar:{ height:"100%", backgroundColor:"#FFD700" },
+  standingsCardVertical: {
+    width: width * 0.9,
+    backgroundColor: "rgba(7,7,24,0.96)",
+    borderRadius: RFValue(16),
+    padding: RFValue(10),
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  standingBox: {
+    alignItems: "center",
+    flex: 1,
+    paddingHorizontal: RFValue(4),
+  },
+  standingTeamName: {
+    fontFamily: "PoppinsSemiBold",
+    color: "white",
+    fontSize: RFValue(12),
+    marginBottom: RFValue(2),
+    textAlign: "center",
+  },
+  standingText: {
+    fontFamily: "Poppins",
+    color: "white",
+    fontSize: RFValue(11),
+    textAlign: "center",
+    opacity: 0.9,
+  },
+  vDivider: {
+    width: 1,
+    height: RFValue(24),
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+
+  avatarFallback: {
+    width: RFValue(56),
+    height: RFValue(56),
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#fff",
+    backgroundColor: "rgba(255,215,0,0.15)",
+  },
+  avatarInitials: {
+    fontFamily: "PoppinsSemiBold",
+    color: GOLD,
+    fontSize: RFValue(15),
+  },
+
+  overlayTap: { ...StyleSheet.absoluteFillObject },
+  profileMenu: {
+    position: "absolute",
+    top: RFValue(92),
+    right: RFValue(14),
+    width: RFValue(170),
+    borderRadius: RFValue(14),
+    overflow: "hidden",
+    backgroundColor: "rgba(30,30,30,0.9)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    zIndex: 5,
+    elevation: 8,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: RFValue(10),
+    paddingHorizontal: RFValue(12),
+  },
+  menuIcon: {
+    width: RFValue(18),
+    height: RFValue(18),
+    tintColor: "#fff",
+    marginRight: RFValue(8),
+  },
+  menuText: {
+    color: "#fff",
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(14),
+  },
+  menuDivider: {
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: RFValue(16),
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 600,
+    maxHeight: "80%",
+    borderRadius: RFValue(18),
+    overflow: "hidden",
+    backgroundColor: "rgba(25,25,25,0.95)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    padding: RFValue(12),
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: RFValue(6),
+  },
+  modalTitle: {
+    color: "#fff",
+    fontFamily: "PoppinsBold",
+    fontSize: RFValue(18),
+  },
+  modalClose: {
+    width: RFValue(32),
+    height: RFValue(32),
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  modalCloseText: {
+    color: "#fff",
+    fontSize: RFValue(16),
+    fontFamily: "PoppinsSemiBold",
+  },
+  modalNote: {
+    color: "#fff",
+    opacity: 0.75,
+    fontFamily: "Poppins",
+    marginBottom: RFValue(6),
+  },
+
+  rankRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: RFValue(8),
+    gap: RFValue(8),
+  },
+  rankNum: {
+    width: RFValue(22),
+    textAlign: "center",
+    color: "#fff",
+    fontFamily: "PoppinsSemiBold",
+  },
+  trophy: { width: RFValue(24), height: RFValue(24) },
+  userAvatar: {
+    width: RFValue(36),
+    height: RFValue(36),
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+  },
+  rankName: {
+    color: "#fff",
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(13),
+  },
+  progressTrack: {
+    height: RFValue(6),
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderRadius: RFValue(999),
+    marginTop: RFValue(4),
+    overflow: "hidden",
+  },
+  progressBar: { height: "100%", backgroundColor: GOLD },
+  rankStreak: {
+    color: GOLD,
+    fontFamily: "PoppinsSemiBold",
+    paddingHorizontal: RFValue(4),
+  },
 });
