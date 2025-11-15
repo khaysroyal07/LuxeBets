@@ -1,3 +1,4 @@
+// app/leaderboard/index.tsx
 import React, { useEffect, useState, useMemo } from "react";
 import {
   View,
@@ -6,9 +7,10 @@ import {
   ImageBackground,
   ActivityIndicator,
   FlatList,
+  TouchableOpacity,
 } from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "@/lib/supabase";
 
@@ -24,9 +26,20 @@ type LeaderRow = {
   points_total: number;
   status: string;
   profiles?: {
+    id?: string | null;
     username?: string | null;
     avatar_url?: string | null;
   } | null;
+};
+
+type Tournament = {
+  id: string;
+  planet_name?: string | null;
+  name?: string | null;
+  tier?: string | null;
+  entry_fee?: number | null;
+  status?: string | null;
+  week_label?: string | null;
 };
 
 const TARGET_POINTS = 20; // X = 20 points
@@ -45,46 +58,106 @@ const tierColor = (pts: number) => {
 
 export default function LeaderboardScreen() {
   const router = useRouter();
-  const { tournamentId } = useLocalSearchParams<{ tournamentId?: string }>();
 
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<LeaderRow[]>([]);
   const [errorMsg, setErrorMsg] = useState("");
 
-  const title = useMemo(
-    () => "Tournament Leaderboard",
-    []
-  );
+  const [tournaments, setTournaments] = useState<Tournament[]>([]);
+  const [selectedTid, setSelectedTid] = useState<string | null>(null);
 
+  const title = useMemo(() => "Tournament Leaderboard", []);
+
+  /* ---------------- Fetch current tournaments (planets) ---------------- */
   useEffect(() => {
     let on = true;
     (async () => {
       try {
+        // You can tighten this later (e.g. filter by current week/status)
+        const { data, error } = await supabase
+          .from("tournaments")
+          .select("*"); // safer than referencing specific cols
+
+        if (error) throw error;
+        if (!on) return;
+
+        const all = (data || []) as Tournament[];
+
+        // If you only want current week, you can filter here by week_label/status
+        // For now, just keep first 3 as "this week's planets"
+        const currentThree = all.slice(0, 3);
+
+        setTournaments(currentThree);
+        if (currentThree[0]?.id) {
+          setSelectedTid(currentThree[0].id);
+        }
+      } catch (e: any) {
+        console.warn("tournaments fetch error", e);
+        setErrorMsg(e?.message || "Failed to load tournaments.");
+      }
+    })();
+    return () => {
+      on = false;
+    };
+  }, []);
+
+  /* ---------------- Fetch leaderboard for selected tournament ---------------- */
+  useEffect(() => {
+    let on = true;
+
+    (async () => {
+      try {
+        if (!selectedTid) {
+          setRows([]);
+          return;
+        }
+
         setLoading(true);
         setErrorMsg("");
 
-        if (!tournamentId) {
-          throw new Error("Missing tournamentId in route params.");
+        const tId = String(selectedTid);
+
+        let data: any[] | null = null;
+
+        // Try with profiles join (if FK exists)
+        const { data: dataWithProfiles, error: errorWithProfiles } =
+          await supabase
+            .from("entries")
+            .select(`
+              id,
+              user_id,
+              points_total,
+              status,
+              profiles:profiles!entries_user_id_fkey (
+                id,
+                username,
+                avatar_url
+              )
+            `)
+            .eq("tournament_id", tId)
+            .order("points_total", { ascending: false });
+
+        if (errorWithProfiles) {
+          // If relationship not in schema cache yet, fall back to simple query
+          if (errorWithProfiles.code === "PGRST200") {
+            console.warn(
+              "No FK relationship entries -> profiles in schema; falling back to basic select",
+              errorWithProfiles
+            );
+            const { data: basicData, error: basicError } = await supabase
+              .from("entries")
+              .select("id, user_id, points_total, status")
+              .eq("tournament_id", tId)
+              .order("points_total", { ascending: false });
+
+            if (basicError) throw basicError;
+            data = basicData ?? [];
+          } else {
+            throw errorWithProfiles;
+          }
+        } else {
+          data = dataWithProfiles ?? [];
         }
-
-        const { data, error } = await supabase
-          .from("entries")
-          .select(
-            `
-            id,
-            user_id,
-            points_total,
-            status,
-            profiles:profiles!entries_user_id_fkey (
-              username,
-              avatar_url
-            )
-          `
-          )
-          .eq("tournament_id", tournamentId)
-          .order("points_total", { ascending: false });
-
-        if (error) throw error;
 
         if (!on) return;
 
@@ -101,16 +174,33 @@ export default function LeaderboardScreen() {
       } catch (e: any) {
         console.warn("leaderboard fetch error", e);
         setErrorMsg(e?.message || "Failed to load leaderboard.");
+        setRows([]);
       } finally {
         if (on) setLoading(false);
       }
     })();
+
     return () => {
       on = false;
     };
-  }, [tournamentId]);
+  }, [selectedTid]);
 
-  if (loading) {
+  /* ---------------- Helpers ---------------- */
+
+  const currentTournament = useMemo(
+    () => tournaments.find((t) => t.id === selectedTid) || null,
+    [tournaments, selectedTid]
+  );
+
+  const headerSubtitle = currentTournament
+    ? (currentTournament.planet_name ||
+        currentTournament.name ||
+        currentTournament.tier ||
+        "Current Tournament")
+    : "Current Tournament";
+
+  if (loading && !selectedTid) {
+    // initial load
     return (
       <View style={styles.center}>
         <ActivityIndicator color={PURPLE} size="large" />
@@ -138,6 +228,12 @@ export default function LeaderboardScreen() {
       <View style={styles.headerCard}>
         <Text style={styles.headerTitle}>Star Points Ranking</Text>
         <Text style={styles.headerText}>
+          Planet:{" "}
+          <Text style={{ color: GOLD, fontWeight: "900" }}>
+            {headerSubtitle}
+          </Text>
+        </Text>
+        <Text style={styles.headerText}>
           Tournament goal:{" "}
           <Text style={{ color: GOLD, fontWeight: "900" }}>
             {TARGET_POINTS} pts
@@ -146,6 +242,44 @@ export default function LeaderboardScreen() {
           <Text style={{ color: "#fff" }}>total points</Text>, not survival.
         </Text>
 
+        {/* Planet / tournament filter pills */}
+        {tournaments.length > 0 && (
+          <View style={styles.planetRow}>
+            {tournaments.map((t) => {
+              const label =
+                t.planet_name ||
+                t.name ||
+                t.tier ||
+                t.week_label ||
+                "Tournament";
+
+              const selected = selectedTid === t.id;
+              return (
+                <TouchableOpacity
+                  key={t.id}
+                  onPress={() => setSelectedTid(t.id)}
+                  activeOpacity={0.9}
+                  style={[
+                    styles.planetPill,
+                    selected && styles.planetPillSelected,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.planetPillText,
+                      selected && styles.planetPillTextSelected,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
+
+        {/* Tier legend */}
         <View style={styles.tiersRow}>
           <View style={styles.tierPill}>
             <View style={[styles.tierDot, { backgroundColor: GOLD }]} />
@@ -164,7 +298,7 @@ export default function LeaderboardScreen() {
         </View>
       </View>
 
-      {/* Error */}
+      {/* Error card */}
       {!!errorMsg && (
         <View style={styles.errorCard}>
           <Text style={{ color: "#f88", fontSize: RFValue(11) }}>
@@ -175,7 +309,11 @@ export default function LeaderboardScreen() {
 
       {/* Leaderboard list */}
       <View style={styles.listWrap}>
-        {rows.length === 0 ? (
+        {loading ? (
+          <View style={styles.emptyWrap}>
+            <ActivityIndicator color={GOLD} size="small" />
+          </View>
+        ) : rows.length === 0 ? (
           <View style={styles.emptyWrap}>
             <Text style={{ color: "#ccc", textAlign: "center" }}>
               No entries yet for this tournament.
@@ -193,7 +331,7 @@ export default function LeaderboardScreen() {
               const rank = index + 1;
               const username =
                 item.profiles?.username ??
-                `${item.user_id.slice(0, 6)}…`;
+                `${(item.user_id || "").slice(0, 6)}…`;
               const pts = item.points_total ?? 0;
               const tier = tierLabel(pts);
               const tColor = tierColor(pts);
@@ -226,10 +364,7 @@ export default function LeaderboardScreen() {
                       ]}
                     >
                       <Text
-                        style={[
-                          styles.tierBadgeTxt,
-                          { color: tColor },
-                        ]}
+                        style={[styles.tierBadgeTxt, { color: tColor }]}
                         numberOfLines={1}
                       >
                         {tier}
@@ -286,15 +421,43 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontWeight: "900",
     fontSize: RFValue(16),
-    marginBottom: RFValue(6),
+    marginBottom: RFValue(4),
   },
-  headerText: { color: "#ccc", fontSize: RFValue(11) },
+  headerText: { color: "#ccc", fontSize: RFValue(11), marginBottom: RFValue(2) },
+
+  planetRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: RFValue(6),
+    marginTop: RFValue(8),
+    marginBottom: RFValue(4),
+  },
+  planetPill: {
+    paddingHorizontal: RFValue(10),
+    paddingVertical: RFValue(4),
+    borderRadius: RFValue(999),
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+  },
+  planetPillSelected: {
+    borderColor: GOLD,
+    backgroundColor: "rgba(255,215,0,0.15)",
+  },
+  planetPillText: {
+    color: "#eee",
+    fontSize: RFValue(11),
+    fontWeight: "700",
+  },
+  planetPillTextSelected: {
+    color: GOLD,
+  },
 
   tiersRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: RFValue(6),
-    marginTop: RFValue(10),
+    marginTop: RFValue(8),
   },
   tierPill: {
     flexDirection: "row",
