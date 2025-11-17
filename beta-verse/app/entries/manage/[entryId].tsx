@@ -1,10 +1,5 @@
 // app/entries/manage/[entryId].tsx
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -37,13 +32,19 @@ type EntryMeta = {
   status: EntryStatus;
   planetName: string;
   startISO: string; // YYYY-MM-DD
-  endISO: string;   // YYYY-MM-DD
+  endISO: string; // YYYY-MM-DD
 };
+
+type Market = "ml" | "spread" | "total" | null;
+type Side = "home" | "away" | "over" | "under" | null;
 
 type PickRow = {
   id: string;
-  day_date: string;               // YYYY-MM-DD
-  selection: "home" | "away" | null;
+  day_date: string; // YYYY-MM-DD
+  market: Market;
+  side: Side;
+  team: string | null;
+  line: number | null;
   result: "WIN" | "LOSS" | "PUSH" | "PENDING" | null;
   points: number | null;
 };
@@ -160,6 +161,39 @@ function resultTag(pick: PickRow | null) {
   }
 }
 
+// Pretty text for the pick
+function formatPickSummary(pick: PickRow | null) {
+  if (!pick) return "No pick yet";
+
+  const team = pick.team || "";
+  const line = pick.line;
+  const lineStr =
+    line == null ? "" : line > 0 ? `+${line}` : `${line}`;
+
+  switch (pick.market) {
+    case "ml":
+      // ex: "COWBOYS ML"
+      return `${team || (pick.side === "home" ? "Home" : "Away")} ML`.toUpperCase();
+    case "spread":
+      // ex: "COWBOYS +3.5"
+      return `${(team ||
+        (pick.side === "home" ? "Home" : "Away")
+      ).toUpperCase()} ${lineStr}`.trim();
+    case "total": {
+      // ex: "OVER 46.5"
+      const sideLabel =
+        pick.side === "over" ? "Over" : pick.side === "under" ? "Under" : "";
+      return `${sideLabel.toUpperCase()} ${line ?? ""}`.trim();
+    }
+    default:
+      // fallback to just team / side
+      if (team) return team.toUpperCase();
+      if (pick.side === "home") return "HOME TEAM";
+      if (pick.side === "away") return "AWAY TEAM";
+      return "Pick";
+  }
+}
+
 export default function ManageEntry() {
   const router = useRouter();
   const { entryId } = useLocalSearchParams<{ entryId: string }>();
@@ -189,9 +223,9 @@ export default function ManageEntry() {
         return;
       }
 
-      // 2) get tournament_phase row
+      // 2) get tournament row
       const { data: tData, error: tErr } = await supabase
-        .from("tournament_phase")
+        .from("tournaments")
         .select("id, start_date, end_date, entry_fee_cents, title")
         .eq("id", eData.tournament_id)
         .maybeSingle();
@@ -203,9 +237,8 @@ export default function ManageEntry() {
       }
 
       const d0 = parseLocalISO(String(tData.start_date));
-      const d2 = addDays(d0, 2);
+      const d2 = addDays(d0, 2); // 3-day window
 
-      // Normalize entry meta
       const status: EntryStatus =
         eData.status === "eliminated"
           ? "eliminated"
@@ -225,8 +258,8 @@ export default function ManageEntry() {
         endISO: toLocalISO(d2),
       };
 
-      // 3) build day list (3 days from start_date)
-      const dayList = [0, 1, 2].map((offset) => {
+      // 3) build day list
+      const dayList: DayInfo[] = [0, 1, 2].map((offset) => {
         const d = addDays(d0, offset);
         const iso = toLocalISO(d);
         const label = d.toLocaleDateString(undefined, {
@@ -245,13 +278,13 @@ export default function ManageEntry() {
           isToday,
           isPast,
           isFuture,
-          pick: null as PickRow | null,
+          pick: null,
         };
       });
 
       const isoList = dayList.map((d) => d.iso);
 
-      // 4) load picks for this entry & those days
+      // 4) load picks
       const { data: picks, error: pErr } = await supabase
         .from("picks")
         .select("id, day_date, selection, result, points")
@@ -262,13 +295,46 @@ export default function ManageEntry() {
 
       const pMap = new Map<string, PickRow>();
       (picks || []).forEach((p: any) => {
+        const sel = (p.selection || {}) as any;
+
+        const market: Market =
+          sel.market === "spread"
+            ? "spread"
+            : sel.market === "total"
+            ? "total"
+            : sel.market === "ml"
+            ? "ml"
+            : null;
+
+        const sideRaw = sel.side;
+        const side: Side =
+          sideRaw === "home" ||
+          sideRaw === "away" ||
+          sideRaw === "over" ||
+          sideRaw === "under"
+            ? sideRaw
+            : null;
+
+        const team =
+          typeof sel.team === "string" && sel.team.trim().length > 0
+            ? sel.team.trim()
+            : null;
+
+        const line =
+          typeof sel.line === "number"
+            ? sel.line
+            : sel.line == null
+            ? null
+            : Number(sel.line);
+
         pMap.set(String(p.day_date), {
           id: String(p.id),
           day_date: String(p.day_date),
-          selection: p.selection,
-          result: p.result
-            ? String(p.result).toUpperCase()
-            : "PENDING",
+          market,
+          side,
+          team,
+          line,
+          result: p.result ? String(p.result).toUpperCase() : "PENDING",
           points:
             typeof p.points === "number"
               ? p.points
@@ -286,7 +352,6 @@ export default function ManageEntry() {
       setEntry(meta);
       setDays(hydratedDays);
 
-      // default selected day: today if within tournament, else first
       const todayInRange = hydratedDays.find((d) => d.isToday);
       setSelectedISO((todayInRange || hydratedDays[0])?.iso || null);
     } catch (err: any) {
@@ -307,11 +372,7 @@ export default function ManageEntry() {
   );
 
   const totalPoints = useMemo(
-    () =>
-      days.reduce(
-        (sum, d) => sum + (d.pick?.points || 0),
-        0
-      ),
+    () => days.reduce((sum, d) => sum + (d.pick?.points || 0), 0),
     [days]
   );
 
@@ -329,10 +390,7 @@ export default function ManageEntry() {
     <ImageBackground source={BG} resizeMode="cover" style={styles.bg}>
       {/* Header */}
       <View style={styles.topBar}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={styles.backBtn}
-        >
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={RFValue(18)} color="#fff" />
           <Text style={styles.backTxt}>Entries</Text>
         </TouchableOpacity>
@@ -361,16 +419,10 @@ export default function ManageEntry() {
           >
             <View style={styles.summaryLeft}>
               <View style={styles.badge}>
-                <Ionicons
-                  name="planet"
-                  size={RFValue(16)}
-                  color={GOLD}
-                />
+                <Ionicons name="planet" size={RFValue(16)} color={GOLD} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.summaryTitle}>
-                  {entry.planetName}
-                </Text>
+                <Text style={styles.summaryTitle}>{entry.planetName}</Text>
                 <Text style={styles.summarySub}>
                   Entry: ${entry.fee.toFixed(2)}
                 </Text>
@@ -392,9 +444,7 @@ export default function ManageEntry() {
                           { backgroundColor: pill.dot },
                         ]}
                       />
-                      <Text style={styles.statusTxt}>
-                        {pill.label}
-                      </Text>
+                      <Text style={styles.statusTxt}>{pill.label}</Text>
                     </>
                   );
                 })()}
@@ -402,9 +452,7 @@ export default function ManageEntry() {
               <View style={styles.pointsBox}>
                 <Text style={styles.pointsLabel}>Total Points</Text>
                 <Text style={styles.pointsValue}>{totalPoints}</Text>
-                <Text style={styles.pointsGoal}>
-                  Goal: {POINT_GOAL} pts
-                </Text>
+                <Text style={styles.pointsGoal}>Goal: {POINT_GOAL} pts</Text>
               </View>
             </View>
           </LinearGradient>
@@ -417,12 +465,9 @@ export default function ManageEntry() {
               <Text style={styles.bold}>100%</Text> of the pool.{"\n"}
               • Reach <Text style={styles.bold}>10 pts</Text> to win{" "}
               <Text style={styles.bold}>50%</Text>.{"\n"}
-              • Less than 10 pts wins{" "}
-              <Text style={styles.bold}>25%</Text>.
+              • Less than 10 pts wins <Text style={styles.bold}>25%</Text>.
             </Text>
-            <Text style={styles.pointRuleHint}>
-              {payoutText(totalPoints)}
-            </Text>
+            <Text style={styles.pointRuleHint}>{payoutText(totalPoints)}</Text>
           </View>
 
           {/* Day selector */}
@@ -439,10 +484,7 @@ export default function ManageEntry() {
                   <TouchableOpacity
                     key={d.iso}
                     onPress={() => setSelectedISO(d.iso)}
-                    style={[
-                      styles.dayChip,
-                      selected && styles.dayChipActive,
-                    ]}
+                    style={[styles.dayChip, selected && styles.dayChipActive]}
                   >
                     <Text
                       style={[
@@ -452,9 +494,7 @@ export default function ManageEntry() {
                     >
                       {d.label}
                     </Text>
-                    {d.isToday && (
-                      <Text style={styles.dayToday}>Today</Text>
-                    )}
+                    {d.isToday && <Text style={styles.dayToday}>Today</Text>}
                   </TouchableOpacity>
                 );
               })}
@@ -477,10 +517,7 @@ export default function ManageEntry() {
                   const tag = resultTag(selectedDay.pick);
                   return (
                     <View
-                      style={[
-                        styles.resultTag,
-                        { backgroundColor: tag.bg },
-                      ]}
+                      style={[styles.resultTag, { backgroundColor: tag.bg }]}
                     >
                       <Text
                         style={[
@@ -499,47 +536,19 @@ export default function ManageEntry() {
                 <View style={styles.pickBody}>
                   <Text style={styles.pickLabel}>Your pick</Text>
                   <Text style={styles.pickValue}>
-                    {selectedDay.pick.selection === "home"
-                      ? "Home team"
-                      : selectedDay.pick.selection === "away"
-                      ? "Away team"
-                      : "Not set"}
+                    {formatPickSummary(selectedDay.pick)}
                   </Text>
 
                   <View style={styles.pickPointsRow}>
-                    <Text style={styles.pickPointsLabel}>
-                      Awarded points
-                    </Text>
+                    <Text style={styles.pickPointsLabel}>Awarded points</Text>
                     <Text style={styles.pickPointsValue}>
                       {selectedDay.pick.points ?? 0}
                     </Text>
                   </View>
 
-                  {/* Change pick button – only if day is not fully in the past */}
-                  {selectedDay.isPast ? (
-                    <Text style={styles.lockedText}>
-                      This day is locked. Picks can’t be changed.
-                    </Text>
-                  ) : (
-                    <TouchableOpacity
-                      style={styles.primaryBtn}
-                      onPress={() => {
-                        // 👉 Hook up to your existing pick flow.
-                        // Example: use date param like you did before:
-                        router.push({
-                          pathname: "/entries/[entryId]",
-                          params: {
-                            entryId: entry.id,
-                            date: selectedDay.iso,
-                          },
-                        } as any);
-                      }}
-                    >
-                      <Text style={styles.primaryBtnTxt}>
-                        Change Pick
-                      </Text>
-                    </TouchableOpacity>
-                  )}
+                  <Text style={styles.lockedText}>
+                    This day is locked. Picks can’t be changed once submitted.
+                  </Text>
                 </View>
               ) : (
                 <View style={styles.pickBody}>
@@ -554,7 +563,6 @@ export default function ManageEntry() {
                     <TouchableOpacity
                       style={styles.primaryBtn}
                       onPress={() => {
-                        // 👉 Hook up to your existing pick creation screen here
                         router.push({
                           pathname: "/entries/[entryId]",
                           params: {
@@ -564,9 +572,7 @@ export default function ManageEntry() {
                         } as any);
                       }}
                     >
-                      <Text style={styles.primaryBtnTxt}>
-                        Make Your Pick
-                      </Text>
+                      <Text style={styles.primaryBtnTxt}>Make Your Pick</Text>
                     </TouchableOpacity>
                   )}
                 </View>

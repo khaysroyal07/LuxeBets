@@ -1,3 +1,4 @@
+// app/entries/[entryId].tsx
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import {
   View,
@@ -48,16 +49,19 @@ type GameRow = {
   awayName: string;
   mlHome?: number | null;
   mlAway?: number | null;
-  spread?: number | null;
+  spread?: number | null; // home spread from SportsDataIO PointSpread
   total?: number | null;
 };
 
 type BetTab = "ML" | "Spread" | "Total";
+type Market = "ml" | "spread" | "total";
+type Side = "home" | "away" | "over" | "under";
 
 type ExistingPick = {
-  side: "home" | "away";
+  side: Side;
   leagueGameId: string;
   team: string;
+  market: Market;
 };
 
 const pickShort = (full?: string) => {
@@ -136,7 +140,9 @@ export default function ManagePick() {
         const iso = typeof date === "string" ? date : (t.start_date as string);
 
         // 3) existing pick for this entry/day (via day_date)
-        const { data: { user } } = await supabase.auth.getUser();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
         let curr: ExistingPick | null = null;
         if (user) {
           const { data: pick } = await supabase
@@ -148,14 +154,27 @@ export default function ManagePick() {
 
           if (pick && pick.selection) {
             const sel: any = pick.selection;
-            const side: "home" | "away" =
-              sel.side === "away" ? "away" : "home";
+            const side: Side =
+              sel.side === "home" ||
+              sel.side === "away" ||
+              sel.side === "over" ||
+              sel.side === "under"
+                ? sel.side
+                : "home";
             const team: string = sel.team || "";
-            if (team && pick.league_game_id) {
+            const market: Market =
+              sel.market === "spread"
+                ? "spread"
+                : sel.market === "total"
+                ? "total"
+                : "ml";
+
+            if (pick.league_game_id) {
               curr = {
                 side,
                 leagueGameId: String(pick.league_game_id),
                 team,
+                market,
               };
             }
           }
@@ -231,7 +250,7 @@ export default function ManagePick() {
             awayName: g.awayName,
             mlHome: o.mlHome ?? null,
             mlAway: o.mlAway ?? null,
-            spread: o.spread ?? null,
+            spread: o.spread ?? null, // home spread
             total: o.total ?? null,
           } as GameRow;
         })
@@ -250,10 +269,26 @@ export default function ManagePick() {
 
   useEffect(() => {
     loadGames();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [league, dayISOState]);
 
-  // save pick – matches picks schema exactly
-  const savePick = async (game: GameRow, side: "home" | "away") => {
+  // helper to format existing pick text
+  const formatExisting = (p: ExistingPick | null) => {
+    if (!p) return "";
+    switch (p.market) {
+      case "ml":
+        return `${p.team.toUpperCase()} ML`;
+      case "spread":
+        return `${p.team.toUpperCase()} (spread)`;
+      case "total":
+        return `${p.team.toUpperCase()} (total)`;
+      default:
+        return p.team.toUpperCase();
+    }
+  };
+
+  // save pick
+  const savePick = async (game: GameRow, side: Side) => {
     if (locked) {
       Alert.alert("Pick locked", "You already submitted a pick today.");
       return;
@@ -265,6 +300,9 @@ export default function ManagePick() {
       await loadGames();
       return;
     }
+
+    const market: Market =
+      betTab === "Spread" ? "spread" : betTab === "Total" ? "total" : "ml";
 
     try {
       const {
@@ -286,17 +324,40 @@ export default function ManagePick() {
         return;
       }
 
-      const team = side === "home" ? game.homeShort : game.awayShort;
-      const sport = L2S[league];
-      const market: "ml" | "spread" | "total" =
-        betTab === "Spread" ? "spread" : betTab === "Total" ? "total" : "ml";
+      // build selection payload
+      let team: string;
+      let line: number | null = null;
+      let price: number | null = null;
 
-      const selectionPayload = {
+      if (market === "total") {
+        // Over / Under on game total
+        team = side === "over" ? "Over" : "Under";
+        line = game.total ?? null;
+      } else {
+        // team-based markets
+        team = side === "home" ? game.homeShort : game.awayShort;
+
+        if (market === "ml") {
+          price =
+            side === "home"
+              ? game.mlHome ?? null
+              : game.mlAway ?? null;
+        } else if (market === "spread" && game.spread != null) {
+          // game.spread is home spread; away is the opposite sign
+          line = side === "home" ? game.spread : -game.spread;
+        }
+      }
+
+      const selectionPayload: any = {
         side,
         team,
         league_game_id: String(game.id),
         market,
       };
+      if (line != null) selectionPayload.line = line;
+      if (price != null) selectionPayload.price = price;
+
+      const sport = L2S[league];
 
       const { error } = await supabase.from("picks").insert({
         entry_id: entryId,
@@ -306,14 +367,23 @@ export default function ManagePick() {
         market,
         league_game_id: String(game.id),
         selection: selectionPayload, // jsonb
-        // result omitted – enum, nullable
       });
 
       if (error) throw error;
 
-      setExisting({ side, leagueGameId: String(game.id), team });
+      setExisting({
+        side,
+        leagueGameId: String(game.id),
+        team,
+        market,
+      });
       setLocked(true);
-      Alert.alert("Saved", `Your pick is ${team.toUpperCase()}.`);
+      Alert.alert("Saved", `Your pick is ${formatExisting({
+        side,
+        leagueGameId: String(game.id),
+        team,
+        market,
+      })}.`);
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Could not save pick.");
     }
@@ -359,7 +429,7 @@ export default function ManagePick() {
           <Text style={[styles.lockTxt, { marginTop: RFValue(6) }]}>
             Submitted:{" "}
             <Text style={{ color: GOLD, fontWeight: "900" }}>
-              {existing.team.toUpperCase()}
+              {formatExisting(existing)}
             </Text>{" "}
             (locked)
           </Text>
@@ -404,8 +474,8 @@ export default function ManagePick() {
 
       <View style={{ paddingHorizontal: RFValue(16), marginTop: RFValue(6) }}>
         <Text style={{ color: "#ccc", fontSize: RFValue(11) }}>
-          Viewing {betTab}. We always submit a simple team pick so your entry
-          stays compatible.
+          Viewing {betTab}. ML = moneyline, Spread = point spread, Total =
+          Over/Under. We still store a simple JSON pick for scoring.
         </Text>
       </View>
 
@@ -521,37 +591,79 @@ export default function ManagePick() {
                   )}
 
                   <View style={styles.btnRow}>
-                    <TouchableOpacity
-                      disabled={locked || isStarted}
-                      onPress={() => savePick(item, "away")}
-                      style={[
-                        styles.pickBtn,
-                        pickedThis &&
-                          existing?.team === item.awayShort &&
-                          styles.selected,
-                        (locked || isStarted) && styles.disabled,
-                      ]}
-                    >
-                      <Text style={styles.pickTxt}>
-                        Pick {item.awayShort}
-                      </Text>
-                    </TouchableOpacity>
+                    {betTab === "Total" ? (
+                      <>
+                        <TouchableOpacity
+                          disabled={locked || isStarted}
+                          onPress={() => savePick(item, "over")}
+                          style={[
+                            styles.pickBtn,
+                            pickedThis &&
+                              existing?.side === "over" &&
+                              styles.selected,
+                            (locked || isStarted) && styles.disabled,
+                          ]}
+                        >
+                          <Text style={styles.pickTxt}>
+                            Over {totalLabel}
+                          </Text>
+                        </TouchableOpacity>
 
-                    <TouchableOpacity
-                      disabled={locked || isStarted}
-                      onPress={() => savePick(item, "home")}
-                      style={[
-                        styles.pickBtn,
-                        pickedThis &&
-                          existing?.team === item.homeShort &&
-                          styles.selected,
-                        (locked || isStarted) && styles.disabled,
-                      ]}
-                    >
-                      <Text style={styles.pickTxt}>
-                        Pick {item.homeShort}
-                      </Text>
-                    </TouchableOpacity>
+                        <TouchableOpacity
+                          disabled={locked || isStarted}
+                          onPress={() => savePick(item, "under")}
+                          style={[
+                            styles.pickBtn,
+                            pickedThis &&
+                              existing?.side === "under" &&
+                              styles.selected,
+                            (locked || isStarted) && styles.disabled,
+                          ]}
+                        >
+                          <Text style={styles.pickTxt}>
+                            Under {totalLabel}
+                          </Text>
+                        </TouchableOpacity>
+                      </>
+                    ) : (
+                      <>
+                        <TouchableOpacity
+                          disabled={locked || isStarted}
+                          onPress={() => savePick(item, "away")}
+                          style={[
+                            styles.pickBtn,
+                            pickedThis &&
+                              existing?.team === item.awayShort &&
+                              styles.selected,
+                            (locked || isStarted) && styles.disabled,
+                          ]}
+                        >
+                          <Text style={styles.pickTxt}>
+                            {betTab === "Spread"
+                              ? `${item.awayShort} ${awaySpreadLabel}`
+                              : `Pick ${item.awayShort}`}
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          disabled={locked || isStarted}
+                          onPress={() => savePick(item, "home")}
+                          style={[
+                            styles.pickBtn,
+                            pickedThis &&
+                              existing?.team === item.homeShort &&
+                              styles.selected,
+                            (locked || isStarted) && styles.disabled,
+                          ]}
+                        >
+                          <Text style={styles.pickTxt}>
+                            {betTab === "Spread"
+                              ? `${item.homeShort} ${homeSpreadLabel}`
+                              : `Pick ${item.homeShort}`}
+                          </Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
                   </View>
 
                   {isStarted && (

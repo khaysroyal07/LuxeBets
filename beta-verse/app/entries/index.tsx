@@ -31,7 +31,7 @@ type EntryCard = {
   tournamentId: string;
   fee: number;
   startISO: string; // YYYY-MM-DD
-  endISO: string; // YYYY-MM-DD
+  endISO: string;   // YYYY-MM-DD
   status: EntryStatus;
   planetName: string;
 };
@@ -120,7 +120,6 @@ export default function EntriesIndex() {
       return;
     }
 
-    // entries table (your schema)
     const { data: entries, error: eErr } = await supabase
       .from("entries")
       .select("id, status, created_at, tournament_id")
@@ -140,11 +139,11 @@ export default function EntriesIndex() {
       return;
     }
 
-    // tournament_phase table (your schema)
-    const { data: trows, error: tErr } = await supabase
-      .from("tournament_phase")
-      .select("id, start_date, end_date, entry_fee_cents, title")
-      .in("id", tIds);
+const { data: trows, error: tErr } = await supabase
+  .from("tournaments")
+  .select("id, start_date, end_date, entry_fee_cents, title")
+  .in("id", tIds);
+
 
     if (tErr) {
       Alert.alert("Error", tErr.message);
@@ -244,7 +243,7 @@ export default function EntriesIndex() {
         <View style={{ flex: 1 }}>
           <Text style={styles.summaryTitle}>Tournament Overview</Text>
           <Text style={styles.summarySubtitle}>
-            Track your entries across the galaxy.
+            Track your entries across the the galaxy.
           </Text>
         </View>
         <View style={styles.summaryCounts}>
@@ -317,9 +316,11 @@ export default function EntriesIndex() {
           renderItem={({ item }) => {
             const pill = pillDef(item.status);
 
-            // lock manage picks if fully done
-            const isClosed =
+            const isFinishedOrWinner =
               item.status === "finished" || item.status === "winner";
+            const manageLabel = isFinishedOrWinner
+              ? "View Picks"
+              : "Manage Picks";
 
             return (
               <LinearGradient
@@ -377,21 +378,15 @@ export default function EntriesIndex() {
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    disabled={isClosed}
                     onPress={() =>
                       router.push({
                         pathname: "/entries/manage/[entryId]",
                         params: { entryId: item.id },
                       } as any)
                     }
-                    style={[
-                      styles.manageBtn,
-                      isClosed && styles.manageBtnDisabled,
-                    ]}
+                    style={styles.manageBtn}
                   >
-                    <Text style={styles.manageTxt}>
-                      {isClosed ? "Closed" : "Manage Picks"}
-                    </Text>
+                    <Text style={styles.manageTxt}>{manageLabel}</Text>
                   </TouchableOpacity>
                 </View>
               </LinearGradient>
@@ -601,9 +596,6 @@ const styles = StyleSheet.create({
     paddingVertical: RFValue(8),
     borderRadius: RFValue(999),
     backgroundColor: GOLD,
-  },
-  manageBtnDisabled: {
-    opacity: 0.4,
   },
   manageTxt: {
     color: "#160921",

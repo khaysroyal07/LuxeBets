@@ -5,9 +5,23 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const FN_SECRET = Deno.env.get("FN_SECRET") || "";
+
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE);
 
 type Outcome = "win" | "loss" | "push";
+
+/* ---------- auth helper ---------- */
+function checkAuth(req: Request): Response | null {
+  if (!FN_SECRET) return null; // no secret configured → skip check
+
+  const hdr =
+    req.headers.get("x-fn-secret") ?? req.headers.get("X-Fn-Secret");
+  if (hdr !== FN_SECRET) {
+    return new Response("Forbidden", { status: 403 });
+  }
+  return null;
+}
 
 /**
  * POINTS HELPER
@@ -16,7 +30,7 @@ type Outcome = "win" | "loss" | "push";
  *
  * odds <= -200  -> 1.0 pt   (big favorite)
  * -199..-120    -> 1.5 pts
- * -119..+119    -> 2.0 pts  (coin flip)
+ * -119..+119    -> 2.0 pts  (coin flip / default)
  * +120..+199    -> 3.0 pts  (medium dog)
  * >= +200       -> 4.0 pts  (big dog)
  */
@@ -26,7 +40,12 @@ function pointsForPick(
 ): number {
   if (outcome !== "win") return 0;
 
-  const odds = Number(americanOdds ?? 0);
+  // If odds missing, treat as coin flip (2 pts)
+  if (americanOdds == null || Number.isNaN(Number(americanOdds))) {
+    return 2.0;
+  }
+
+  const odds = Number(americanOdds);
 
   if (odds <= -200) return 1.0;
   if (odds <= -120) return 1.5;
@@ -35,103 +54,63 @@ function pointsForPick(
   return 4.0;
 }
 
-/**
- * Decide outcome from scores + selection
- */
-function resolveOutcome(
-  selection: "home" | "away",
-  homeScore: number | null,
-  awayScore: number | null,
-): Outcome {
-  const h = Number(homeScore ?? 0);
-  const a = Number(awayScore ?? 0);
-
-  if (h === a) return "push";
-
-  const pickedHome = selection === "home";
-  const homeWon = h > a;
-  const pickedWon = (pickedHome && homeWon) || (!pickedHome && !homeWon);
-
-  return pickedWon ? "win" : "loss";
-}
-
 serve(async (req) => {
+  // optional header auth
+  const auth = checkAuth(req);
+  if (auth) return auth;
+
   if (req.method !== "GET" && req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
   }
 
   try {
-    // 1) All pending picks
-    const { data: pendingPicks, error: pErr } = await sb
+    // 1) Picks that *already* have a final result but no points yet
+    const { data: picks, error: pErr } = await sb
       .from("picks")
-      .select("id, selection, american_odds, game_id, result")
-      .in("result", ["pending", "PENDING"]); // allow old uppercase data
+      .select("id, result, american_odds, points")
+      .in("result", ["win", "loss", "push"])
+      .is("points", null);
     if (pErr) throw pErr;
 
-    if (!pendingPicks || pendingPicks.length === 0) {
+    if (!picks || picks.length === 0) {
       return new Response(
-        JSON.stringify({ updated: 0, message: "No pending picks." }),
+        JSON.stringify({
+          updated: 0,
+          message: "No picks needing point resolution.",
+        }),
         { headers: { "Content-Type": "application/json" } },
       );
     }
 
-    // 2) Get games for those picks
-    const gameIds = Array.from(
-      new Set(pendingPicks.map((p: any) => p.game_id).filter(Boolean)),
-    );
+    const updates: any[] = [];
+    const now = new Date().toISOString();
 
-    if (gameIds.length === 0) {
-      return new Response(
-        JSON.stringify({ updated: 0, message: "No games found for pending picks." }),
-        { headers: { "Content-Type": "application/json" } },
+    for (const p of picks as any[]) {
+      const res = String(p.result || "").toLowerCase() as Outcome;
+      if (!["win", "loss", "push"].includes(res)) continue;
+
+      const pts = pointsForPick(
+        p.american_odds != null ? Number(p.american_odds) : null,
+        res,
       );
+
+      updates.push({
+        id: p.id,
+        points: pts,
+        resolved_at: now,
+      });
     }
 
-    const { data: games, error: gErr } = await sb
-      .from("games")
-      .select("id, status, home_score, away_score")
-      .in("id", gameIds);
-    if (gErr) throw gErr;
-
-    const gameMap = new Map<string, any>();
-    (games || []).forEach((g: any) => gameMap.set(String(g.id), g));
-
-    // 3) Resolve each pick
-    let updatedCount = 0;
-
-    for (const p of pendingPicks as any[]) {
-      const g = gameMap.get(String(p.game_id));
-      if (!g) continue;
-
-      if (String(g.status).toLowerCase() !== "final") continue;
-
-      const outcome: Outcome = resolveOutcome(
-        p.selection as "home" | "away",
-        g.home_score,
-        g.away_score,
-      );
-
-      const pts = pointsForPick(p.american_odds, outcome);
-
-      const { error: uErr } = await sb
-        .from("picks")
-        .update({
-          result: outcome, // lowercase matches pick_result enum
-          points: pts,
-          resolved_at: new Date().toISOString(),
-        })
-        .eq("id", p.id);
-
-      if (uErr) {
-        console.error("Failed to update pick", p.id, uErr.message);
-        continue;
-      }
-
-      updatedCount++;
+    if (updates.length) {
+      const { error: uErr } = await sb.from("picks").upsert(updates);
+      if (uErr) throw uErr;
     }
 
     return new Response(
-      JSON.stringify({ updated: updatedCount }),
+      JSON.stringify({
+        updated: updates.length,
+        message: "Points resolved.",
+      }),
       { headers: { "Content-Type": "application/json" } },
     );
   } catch (err: any) {

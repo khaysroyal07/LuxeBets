@@ -6,9 +6,23 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const SDIO_KEY = Deno.env.get("SPORTSDATAIO_KEY") || ""; // REQUIRED
+const FN_SECRET = Deno.env.get("FN_SECRET") || ""; // optional – set in project if you want header check
+
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE);
 
-/* ---------- utils ---------- */
+/* ---------- auth helper ---------- */
+function checkAuth(req: Request): Response | null {
+  if (!FN_SECRET) return null; // no secret configured → skip check
+
+  const hdr =
+    req.headers.get("x-fn-secret") ?? req.headers.get("X-Fn-Secret");
+  if (hdr !== FN_SECRET) {
+    return new Response("Forbidden", { status: 403 });
+  }
+  return null;
+}
+
+/* ---------- date helpers ---------- */
 const toDayISO = (d: Date | string) => {
   const dt = typeof d === "string" ? new Date(d) : d;
   const y = dt.getFullYear();
@@ -16,6 +30,7 @@ const toDayISO = (d: Date | string) => {
   const day = String(dt.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 };
+
 // SDIO wants YYYY-MMM-DD (e.g., 2025-OCT-20)
 const MONTHS_ABBR = [
   "JAN",
@@ -33,15 +48,13 @@ const MONTHS_ABBR = [
 ];
 const toSDIODate = (dayISO: string) => {
   const d = new Date(dayISO);
-  return `${d.getFullYear()}-${MONTHS_ABBR[d.getMonth()]}-${String(
-    d.getDate(),
-  ).padStart(2, "0")}`;
+  return `${d.getFullYear()}-${
+    MONTHS_ABBR[d.getMonth()]
+  }-${String(d.getDate()).padStart(2, "0")}`;
 };
 
 /* ---------- SportsDataIO helpers ---------- */
-/**
- * We’ll support these leagues directly via SportsDataIO.
- */
+
 type League = "NFL" | "NBA" | "MLB" | "NHL" | "WNBA";
 
 const SPORT_PATH: Record<League, string> = {
@@ -74,7 +87,7 @@ async function fetchSDIOLeague(league: League, dayISO: string) {
         return arr;
       }
     } catch {
-      // try next
+      // ignore and try next
     }
   }
   return [];
@@ -83,8 +96,13 @@ async function fetchSDIOLeague(league: League, dayISO: string) {
 /** Normalize SDIO record to { id, done, winner } */
 function parseSDIOOutcome(g: any) {
   const id = String(
-    g?.GameID ?? g?.GameKey ?? `${g?.HomeTeam}-${g?.AwayTeam}-${g?.Date}`,
+    g?.GameID ??
+      g?.GameId ??
+      g?.GameKey ??
+      g?.GlobalGameId ??
+      `${g?.HomeTeam}-${g?.AwayTeam}-${g?.Date}`,
   );
+
   const status = String(g?.Status || g?.GameStatus || "").toLowerCase();
   const done =
     status.includes("final") ||
@@ -111,6 +129,7 @@ function parseSDIOOutcome(g: any) {
   if (done && hs != null && as != null) {
     winner = hs > as ? "home" : as > hs ? "away" : null; // null => push/tie
   }
+
   return { id, done, winner };
 }
 
@@ -131,85 +150,83 @@ async function buildOutcomeIndex(dayISO: string) {
 }
 
 /* ---------- Main ---------- */
+
 serve(async (req) => {
+  // optional header auth
+  const auth = checkAuth(req);
+  if (auth) return auth;
+
   try {
-    // optional body: { date?: string, tournament_id?: uuid }
+    if (!SDIO_KEY) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "SPORTSDATAIO_KEY missing" }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    // optional body: { date?: string }
     const body = (await req.json().catch(() => ({}))) as {
       date?: string;
-      tournament_id?: string;
     };
 
     const dayISO: string = body?.date
       ? toDayISO(body.date)
       : toDayISO(new Date());
 
-    // If a specific tournament_id is passed, only grade that.
-    // Otherwise, grade all tournaments with that day_date.
-    let tournamentsQuery = sb
-      .from("tournaments")
-      .select("id, day_date")
-      .eq("day_date", dayISO);
-
-    if (body.tournament_id) {
-      tournamentsQuery = tournamentsQuery.eq("id", body.tournament_id);
-    }
-
-    const { data: tours, error: tErr } = await tournamentsQuery;
-    if (tErr) throw tErr;
-
-    if (!tours?.length) {
-      console.log("sync_results: no tournaments for day, skipping.", dayISO);
-      return new Response(
-        JSON.stringify({
-          ok: true,
-          skipped: true,
-          reason: "NO_TOURNAMENTS_FOR_DAY",
-          dayISO,
-        }),
-        { status: 200 },
-      );
-    }
-
-    const tIds = tours.map((t) => t.id);
-
-    // all PENDING picks for those tournaments/day
+    // 1) Find all pending picks for that day
     const { data: picks, error: pErr } = await sb
       .from("picks")
-      .select("id, entry_id, tournament_id, day_date, game_id, selection, result")
-      .in("tournament_id", tIds)
+      .select("id, day_date, league_game_id, game_id, selection, result")
       .eq("day_date", dayISO)
-      .eq("result", "pending");
+      .in("result", ["pending", "PENDING"]);
     if (pErr) throw pErr;
 
-    if (!picks?.length) {
-      console.log("sync_results: no pending picks for day.", dayISO);
+    if (!picks || picks.length === 0) {
+      console.log("sync_results: no pending picks for day", dayISO);
       return new Response(
         JSON.stringify({
           ok: true,
           graded: 0,
           dayISO,
+          reason: "NO_PENDING_PICKS",
         }),
-        { status: 200 },
+        { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
 
-    // SDIO → outcome index
+    // 2) Build SDIO outcome index for that date
     const index = await buildOutcomeIndex(dayISO);
 
     const updates: any[] = [];
 
-    for (const p of picks) {
-      const oc = index[String(p.game_id)];
+    for (const p of picks as any[]) {
+      const gameKey = String(
+        p.league_game_id ?? p.game_id ?? "",
+      ).trim();
+      if (!gameKey) continue;
+
+      const oc = index[gameKey];
       if (!oc || !oc.done) continue; // still pending or unknown game id
 
+      // Decode selection.side from JSON, with legacy fallback
+      let side: any = p.selection;
+      if (side && typeof side === "object") {
+        side = (side as any).side;
+      }
+      side = typeof side === "string" ? side.toLowerCase() : null;
+      if (side !== "home" && side !== "away") continue;
+
+      let result: "win" | "loss" | "push";
       if (oc.winner === null) {
-        // push
-        updates.push({ id: p.id, result: "push" });
-        continue;
+        result = "push";
+      } else {
+        result = side === oc.winner ? "win" : "loss";
       }
 
-      const won = oc.winner === p.selection; // p.selection must be "home" | "away"
-      updates.push({ id: p.id, result: won ? "win" : "loss" });
+      updates.push({
+        id: p.id,
+        result,
+      });
     }
 
     if (updates.length) {
@@ -217,22 +234,19 @@ serve(async (req) => {
       if (upErr) throw upErr;
     }
 
-    // ❌ OLD: insert into eliminations + mark entries eliminated
-    // ✅ NEW: elimination is handled by points system in resolve_day – we only grade picks here.
-
     return new Response(
       JSON.stringify({
         ok: true,
         graded: updates.length,
         dayISO,
       }),
-      { status: 200 },
+      { status: 200, headers: { "Content-Type": "application/json" } },
     );
   } catch (e) {
     console.error("sync_results error", e);
-    return new Response(JSON.stringify({ ok: false, error: String(e) }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ ok: false, error: String(e) }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
   }
 });
