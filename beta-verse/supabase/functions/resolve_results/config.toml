@@ -1,0 +1,2 @@
+[psql]
+verify_jwt = false

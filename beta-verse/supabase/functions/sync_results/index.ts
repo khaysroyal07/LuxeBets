@@ -1,37 +1,77 @@
-// supabase/functions/sync_results/index.ts
+// supabase/functions/sync_games/index.ts
 // deno-lint-ignore-file no-explicit-any
+
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const SDIO_KEY = Deno.env.get("SPORTSDATAIO_KEY") || ""; // REQUIRED
-const FN_SECRET = Deno.env.get("FN_SECRET") || ""; // optional – set in project if you want header check
+const SDIO_KEY = Deno.env.get("SPORTSDATAIO_KEY") || "";
+const FN_SECRET = Deno.env.get("FN_SECRET") || "";
 
-const sb = createClient(SUPABASE_URL, SERVICE_ROLE);
+/**
+ * Comma-separated list in env like: "NFL,NBA,MLB,NHL,WNBA"
+ * You can turn leagues on/off here without code changes.
+ */
+const ENABLED_SPORTS_ENV = (Deno.env.get("SPORTS_ENABLED") ?? "NFL,NBA")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
 
-/* ---------- auth helper ---------- */
+const sb = createClient(SUPABASE_URL, SERVICE_ROLE, {
+  auth: { persistSession: false },
+});
+
+type SportKey = "nfl" | "nba" | "mlb" | "nhl" | "wnba";
+
+const ALL_SPORTS: SportKey[] = ["nfl", "nba", "mlb", "nhl", "wnba"];
+
+const SPORT_PATH: Record<SportKey, string> = {
+  nfl: "nfl",
+  nba: "nba",
+  mlb: "mlb",
+  nhl: "nhl",
+  wnba: "wnba",
+};
+
+/* ---------- tiny helpers ---------- */
+
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-fn-secret",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+};
+
+function json(body: any, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...CORS,
+    },
+  });
+}
+
 function checkAuth(req: Request): Response | null {
-  if (!FN_SECRET) return null; // no secret configured → skip check
-
+  if (!FN_SECRET) return null;
   const hdr =
     req.headers.get("x-fn-secret") ?? req.headers.get("X-Fn-Secret");
   if (hdr !== FN_SECRET) {
-    return new Response("Forbidden", { status: 403 });
+    return json({ ok: false, error: "Forbidden" }, 401);
   }
   return null;
 }
 
-/* ---------- date helpers ---------- */
-const toDayISO = (d: Date | string) => {
+function toDayISO(d: Date | string): string {
   const dt = typeof d === "string" ? new Date(d) : d;
-  const y = dt.getFullYear();
-  const m = String(dt.getMonth() + 1).padStart(2, "0");
-  const day = String(dt.getDate()).padStart(2, "0");
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(dt.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
-};
+}
 
-// SDIO wants YYYY-MMM-DD (e.g., 2025-OCT-20)
 const MONTHS_ABBR = [
   "JAN",
   "FEB",
@@ -46,55 +86,58 @@ const MONTHS_ABBR = [
   "NOV",
   "DEC",
 ];
-const toSDIODate = (dayISO: string) => {
-  const d = new Date(dayISO);
-  return `${d.getFullYear()}-${
-    MONTHS_ABBR[d.getMonth()]
-  }-${String(d.getDate()).padStart(2, "0")}`;
-};
 
-/* ---------- SportsDataIO helpers ---------- */
+function toSDIODate(dayISO: string): string {
+  const d = new Date(dayISO + "T00:00:00Z");
+  return `${d.getUTCFullYear()}-${
+    MONTHS_ABBR[d.getUTCMonth()]
+  }-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
 
-type League = "NFL" | "NBA" | "MLB" | "NHL" | "WNBA";
+/* ---------- SportsDataIO fetch + normalize ---------- */
 
-const SPORT_PATH: Record<League, string> = {
-  NFL: "nfl",
-  NBA: "nba",
-  MLB: "mlb",
-  NHL: "nhl",
-  WNBA: "wnba",
-};
-
-/**
- * Try a couple endpoints; return first non-empty.
- */
-async function fetchSDIOLeague(league: League, dayISO: string) {
+async function fetchSDIOGames(
+  sport: SportKey,
+  dayISO: string,
+): Promise<any[]> {
   if (!SDIO_KEY) return [];
-  const base = `https://api.sportsdata.io/v3/${SPORT_PATH[league]}/scores/json`;
+  const base = `https://api.sportsdata.io/v3/${SPORT_PATH[sport]}/scores/json`;
   const d = encodeURIComponent(toSDIODate(dayISO));
 
-  const candidates = [
+  const urls = [
     `${base}/ScoresByDate/${d}?key=${SDIO_KEY}`,
     `${base}/GamesByDate/${d}?key=${SDIO_KEY}`,
   ];
 
-  for (const url of candidates) {
+  for (const url of urls) {
     try {
-      const r = await fetch(url);
-      if (!r.ok) continue;
-      const arr = await r.json();
-      if (Array.isArray(arr) && arr.length) {
-        return arr;
+      const res = await fetch(url);
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        console.log(
+          "[sync_games] SDIO error",
+          sport,
+          dayISO,
+          res.status,
+          txt.slice(0, 200),
+        );
+        continue;
       }
-    } catch {
-      // ignore and try next
+      const json = await res.json();
+      if (Array.isArray(json) && json.length) return json;
+    } catch (err) {
+      console.log("[sync_games] fetch failed", sport, dayISO, String(err));
     }
   }
+
   return [];
 }
 
-/** Normalize SDIO record to { id, done, winner } */
-function parseSDIOOutcome(g: any) {
+function normalizeGame(
+  sport: SportKey,
+  g: any,
+  dayISO: string,
+) {
   const id = String(
     g?.GameID ??
       g?.GameId ??
@@ -103,150 +146,168 @@ function parseSDIOOutcome(g: any) {
       `${g?.HomeTeam}-${g?.AwayTeam}-${g?.Date}`,
   );
 
-  const status = String(g?.Status || g?.GameStatus || "").toLowerCase();
-  const done =
-    status.includes("final") ||
-    status.startsWith("f/") ||
-    status.includes("complete") ||
-    status === "ended";
+  const dateStr = g?.Date ?? g?.Day ?? g?.DateTime;
+  const startUtc = dateStr ? new Date(dateStr).toISOString() : null;
+
+  const status = String(g?.Status ?? g?.GameStatus ?? "").toLowerCase();
 
   const hs =
     g?.HomeTeamScore ??
     g?.HomeScore ??
-    g?.HomeTeamRuns ??
-    g?.HomeTeamGoals ??
     g?.HomeTeamPoints ??
+    g?.HomeTeamRuns ??
     null;
   const as =
     g?.AwayTeamScore ??
     g?.AwayScore ??
-    g?.AwayTeamRuns ??
-    g?.AwayTeamGoals ??
     g?.AwayTeamPoints ??
+    g?.AwayTeamRuns ??
     null;
 
-  let winner: "home" | "away" | null = null;
-  if (done && hs != null && as != null) {
-    winner = hs > as ? "home" : as > hs ? "away" : null; // null => push/tie
-  }
-
-  return { id, done, winner };
+  return {
+    league_game_id: id,
+    sport,
+    game_day: dayISO,
+    start_time_utc: startUtc,
+    home_team: g?.HomeTeam ?? null,
+    away_team: g?.AwayTeam ?? null,
+    status,
+    final_home_score: hs,
+    final_away_score: as,
+  };
 }
 
-/** Build an index of all { game_id: { done, winner } } for a day across all leagues */
-async function buildOutcomeIndex(dayISO: string) {
-  const idx: Record<string, { done: boolean; winner: "home" | "away" | null }> =
-    {};
-  const leagues: League[] = ["NFL", "NBA", "MLB", "NHL", "WNBA"];
+/**
+ * Look at picks for that date, find which sports actually have pending picks.
+ * Then intersect with ENABLED_SPORTS_ENV so we don't call leagues you don't pay for.
+ */
+async function detectSportsForDay(dayISO: string): Promise<SportKey[]> {
+  const { data, error } = await sb
+    .from("picks")
+    .select("sport")
+    .eq("day_date", dayISO)
+    .is("result", null);
 
-  for (const L of leagues) {
-    const arr = await fetchSDIOLeague(L, dayISO);
-    for (const g of arr) {
-      const { id, done, winner } = parseSDIOOutcome(g);
-      if (id) idx[id] = { done, winner };
+  if (error) {
+    console.error("[sync_games] detectSportsForDay error", error);
+    return [];
+  }
+
+  const used = new Set<string>();
+  (data ?? []).forEach((row: any) => {
+    if (row.sport) used.add(String(row.sport).toLowerCase());
+  });
+
+  const enabled = new Set(ENABLED_SPORTS_ENV);
+
+  const result: SportKey[] = [];
+  for (const s of ALL_SPORTS) {
+    if (used.has(s) && enabled.has(s)) {
+      result.push(s);
     }
   }
-  return idx;
+
+  return result;
 }
 
-/* ---------- Main ---------- */
+/* ---------- MAIN ---------- */
 
 serve(async (req) => {
-  // optional header auth
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: CORS });
+  }
+
   const auth = checkAuth(req);
   if (auth) return auth;
 
+  if (req.method !== "GET" && req.method !== "POST") {
+    return json({ ok: false, error: "Method not allowed" }, 405);
+  }
+
+  if (!SDIO_KEY) {
+    return json(
+      { ok: false, error: "SPORTSDATAIO_KEY missing" },
+      500,
+    );
+  }
+
   try {
-    if (!SDIO_KEY) {
-      return new Response(
-        JSON.stringify({ ok: false, error: "SPORTSDATAIO_KEY missing" }),
-        { status: 500, headers: { "Content-Type": "application/json" } },
-      );
+    let body: any = {};
+    if (req.method === "POST") {
+      body = await req.json().catch(() => ({}));
     }
 
-    // optional body: { date?: string }
-    const body = (await req.json().catch(() => ({}))) as {
-      date?: string;
-    };
-
-    const dayISO: string = body?.date
+    const dayISO: string = body.date
       ? toDayISO(body.date)
       : toDayISO(new Date());
 
-    // 1) Find all pending picks for that day
-    const { data: picks, error: pErr } = await sb
-      .from("picks")
-      .select("id, day_date, league_game_id, game_id, selection, result")
-      .eq("day_date", dayISO)
-      .in("result", ["pending", "PENDING"]);
-    if (pErr) throw pErr;
-
-    if (!picks || picks.length === 0) {
-      console.log("sync_results: no pending picks for day", dayISO);
-      return new Response(
-        JSON.stringify({
-          ok: true,
-          graded: 0,
-          dayISO,
-          reason: "NO_PENDING_PICKS",
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
+    // 1) If caller explicitly passes sports → use them
+    let sports: SportKey[] | null = null;
+    if (Array.isArray(body.sports) && body.sports.length) {
+      sports = body.sports
+        .map((s: any) => String(s).toLowerCase())
+        .filter((s: string) =>
+          ALL_SPORTS.includes(s as SportKey)
+        ) as SportKey[];
     }
 
-    // 2) Build SDIO outcome index for that date
-    const index = await buildOutcomeIndex(dayISO);
+    // 2) Otherwise, auto-detect from picks
+    if (!sports || sports.length === 0) {
+      sports = await detectSportsForDay(dayISO);
+    }
 
-    const updates: any[] = [];
-
-    for (const p of picks as any[]) {
-      const gameKey = String(
-        p.league_game_id ?? p.game_id ?? "",
-      ).trim();
-      if (!gameKey) continue;
-
-      const oc = index[gameKey];
-      if (!oc || !oc.done) continue; // still pending or unknown game id
-
-      // Decode selection.side from JSON, with legacy fallback
-      let side: any = p.selection;
-      if (side && typeof side === "object") {
-        side = (side as any).side;
-      }
-      side = typeof side === "string" ? side.toLowerCase() : null;
-      if (side !== "home" && side !== "away") continue;
-
-      let result: "win" | "loss" | "push";
-      if (oc.winner === null) {
-        result = "push";
-      } else {
-        result = side === oc.winner ? "win" : "loss";
-      }
-
-      updates.push({
-        id: p.id,
-        result,
+    // 3) Fallback: if still nothing, don't hit SDIO
+    if (!sports || sports.length === 0) {
+      return json({
+        ok: true,
+        upserted: 0,
+        dayISO,
+        message:
+          "No enabled sports with pending picks for this day.",
       });
     }
 
-    if (updates.length) {
-      const { error: upErr } = await sb.from("picks").upsert(updates);
-      if (upErr) throw upErr;
+    const rows: any[] = [];
+
+    for (const sport of sports) {
+      const arr = await fetchSDIOGames(sport, dayISO);
+      console.log(
+        `[sync_games] ${sport} ${dayISO} → ${arr.length} games`,
+      );
+      for (const g of arr) {
+        rows.push(normalizeGame(sport, g, dayISO));
+      }
     }
 
-    return new Response(
-      JSON.stringify({
+    if (rows.length === 0) {
+      return json({
         ok: true,
-        graded: updates.length,
+        upserted: 0,
         dayISO,
-      }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    );
-  } catch (e) {
-    console.error("sync_results error", e);
-    return new Response(
-      JSON.stringify({ ok: false, error: String(e) }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
+        message: "No games returned from SportsDataIO.",
+      });
+    }
+
+    const { error } = await sb
+      .from("games")
+      .upsert(rows, { onConflict: "league_game_id,sport" });
+
+    if (error) {
+      console.error("[sync_games] upsert error", error);
+      return json({ ok: false, error: error.message }, 500);
+    }
+
+    return json({
+      ok: true,
+      upserted: rows.length,
+      dayISO,
+      sports,
+    });
+  } catch (err: any) {
+    console.error("[sync_games] unexpected error", err);
+    return json(
+      { ok: false, error: String(err?.message ?? err) },
+      500,
     );
   }
 });

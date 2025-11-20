@@ -45,18 +45,29 @@ function todayET(): string {
 
 /** Build a UTC ISO from an ET wall clock + offset minutes (-240 DST, -300 standard) */
 function etToUtcIso(local: string, tzOffsetMin: number): string {
-  // parse "YYYY-MM-DDTHH:mm:ss"
+  // local = "YYYY-MM-DDTHH:mm:ss"
   const [d, t = "00:00:00"] = local.split("T");
   const [y, m, dd] = d.split("-").map(Number);
   const [hh, mm, ss] = t.split(":").map((x) => Number(x));
 
   const utcMs = Date.UTC(y, m - 1, dd, hh, mm, ss);
+  // tzOffsetMin is ET offset from UTC, ex: -240
   return new Date(utcMs + tzOffsetMin * -60 * 1000).toISOString();
 }
 
 /** Midnight ET (00:00) to UTC ISO for a given YYYY-MM-DD and offset */
 function midnightEtUtcIso(day: string, tzOffsetMin: number): string {
   return etToUtcIso(`${day}T00:00:00`, tzOffsetMin);
+}
+
+/** Add N days to a YYYY-MM-DD (ET calendar math) → YYYY-MM-DD */
+function addDaysEt(d: string, days: number): string {
+  const [y, m, dd] = d.split("-").map(Number);
+  const js = new Date(y, m - 1, dd + days);
+  const yy = js.getFullYear();
+  const mm = String(js.getMonth() + 1).padStart(2, "0");
+  const ddd = String(js.getDate()).padStart(2, "0");
+  return `${yy}-${mm}-${ddd}`;
 }
 
 /** Map fee -> (tier, title) */
@@ -90,35 +101,34 @@ serve(async (req: Request): Promise<Response> => {
     // allow empty body
   }
 
+  // Default entry fees for Mars/Jupiter/Saturn
   const entryFees: number[] = (body.entry_fees ?? [20, 50, 100]).map((n: any) =>
     Number(n)
   );
 
+  // IMPORTANT: dayDate is expected to be the SUNDAY of that tournament week ("YYYY-MM-DD" in ET).
+  // If omitted, we use todayET() (which will be Sunday when called by the weekly cron).
   const dayDate: string = body.day_date ?? todayET(); // "YYYY-MM-DD" ET
-  const firstLocal: string | null = body.first_game_at_local ?? null; // "YYYY-MM-DDTHH:mm:ss" ET
+
   const tzOffsetMin: number = Number.isFinite(body.tz_offset_min)
     ? body.tz_offset_min
-    : -240; // -240 DST, -300 standard
+    : -240; // -240 DST, -300 standard (you can tweak this seasonally if needed)
+
   const weekLabel: string | null = body.week_label ?? null;
 
-  // ----- Compute join window -----
+  // ----- Compute join window based on boss logic -----
+  // Boss: Open every Sunday 12:00am, Close every Tuesday 5:00pm (ET)
+
+  // We'll treat start_date/end_date as the Sunday for that week's tournaments
   const start_date = dayDate;
   const end_date = dayDate;
 
+  // Open: Sunday 12:00am ET (midnight of dayDate)
   const join_open_at = midnightEtUtcIso(dayDate, tzOffsetMin);
 
-  const first_game_utc = firstLocal
-    ? etToUtcIso(firstLocal, tzOffsetMin)
-    : null;
-
-  // default close: 23:59 ET on day_date
-  const endOfDayUtc = etToUtcIso(`${dayDate}T23:59:00`, tzOffsetMin);
-
-  const join_close_at = first_game_utc
-    ? new Date(
-        new Date(first_game_utc).getTime() - 30 * 60 * 1000,
-      ).toISOString()
-    : endOfDayUtc;
+  // Close: Tuesday 5:00pm ET → Sunday + 2 days at 17:00
+  const tuesdayDate = addDaysEt(dayDate, 2); // Sunday + 2 days = Tuesday
+  const join_close_at = etToUtcIso(`${tuesdayDate}T17:00:00`, tzOffsetMin);
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE, {
     auth: { persistSession: false },

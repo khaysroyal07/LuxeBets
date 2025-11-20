@@ -35,11 +35,16 @@ type LeaderRow = {
 type Tournament = {
   id: string;
   planet_name?: string | null;
-  name?: string | null;
   tier?: string | null;
-  entry_fee?: number | null;
+  entry_fee_cents?: number | null;
   status?: string | null;
   week_label?: string | null;
+  start_date?: string | null;
+};
+
+type WeekOption = {
+  key: string;   // internal key (week_label or start_date)
+  label: string; // what we show in the UI
 };
 
 const TARGET_POINTS = 20; // X = 20 points
@@ -66,40 +71,95 @@ export default function LeaderboardScreen() {
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [selectedTid, setSelectedTid] = useState<string | null>(null);
 
+  const [weekOptions, setWeekOptions] = useState<WeekOption[]>([]);
+  const [selectedWeekKey, setSelectedWeekKey] = useState<string | null>(null);
+
   const title = useMemo(() => "Tournament Leaderboard", []);
 
-  /* ---------------- Fetch current tournaments (planets) ---------------- */
+  /* ---------------- Fetch tournaments & build week list ---------------- */
   useEffect(() => {
     let on = true;
     (async () => {
       try {
-        // You can tighten this later (e.g. filter by current week/status)
+        const todayStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
         const { data, error } = await supabase
           .from("tournaments")
-          .select("*"); // safer than referencing specific cols
+          .select(
+            `
+              id,
+              tier,
+              planet_name,
+              week_label,
+              start_date,
+              entry_fee_cents,
+              status,
+              created_at
+            `
+          )
+          .lte("start_date", todayStr) // only past + current weeks
+          .order("start_date", { ascending: false }); // newest week first
 
         if (error) throw error;
         if (!on) return;
 
         const all = (data || []) as Tournament[];
+        setTournaments(all);
 
-        // If you only want current week, you can filter here by week_label/status
-        // For now, just keep first 3 as "this week's planets"
-        const currentThree = all.slice(0, 3);
+        // Build distinct weeks from newest to oldest
+        const weeksMap = new Map<string, WeekOption>();
 
-        setTournaments(currentThree);
-        if (currentThree[0]?.id) {
-          setSelectedTid(currentThree[0].id);
+        for (const t of all) {
+          const key = t.week_label || t.start_date || "";
+          if (!key) continue;
+          if (!weeksMap.has(key)) {
+            // For now use week_label if present, otherwise the start_date
+            weeksMap.set(key, {
+              key,
+              label: t.week_label || key,
+            });
+          }
+        }
+
+        const weeks = Array.from(weeksMap.values());
+        setWeekOptions(weeks);
+
+        // Default selected week = newest
+        if (!selectedWeekKey && weeks[0]) {
+          setSelectedWeekKey(weeks[0].key);
         }
       } catch (e: any) {
         console.warn("tournaments fetch error", e);
         setErrorMsg(e?.message || "Failed to load tournaments.");
+      } finally {
+        if (on) setLoading(false);
       }
     })();
     return () => {
       on = false;
     };
+    // we intentionally ignore selectedWeekKey here so it doesn't refetch
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /* ---------------- Tournaments for the selected week ---------------- */
+  const tournamentsForWeek = useMemo(() => {
+    if (!selectedWeekKey) return [];
+    return tournaments.filter(
+      (t) => (t.week_label || t.start_date) === selectedWeekKey
+    );
+  }, [tournaments, selectedWeekKey]);
+
+  // Ensure selectedTid always belongs to the current week
+  useEffect(() => {
+    if (!tournamentsForWeek.length) return;
+
+    const existsInWeek = tournamentsForWeek.some((t) => t.id === selectedTid);
+
+    if (!selectedTid || !existsInWeek) {
+      setSelectedTid(tournamentsForWeek[0].id);
+    }
+  }, [tournamentsForWeek, selectedTid]);
 
   /* ---------------- Fetch leaderboard for selected tournament ---------------- */
   useEffect(() => {
@@ -187,19 +247,29 @@ export default function LeaderboardScreen() {
 
   /* ---------------- Helpers ---------------- */
 
+  const currentWeekOption = useMemo(
+    () =>
+      selectedWeekKey
+        ? weekOptions.find((w) => w.key === selectedWeekKey) || null
+        : null,
+    [weekOptions, selectedWeekKey]
+  );
+
   const currentTournament = useMemo(
-    () => tournaments.find((t) => t.id === selectedTid) || null,
-    [tournaments, selectedTid]
+    () =>
+      tournamentsForWeek.find((t) => t.id === selectedTid) ||
+      tournamentsForWeek[0] ||
+      null,
+    [tournamentsForWeek, selectedTid]
   );
 
   const headerSubtitle = currentTournament
-    ? (currentTournament.planet_name ||
-        currentTournament.name ||
-        currentTournament.tier ||
-        "Current Tournament")
+    ? currentTournament.planet_name ||
+      currentTournament.tier ||
+      "Current Tournament"
     : "Current Tournament";
 
-  if (loading && !selectedTid) {
+  if (loading && !selectedTid && !tournaments.length) {
     // initial load
     return (
       <View style={styles.center}>
@@ -227,6 +297,40 @@ export default function LeaderboardScreen() {
       {/* Header card */}
       <View style={styles.headerCard}>
         <Text style={styles.headerTitle}>Star Points Ranking</Text>
+
+        {/* Week selector row */}
+        {weekOptions.length > 0 && (
+          <View style={styles.weekRow}>
+            <Text style={styles.headerText}>Week:</Text>
+            <View style={styles.weekPillsWrap}>
+              {weekOptions.map((w) => {
+                const selected = w.key === selectedWeekKey;
+                return (
+                  <TouchableOpacity
+                    key={w.key}
+                    onPress={() => setSelectedWeekKey(w.key)}
+                    activeOpacity={0.9}
+                    style={[
+                      styles.weekPill,
+                      selected && styles.weekPillSelected,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.weekPillText,
+                        selected && styles.weekPillTextSelected,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {w.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        )}
+
         <Text style={styles.headerText}>
           Planet:{" "}
           <Text style={{ color: GOLD, fontWeight: "900" }}>
@@ -242,13 +346,12 @@ export default function LeaderboardScreen() {
           <Text style={{ color: "#fff" }}>total points</Text>, not survival.
         </Text>
 
-        {/* Planet / tournament filter pills */}
-        {tournaments.length > 0 && (
+        {/* Planet / tournament filter pills for this week */}
+        {tournamentsForWeek.length > 0 && (
           <View style={styles.planetRow}>
-            {tournaments.map((t) => {
+            {tournamentsForWeek.map((t) => {
               const label =
                 t.planet_name ||
-                t.name ||
                 t.tier ||
                 t.week_label ||
                 "Tournament";
@@ -309,7 +412,7 @@ export default function LeaderboardScreen() {
 
       {/* Leaderboard list */}
       <View style={styles.listWrap}>
-        {loading ? (
+        {loading && !rows.length ? (
           <View style={styles.emptyWrap}>
             <ActivityIndicator color={GOLD} size="small" />
           </View>
@@ -425,11 +528,45 @@ const styles = StyleSheet.create({
   },
   headerText: { color: "#ccc", fontSize: RFValue(11), marginBottom: RFValue(2) },
 
+  // week filter
+  weekRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: RFValue(4),
+    gap: RFValue(6),
+  },
+  weekPillsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: RFValue(6),
+    flex: 1,
+  },
+  weekPill: {
+    paddingHorizontal: RFValue(8),
+    paddingVertical: RFValue(3),
+    borderRadius: RFValue(999),
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+  weekPillSelected: {
+    borderColor: GOLD,
+    backgroundColor: "rgba(255,215,0,0.18)",
+  },
+  weekPillText: {
+    color: "#eee",
+    fontSize: RFValue(10),
+    fontWeight: "700",
+  },
+  weekPillTextSelected: {
+    color: GOLD,
+  },
+
   planetRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: RFValue(6),
-    marginTop: RFValue(8),
+    marginTop: RFValue(6),
     marginBottom: RFValue(4),
   },
   planetPill: {

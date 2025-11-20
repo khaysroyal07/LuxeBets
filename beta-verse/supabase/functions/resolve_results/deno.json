@@ -1,3 +1,13 @@
 {
-  "imports": {}
+  "imports": {},
+  "tasks": {},
+  "hooks": {
+    "postdeploy": []
+  },
+  "permissions": {
+    "invoke": ["anon", "authenticated", "service_role"]
+  },
+  "verification": {
+    "jwt": false
+  }
 }

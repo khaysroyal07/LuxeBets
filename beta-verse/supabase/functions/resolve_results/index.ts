@@ -5,23 +5,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const FN_SECRET = Deno.env.get("FN_SECRET") || "";
 
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE);
 
 type Outcome = "win" | "loss" | "push";
-
-/* ---------- auth helper ---------- */
-function checkAuth(req: Request): Response | null {
-  if (!FN_SECRET) return null; // no secret configured → skip check
-
-  const hdr =
-    req.headers.get("x-fn-secret") ?? req.headers.get("X-Fn-Secret");
-  if (hdr !== FN_SECRET) {
-    return new Response("Forbidden", { status: 403 });
-  }
-  return null;
-}
 
 /**
  * POINTS HELPER
@@ -34,14 +21,11 @@ function checkAuth(req: Request): Response | null {
  * +120..+199    -> 3.0 pts  (medium dog)
  * >= +200       -> 4.0 pts  (big dog)
  */
-function pointsForPick(
-  americanOdds: number | null,
-  outcome: Outcome,
-): number {
+function pointsForPick(americanOdds: number | null, outcome: Outcome): number {
   if (outcome !== "win") return 0;
 
-  // If odds missing, treat as coin flip (2 pts)
   if (americanOdds == null || Number.isNaN(Number(americanOdds))) {
+    // Default coin-flip
     return 2.0;
   }
 
@@ -54,38 +38,153 @@ function pointsForPick(
   return 4.0;
 }
 
-serve(async (req) => {
-  // optional header auth
-  const auth = checkAuth(req);
-  if (auth) return auth;
+/** Treat game as final if status contains "final"/"finished"/"complete" */
+function isFinalStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  const s = status.toLowerCase();
+  return (
+    s.includes("final") ||
+    s === "finished" ||
+    s === "complete" ||
+    s === "completed"
+  );
+}
 
+serve(async (req) => {
   if (req.method !== "GET" && req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
   }
 
   try {
-    // 1) Picks that *already* have a final result but no points yet
-    const { data: picks, error: pErr } = await sb
+    // 1) Picks that have NOT been graded yet (result is null)
+    const { data: ungradedPicks, error: pErr } = await sb
+      .from("picks")
+      .select(
+        `
+        id,
+        league_game_id,
+        sport,
+        market,
+        selection,
+        american_odds,
+        result,
+        points
+      `,
+      )
+      .is("result", null);
+
+    if (pErr) throw pErr;
+
+    // nothing to do: still recompute totals below anyway
+    const ungraded = (ungradedPicks ?? []) as any[];
+
+    // 2) Load all related games in one query
+    const leagueIds = Array.from(
+      new Set(
+        ungraded
+          .map((p) => p.league_game_id)
+          .filter((id) => !!id),
+      ),
+    );
+
+    let gameByLeagueId = new Map<string, any>();
+
+    if (leagueIds.length > 0) {
+      const { data: games, error: gErr } = await sb
+        .from("games")
+        .select(
+          `
+          id,
+          league_game_id,
+          sport,
+          game_day,
+          status,
+          home_score,
+          away_score
+        `,
+        )
+        .in("league_game_id", leagueIds);
+
+      if (gErr) throw gErr;
+
+      gameByLeagueId = new Map<string, any>();
+      for (const g of (games ?? []) as any[]) {
+        if (g.league_game_id) {
+          gameByLeagueId.set(String(g.league_game_id), g);
+        }
+      }
+    }
+
+    type UpdateRow = {
+      id: string;
+      result?: Outcome;
+      is_correct?: boolean;
+      points?: number;
+      graded_at?: string;
+      resolved_at?: string;
+    };
+
+    const updates: UpdateRow[] = [];
+    const now = new Date().toISOString();
+
+    // 3) Grade each ungraded pick
+    for (const p of ungraded) {
+      const leagueGameId = p.league_game_id
+        ? String(p.league_game_id)
+        : null;
+      if (!leagueGameId) continue;
+
+      const game = gameByLeagueId.get(leagueGameId);
+      if (!game) continue; // no game row yet
+
+      if (!isFinalStatus(game.status)) continue; // game not finished
+
+      const homeScore = game.home_score != null
+        ? Number(game.home_score)
+        : NaN;
+      const awayScore = game.away_score != null
+        ? Number(game.away_score)
+        : NaN;
+
+      if (Number.isNaN(homeScore) || Number.isNaN(awayScore)) continue;
+
+      let outcome: Outcome;
+      if (homeScore === awayScore) {
+        outcome = "push";
+      } else {
+        const winnerSide = homeScore > awayScore ? "home" : "away";
+
+        const sel = (p.selection || {}) as any;
+        const pickSide = String(sel.side ?? "").toLowerCase();
+
+        outcome = pickSide === winnerSide ? "win" : "loss";
+      }
+
+      const pts = pointsForPick(
+        p.american_odds != null ? Number(p.american_odds) : null,
+        outcome,
+      );
+
+      updates.push({
+        id: p.id,
+        result: outcome,
+        is_correct: outcome === "win",
+        points: pts,
+        graded_at: now,
+        resolved_at: now,
+      });
+    }
+
+    // 4) Also handle any already-graded picks missing points (safety)
+    const { data: gradedNoPoints, error: p2Err } = await sb
       .from("picks")
       .select("id, result, american_odds, points")
       .in("result", ["win", "loss", "push"])
       .is("points", null);
-    if (pErr) throw pErr;
 
-    if (!picks || picks.length === 0) {
-      return new Response(
-        JSON.stringify({
-          updated: 0,
-          message: "No picks needing point resolution.",
-        }),
-        { headers: { "Content-Type": "application/json" } },
-      );
-    }
+    if (p2Err) throw p2Err;
 
-    const updates: any[] = [];
-    const now = new Date().toISOString();
-
-    for (const p of picks as any[]) {
+    for (const p of (gradedNoPoints ?? []) as any[]) {
       const res = String(p.result || "").toLowerCase() as Outcome;
       if (!["win", "loss", "push"].includes(res)) continue;
 
@@ -101,15 +200,53 @@ serve(async (req) => {
       });
     }
 
-    if (updates.length) {
-      const { error: uErr } = await sb.from("picks").upsert(updates);
+    // 5) APPLY UPDATES — UPDATE ONLY, NO UPSERT
+    let updatedCount = 0;
+    for (const u of updates) {
+      const { id, ...rest } = u;
+      const { error: uErr, count } = await sb
+        .from("picks")
+        .update(rest)
+        .eq("id", id)
+        .select("id", { count: "exact", head: true });
+
       if (uErr) throw uErr;
+      if (count) updatedCount += count;
+    }
+
+    // 6) RECOMPUTE entries.points_total FROM picks.points
+    const { data: pickPoints, error: aggErr } = await sb
+      .from("picks")
+      .select("entry_id, points")
+      .not("points", "is", null);
+
+    if (aggErr) throw aggErr;
+
+    const totals = new Map<string, number>();
+    for (const row of (pickPoints ?? []) as any[]) {
+      if (!row.entry_id) continue;
+      const pts = Number(row.points ?? 0);
+      const cur = totals.get(row.entry_id) ?? 0;
+      totals.set(row.entry_id, cur + pts);
+    }
+
+    let entriesUpdated = 0;
+    for (const [entryId, total] of totals.entries()) {
+      const { error: eErr, count } = await sb
+        .from("entries")
+        .update({ points_total: total })
+        .eq("id", entryId)
+        .select("id", { count: "exact", head: true });
+
+      if (eErr) throw eErr;
+      if (count) entriesUpdated += count;
     }
 
     return new Response(
       JSON.stringify({
-        updated: updates.length,
-        message: "Points resolved.",
+        updated_picks: updatedCount,
+        updated_entries: entriesUpdated,
+        message: "Picks graded, points resolved, leaderboard totals updated.",
       }),
       { headers: { "Content-Type": "application/json" } },
     );
