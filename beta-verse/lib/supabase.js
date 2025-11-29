@@ -1,51 +1,18 @@
 // lib/supabase.js
 import { createClient } from "@supabase/supabase-js";
-import Constants from "expo-constants";
 
-function getExtra() {
-  return (
-    Constants?.expoConfig?.extra ??
-    Constants?.manifest2?.extra ??
-    Constants?.manifest?.extra ??
-    {}
-  );
-}
+// 🔴 IMPORTANT: use the URL + anon key from
+// Supabase Dashboard → Project Settings → API
+export const SUPABASE_URL = "https://tsorwhukmyimalruxctn.supabase.co";
 
-const extra = getExtra();
+export const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzb3J3aHVrbXlpbWFscnV4Y3RuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUzMTAyMDYsImV4cCI6MjA3MDg4NjIwNn0.yS3X1bgfwS8qu7NrTSdZIKbWkoTbMNulOD1RiW1HIMc"; // anon public key
 
-export const SUPABASE_URL =
-  extra.SUPABASE_URL ??
-  process.env.EXPO_PUBLIC_SUPABASE_URL ??
-  process.env.SUPABASE_URL ??
-  "";
+// Optional: useful if you ever manually call functions via fetch()
+export const FUNCTIONS_BASE = `${SUPABASE_URL.replace(/\/+$/, "")}/functions/v1`;
 
-export const SUPABASE_ANON_KEY =
-  extra.SUPABASE_ANON_KEY ??
-  process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ??
-  process.env.SUPABASE_ANON_KEY ??
-  "";
-
-/**
- * Edge Functions base URL
- * Priority:
- *   1) extra.FUNCTIONS_BASE / extra.FUNCTIONS_URL / env
- *   2) fall back to `${SUPABASE_URL}/functions/v1`
- */
-const rawFunctionsBase =
-  extra.FUNCTIONS_BASE ??
-  extra.FUNCTIONS_URL ??
-  process.env.EXPO_PUBLIC_FUNCTIONS_BASE ??
-  process.env.FUNCTIONS_BASE ??
-  "";
-
-let functionsBase = rawFunctionsBase.replace(/\/+$/, "");
-
-if (!functionsBase && SUPABASE_URL) {
-  // default to standard supabase pattern
-  const cleaned = SUPABASE_URL.replace(/\/+$/, "");
-  functionsBase = `${cleaned}/functions/v1`;
-}
-
-export const FUNCTIONS_BASE = functionsBase;
-
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+  },
+});

@@ -1,4 +1,3 @@
-// app/wallet/checkout-complete.tsx
 import { useEffect } from "react";
 import * as WebBrowser from "expo-web-browser";
 import { useRouter } from "expo-router";
@@ -9,8 +8,6 @@ export default function WalletCheckoutComplete() {
 
   useEffect(() => {
     WebBrowser.dismissBrowser();
-    // IMPORTANT: your tab file is app/(tabs)/wallet.tsx (lowercase),
-    // so navigate to '/(tabs)/wallet' (lowercase)
     router.replace("/(tabs)/wallet");
   }, [router]);
 

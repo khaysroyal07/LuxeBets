@@ -1,260 +1,307 @@
 // supabase/functions/resolve_results/index.ts
 // deno-lint-ignore-file no-explicit-any
+
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const FN_SECRET = Deno.env.get("FN_SECRET")!; // "luxebets2025"
 
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE);
 
-type Outcome = "win" | "loss" | "push";
+// 🔴 Make sure these match your public.pick_result enum values
+const RESULT_WIN = "win";
+const RESULT_LOSS = "loss";
+const RESULT_PUSH = "push";
 
-/**
- * POINTS HELPER
- * --------------
- * Only awards points on a WIN.
- *
- * odds <= -200  -> 1.0 pt   (big favorite)
- * -199..-120    -> 1.5 pts
- * -119..+119    -> 2.0 pts  (coin flip / default)
- * +120..+199    -> 3.0 pts  (medium dog)
- * >= +200       -> 4.0 pts  (big dog)
- */
-function pointsForPick(americanOdds: number | null, outcome: Outcome): number {
-  if (outcome !== "win") return 0;
+type GameRow = {
+  league_game_id: string;
+  sport: string;
+  game_day: string;
+  status: string;
+  home_team: string;
+  away_team: string;
+  home_score: number | null;
+  away_score: number | null;
+};
 
-  if (americanOdds == null || Number.isNaN(Number(americanOdds))) {
-    // Default coin-flip
-    return 2.0;
-  }
+type PickRow = {
+  id: string;
+  league_game_id: string | null;
+  sport: string;
+  game_day: string;
+  market: string;
+  selection: any;
+};
 
-  const odds = Number(americanOdds);
-
-  if (odds <= -200) return 1.0;
-  if (odds <= -120) return 1.5;
-  if (odds < 120) return 2.0;
-  if (odds < 200) return 3.0;
-  return 4.0;
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type, x-fn-secret",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+  };
 }
 
-/** Treat game as final if status contains "final"/"finished"/"complete" */
-function isFinalStatus(status: string | null | undefined): boolean {
+function checkSecret(req: Request): Response | null {
+  const header = req.headers.get("x-fn-secret");
+  if (!header || header !== FN_SECRET) {
+    return new Response("Forbidden", {
+      status: 403,
+      headers: corsHeaders(),
+    });
+  }
+  return null;
+}
+
+function isFinal(status: string | null | undefined): boolean {
   if (!status) return false;
   const s = status.toLowerCase();
+  // SportsDataIO sometimes uses "Final", "F/OT", etc.
   return (
     s.includes("final") ||
-    s === "finished" ||
+    s === "closed" ||
     s === "complete" ||
-    s === "completed"
+    s.startsWith("f/")
   );
 }
 
-serve(async (req) => {
-  if (req.method !== "GET" && req.method !== "POST") {
-    return new Response("Method not allowed", { status: 405 });
+/**
+ * Grade by side only (home/away), ignoring team letters ("R", "S", etc).
+ * This works for both moneyline and spread with your current data.
+ */
+function gradeSide(side: string, game: GameRow) {
+  if (game.home_score == null || game.away_score == null) return null;
+
+  const s = side.toLowerCase();
+  const homeWins = game.home_score > game.away_score;
+  const awayWins = game.away_score > game.home_score;
+
+  if (!homeWins && !awayWins) {
+    // tie -> treat as push
+    return { result: RESULT_PUSH, is_correct: false, points: 0 };
   }
 
+  if (s === "home" || s === "h") {
+    if (homeWins) {
+      return { result: RESULT_WIN, is_correct: true, points: 1 };
+    } else {
+      return { result: RESULT_LOSS, is_correct: false, points: 0 };
+    }
+  }
+
+  if (s === "away" || s === "a") {
+    if (awayWins) {
+      return { result: RESULT_WIN, is_correct: true, points: 1 };
+    } else {
+      return { result: RESULT_LOSS, is_correct: false, points: 0 };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * For totals we *don't have the line* in your selection JSON right now.
+ * To avoid "Pending forever", we mark them as a 0-point PUSH.
+ * (You can upgrade this later once you store the total line.)
+ */
+function gradeTotalPlaceholder(side: string, game: GameRow) {
+  if (game.home_score == null || game.away_score == null) return null;
+
+  // Just mark as graded, 0 points.
+  return { result: RESULT_PUSH, is_correct: false, points: 0 };
+}
+
+function computeGrade(pick: PickRow, game: GameRow) {
+  if (!isFinal(game.status)) return null;
+  if (game.home_score == null || game.away_score == null) return null;
+
+  const sel = pick.selection || {};
+  const market = String(pick.market || "").toLowerCase();
+  const side: string =
+    sel.side ??
+    sel.s ??
+    sel.bet ??
+    "";
+
+  if (!side) return null;
+
+  if (market === "ml" || market === "moneyline") {
+    return gradeSide(side, game);
+  }
+
+  if (market === "spread") {
+    // Using side (home/away), ignoring actual spread line for now.
+    return gradeSide(side, game);
+  }
+
+  if (market === "total" || market === "totals" || market === "ou") {
+    return gradeTotalPlaceholder(side, game);
+  }
+
+  // Unknown market -> skip
+  return null;
+}
+
+serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { status: 200, headers: corsHeaders() });
+  }
+
+  const forbidden = checkSecret(req);
+  if (forbidden) return forbidden;
+
   try {
-    // 1) Picks that have NOT been graded yet (result is null)
-    const { data: ungradedPicks, error: pErr } = await sb
+    // 1) Load all ungraded picks for the last 7 days
+    const daysBack = 7;
+    const sinceDate = new Date();
+    sinceDate.setUTCDate(sinceDate.getUTCDate() - daysBack);
+    const sinceISO = sinceDate.toISOString().slice(0, 10);
+
+    const { data: picks, error: picksErr } = await sb
       .from("picks")
-      .select(
-        `
-        id,
-        league_game_id,
-        sport,
-        market,
-        selection,
-        american_odds,
-        result,
-        points
-      `,
-      )
-      .is("result", null);
+      .select("id, league_game_id, sport, game_day, market, selection")
+      .is("result", null)
+      .gte("game_day", sinceISO)
+      .limit(1000);
 
-    if (pErr) throw pErr;
+    if (picksErr) {
+      console.error("load picks error", picksErr);
+      return new Response("Error loading picks", {
+        status: 500,
+        headers: corsHeaders(),
+      });
+    }
 
-    // nothing to do: still recompute totals below anyway
-    const ungraded = (ungradedPicks ?? []) as any[];
+    if (!picks || !picks.length) {
+      return new Response(
+        JSON.stringify({ ok: true, graded: 0, reason: "no ungraded picks" }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json", ...corsHeaders() },
+        },
+      );
+    }
 
-    // 2) Load all related games in one query
     const leagueIds = Array.from(
       new Set(
-        ungraded
-          .map((p) => p.league_game_id)
-          .filter((id) => !!id),
+        picks
+          .map((p: any) => p.league_game_id)
+          .filter((x: any) => typeof x === "string" && x.length > 0),
       ),
     );
 
-    let gameByLeagueId = new Map<string, any>();
-
-    if (leagueIds.length > 0) {
-      const { data: games, error: gErr } = await sb
-        .from("games")
-        .select(
-          `
-          id,
-          league_game_id,
-          sport,
-          game_day,
-          status,
-          home_score,
-          away_score
-        `,
-        )
-        .in("league_game_id", leagueIds);
-
-      if (gErr) throw gErr;
-
-      gameByLeagueId = new Map<string, any>();
-      for (const g of (games ?? []) as any[]) {
-        if (g.league_game_id) {
-          gameByLeagueId.set(String(g.league_game_id), g);
-        }
-      }
+    if (!leagueIds.length) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          graded: 0,
+          reason: "no league_game_ids on picks",
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json", ...corsHeaders() },
+        },
+      );
     }
 
-    type UpdateRow = {
+    // 2) Load the matching games
+    const { data: games, error: gamesErr } = await sb
+      .from("games")
+      .select(
+        "league_game_id, sport, game_day, status, home_team, away_team, home_score, away_score",
+      )
+      .in("league_game_id", leagueIds);
+
+    if (gamesErr) {
+      console.error("load games error", gamesErr);
+      return new Response("Error loading games", {
+        status: 500,
+        headers: corsHeaders(),
+      });
+    }
+
+    const gameMap = new Map<string, GameRow>();
+    (games ?? []).forEach((g: any) => {
+      if (g.league_game_id) {
+        gameMap.set(g.league_game_id, g as GameRow);
+      }
+    });
+
+    // 3) Grade picks
+    const updates: {
       id: string;
-      result?: Outcome;
-      is_correct?: boolean;
-      points?: number;
-      graded_at?: string;
-      resolved_at?: string;
-    };
+      result: string;
+      is_correct: boolean;
+      points: number;
+      graded_at: string;
+      resolved_at: string;
+    }[] = [];
 
-    const updates: UpdateRow[] = [];
-    const now = new Date().toISOString();
+    for (const p of picks as PickRow[]) {
+      if (!p.league_game_id) continue;
+      const g = gameMap.get(p.league_game_id);
+      if (!g) continue;
 
-    // 3) Grade each ungraded pick
-    for (const p of ungraded) {
-      const leagueGameId = p.league_game_id
-        ? String(p.league_game_id)
-        : null;
-      if (!leagueGameId) continue;
-
-      const game = gameByLeagueId.get(leagueGameId);
-      if (!game) continue; // no game row yet
-
-      if (!isFinalStatus(game.status)) continue; // game not finished
-
-      const homeScore = game.home_score != null
-        ? Number(game.home_score)
-        : NaN;
-      const awayScore = game.away_score != null
-        ? Number(game.away_score)
-        : NaN;
-
-      if (Number.isNaN(homeScore) || Number.isNaN(awayScore)) continue;
-
-      let outcome: Outcome;
-      if (homeScore === awayScore) {
-        outcome = "push";
-      } else {
-        const winnerSide = homeScore > awayScore ? "home" : "away";
-
-        const sel = (p.selection || {}) as any;
-        const pickSide = String(sel.side ?? "").toLowerCase();
-
-        outcome = pickSide === winnerSide ? "win" : "loss";
-      }
-
-      const pts = pointsForPick(
-        p.american_odds != null ? Number(p.american_odds) : null,
-        outcome,
-      );
+      const grade = computeGrade(p, g);
+      if (!grade) continue;
 
       updates.push({
         id: p.id,
-        result: outcome,
-        is_correct: outcome === "win",
-        points: pts,
-        graded_at: now,
-        resolved_at: now,
+        result: grade.result,
+        is_correct: grade.is_correct,
+        points: grade.points,
+        graded_at: new Date().toISOString(),
+        resolved_at: new Date().toISOString(),
       });
     }
 
-    // 4) Also handle any already-graded picks missing points (safety)
-    const { data: gradedNoPoints, error: p2Err } = await sb
-      .from("picks")
-      .select("id, result, american_odds, points")
-      .in("result", ["win", "loss", "push"])
-      .is("points", null);
-
-    if (p2Err) throw p2Err;
-
-    for (const p of (gradedNoPoints ?? []) as any[]) {
-      const res = String(p.result || "").toLowerCase() as Outcome;
-      if (!["win", "loss", "push"].includes(res)) continue;
-
-      const pts = pointsForPick(
-        p.american_odds != null ? Number(p.american_odds) : null,
-        res,
+    if (!updates.length) {
+      return new Response(
+        JSON.stringify({ ok: true, graded: 0, reason: "no gradeable picks" }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json", ...corsHeaders() },
+        },
       );
-
-      updates.push({
-        id: p.id,
-        points: pts,
-        resolved_at: now,
-      });
     }
 
-    // 5) APPLY UPDATES — UPDATE ONLY, NO UPSERT
+    // 4) Persist updates using UPDATE (no upsert, avoids entry_id issue)
     let updatedCount = 0;
     for (const u of updates) {
-      const { id, ...rest } = u;
-      const { error: uErr, count } = await sb
+      const { error: updErr } = await sb
         .from("picks")
-        .update(rest)
-        .eq("id", id)
-        .select("id", { count: "exact", head: true });
+        .update({
+          result: u.result,
+          is_correct: u.is_correct,
+          points: u.points,
+          graded_at: u.graded_at,
+          resolved_at: u.resolved_at,
+        })
+        .eq("id", u.id);
 
-      if (uErr) throw uErr;
-      if (count) updatedCount += count;
-    }
-
-    // 6) RECOMPUTE entries.points_total FROM picks.points
-    const { data: pickPoints, error: aggErr } = await sb
-      .from("picks")
-      .select("entry_id, points")
-      .not("points", "is", null);
-
-    if (aggErr) throw aggErr;
-
-    const totals = new Map<string, number>();
-    for (const row of (pickPoints ?? []) as any[]) {
-      if (!row.entry_id) continue;
-      const pts = Number(row.points ?? 0);
-      const cur = totals.get(row.entry_id) ?? 0;
-      totals.set(row.entry_id, cur + pts);
-    }
-
-    let entriesUpdated = 0;
-    for (const [entryId, total] of totals.entries()) {
-      const { error: eErr, count } = await sb
-        .from("entries")
-        .update({ points_total: total })
-        .eq("id", entryId)
-        .select("id", { count: "exact", head: true });
-
-      if (eErr) throw eErr;
-      if (count) entriesUpdated += count;
+      if (updErr) {
+        console.error("update single pick error", u.id, updErr);
+        continue;
+      }
+      updatedCount++;
     }
 
     return new Response(
-      JSON.stringify({
-        updated_picks: updatedCount,
-        updated_entries: entriesUpdated,
-        message: "Picks graded, points resolved, leaderboard totals updated.",
-      }),
-      { headers: { "Content-Type": "application/json" } },
+      JSON.stringify({ ok: true, graded: updatedCount }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json", ...corsHeaders() },
+      },
     );
-  } catch (err: any) {
-    console.error("resolve_results error:", err);
-    return new Response(
-      JSON.stringify({ error: err?.message ?? "Unknown error" }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
-    );
+  } catch (err) {
+    console.error("resolve_results fatal", err);
+    return new Response("Internal error", {
+      status: 500,
+      headers: corsHeaders(),
+    });
   }
 });

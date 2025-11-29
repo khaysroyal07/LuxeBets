@@ -21,7 +21,6 @@ const BG = require("@/assets/images/bgDash.png");
 const PURPLE = "#613DC1";
 const GOLD = "#FFD700";
 const BORDER = "rgba(255,255,255,0.18)";
-const DIV = "rgba(255,255,255,0.10)";
 
 type EntryStatus = "active" | "eliminated" | "winner" | "finished";
 
@@ -47,6 +46,7 @@ type PickRow = {
   line: number | null;
   result: "WIN" | "LOSS" | "PUSH" | "PENDING" | null;
   points: number | null;
+  sport: string | null; // <-- from column public.picks.sport
 };
 
 type DayInfo = {
@@ -161,37 +161,109 @@ function resultTag(pick: PickRow | null) {
   }
 }
 
-// Pretty text for the pick
+// normalize sport values from enum / text
+function normalizeSport(raw: string | null): string | null {
+  if (!raw) return null;
+  const v = raw.toLowerCase();
+  switch (v) {
+    case "nfl":
+    case "football_nfl":
+    case "americanfootball_nfl":
+    case "football":
+      return "NFL";
+    case "nba":
+    case "basketball_nba":
+    case "basketball":
+      return "NBA";
+    case "mlb":
+    case "baseball_mlb":
+    case "baseball":
+      return "MLB";
+    case "nhl":
+    case "icehockey_nhl":
+    case "hockey":
+      return "NHL";
+    case "wnba":
+    case "basketball_wnba":
+      return "WNBA";
+    default:
+      return raw.toUpperCase();
+  }
+}
+
+// Compact summary fallback
 function formatPickSummary(pick: PickRow | null) {
   if (!pick) return "No pick yet";
 
   const team = pick.team || "";
   const line = pick.line;
-  const lineStr =
-    line == null ? "" : line > 0 ? `+${line}` : `${line}`;
+  const lineStr = line == null ? "" : line > 0 ? `+${line}` : `${line}`;
 
   switch (pick.market) {
     case "ml":
-      // ex: "COWBOYS ML"
       return `${team || (pick.side === "home" ? "Home" : "Away")} ML`.toUpperCase();
     case "spread":
-      // ex: "COWBOYS +3.5"
       return `${(team ||
         (pick.side === "home" ? "Home" : "Away")
       ).toUpperCase()} ${lineStr}`.trim();
     case "total": {
-      // ex: "OVER 46.5"
       const sideLabel =
         pick.side === "over" ? "Over" : pick.side === "under" ? "Under" : "";
       return `${sideLabel.toUpperCase()} ${line ?? ""}`.trim();
     }
     default:
-      // fallback to just team / side
       if (team) return team.toUpperCase();
       if (pick.side === "home") return "HOME TEAM";
       if (pick.side === "away") return "AWAY TEAM";
       return "Pick";
   }
+}
+
+/** Rich info for UI: category pill, team name, detail line, sport */
+function buildPickInfo(pick: PickRow | null) {
+  if (!pick) return null;
+
+  const category =
+    pick.market === "ml"
+      ? "Moneyline"
+      : pick.market === "spread"
+      ? "Spread"
+      : pick.market === "total"
+      ? "Total Points"
+      : "Pick";
+
+  const teamLabel =
+    (pick.team && pick.team.trim().length > 0
+      ? pick.team.toUpperCase()
+      : pick.side === "home"
+      ? "HOME TEAM"
+      : pick.side === "away"
+      ? "AWAY TEAM"
+      : pick.side === "over"
+      ? "OVER"
+      : pick.side === "under"
+      ? "UNDER"
+      : "—") || "—";
+
+  const line = pick.line;
+  let detail = "";
+
+  if (pick.market === "spread" && line != null) {
+    const lineStr = line > 0 ? `+${line}` : `${line}`;
+    detail = `${teamLabel} ${lineStr}`;
+  } else if (pick.market === "total" && line != null) {
+    const sideLabel =
+      pick.side === "over" ? "OVER" : pick.side === "under" ? "UNDER" : "";
+    detail = `${sideLabel} ${line}`;
+  } else if (pick.market === "ml") {
+    detail = `${teamLabel} to win`;
+  } else {
+    detail = formatPickSummary(pick);
+  }
+
+  const sportLabel = pick.sport ? normalizeSport(pick.sport) : null;
+
+  return { category, teamLabel, detail, sportLabel };
 }
 
 export default function ManageEntry() {
@@ -258,7 +330,7 @@ export default function ManageEntry() {
         endISO: toLocalISO(d2),
       };
 
-      // 3) build day list
+      // 3) day list
       const dayList: DayInfo[] = [0, 1, 2].map((offset) => {
         const d = addDays(d0, offset);
         const iso = toLocalISO(d);
@@ -284,10 +356,10 @@ export default function ManageEntry() {
 
       const isoList = dayList.map((d) => d.iso);
 
-      // 4) load picks
+      // 4) load picks (IMPORTANT: select sport column)
       const { data: picks, error: pErr } = await supabase
         .from("picks")
-        .select("id, day_date, selection, result, points")
+        .select("id, day_date, sport, selection, result, points")
         .eq("entry_id", entryId)
         .in("day_date", isoList);
 
@@ -327,6 +399,11 @@ export default function ManageEntry() {
             ? null
             : Number(sel.line);
 
+        const sportCol =
+          typeof p.sport === "string" && p.sport.length > 0
+            ? p.sport
+            : null;
+
         pMap.set(String(p.day_date), {
           id: String(p.id),
           day_date: String(p.day_date),
@@ -341,6 +418,7 @@ export default function ManageEntry() {
               : p.points == null
               ? null
               : Number(p.points),
+          sport: sportCol,
         });
       });
 
@@ -377,6 +455,11 @@ export default function ManageEntry() {
   );
 
   const selectedPoints = selectedDay?.pick?.points ?? 0;
+
+  const pickInfo = useMemo(
+    () => buildPickInfo(selectedDay?.pick ?? null),
+    [selectedDay?.pick]
+  );
 
   if (!entryId) {
     return (
@@ -532,12 +615,43 @@ export default function ManageEntry() {
                 })()}
               </View>
 
-              {selectedDay.pick ? (
+              {selectedDay.pick && pickInfo ? (
                 <View style={styles.pickBody}>
-                  <Text style={styles.pickLabel}>Your pick</Text>
-                  <Text style={styles.pickValue}>
-                    {formatPickSummary(selectedDay.pick)}
-                  </Text>
+                  <View style={styles.pickHeaderRow}>
+                    <Text style={styles.pickLabel}>Your pick</Text>
+                    <View style={styles.categoryPill}>
+                      <Text style={styles.categoryPillText}>
+                        {pickInfo.category}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Sport row */}
+                  {pickInfo.sportLabel && (
+                    <View style={styles.sportRow}>
+                      <Text style={styles.sportLabel}>Sport</Text>
+                      <View style={styles.sportPill}>
+                        <Text style={styles.sportPillText}>
+                          {pickInfo.sportLabel}
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+
+                  <View style={styles.pickMetaRow}>
+                    <View style={styles.pickMetaBox}>
+                      <Text style={styles.pickMetaLabel}>Team picked</Text>
+                      <Text style={styles.pickMetaValue}>
+                        {pickInfo.teamLabel}
+                      </Text>
+                    </View>
+                    <View style={styles.pickMetaBox}>
+                      <Text style={styles.pickMetaLabel}>Selection</Text>
+                      <Text style={styles.pickMetaValue}>
+                        {pickInfo.detail}
+                      </Text>
+                    </View>
+                  </View>
 
                   <View style={styles.pickPointsRow}>
                     <Text style={styles.pickPointsLabel}>Awarded points</Text>
@@ -799,19 +913,89 @@ const styles = StyleSheet.create({
   pickBody: {
     marginTop: RFValue(4),
   },
+  pickHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: RFValue(8),
+  },
   pickLabel: {
     color: "rgba(255,255,255,0.7)",
     fontSize: RFValue(10),
     textTransform: "uppercase",
     letterSpacing: 0.7,
-    marginBottom: RFValue(2),
   },
-  pickValue: {
-    color: "#fff",
-    fontWeight: "900",
-    fontSize: RFValue(13),
+
+  categoryPill: {
+    paddingHorizontal: RFValue(10),
+    paddingVertical: RFValue(4),
+    borderRadius: RFValue(999),
+    backgroundColor: "rgba(97,61,193,0.35)",
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.7)",
+  },
+  categoryPillText: {
+    fontSize: RFValue(10),
+    fontWeight: "700",
+    color: GOLD,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+
+  sportRow: {
+    flexDirection: "row",
+    alignItems: "center",
     marginBottom: RFValue(8),
   },
+  sportLabel: {
+    color: "rgba(148,163,184,0.95)",
+    fontSize: RFValue(9),
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginRight: RFValue(6),
+  },
+  sportPill: {
+    paddingHorizontal: RFValue(10),
+    paddingVertical: RFValue(3),
+    borderRadius: RFValue(999),
+    backgroundColor: "rgba(15,23,42,0.9)",
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.7)",
+  },
+  sportPillText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: RFValue(10),
+    letterSpacing: 0.6,
+  },
+
+  pickMetaRow: {
+    flexDirection: "row",
+    marginBottom: RFValue(8),
+  },
+  pickMetaBox: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.9)",
+    borderRadius: RFValue(12),
+    paddingHorizontal: RFValue(10),
+    paddingVertical: RFValue(8),
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.5)",
+    marginRight: RFValue(8),
+  },
+  pickMetaLabel: {
+    color: "rgba(148,163,184,0.95)",
+    fontSize: RFValue(9),
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginBottom: RFValue(2),
+  },
+  pickMetaValue: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: RFValue(12),
+  },
+
   pickPointsRow: {
     flexDirection: "row",
     justifyContent: "space-between",

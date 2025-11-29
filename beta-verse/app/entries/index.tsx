@@ -23,7 +23,7 @@ const GOLD = "#FFD700";
 const BORDER = "rgba(255,255,255,0.18)";
 const DIV = "rgba(255,255,255,0.10)";
 
-type EntryStatus = "active" | "eliminated" | "winner" | "finished";
+type EntryStatus = "active" | "winner" | "finished";
 type FilterKey = "all" | EntryStatus;
 
 type EntryCard = {
@@ -31,7 +31,7 @@ type EntryCard = {
   tournamentId: string;
   fee: number;
   startISO: string; // YYYY-MM-DD
-  endISO: string;   // YYYY-MM-DD
+  endISO: string; // YYYY-MM-DD
   status: EntryStatus;
   planetName: string;
 };
@@ -72,12 +72,6 @@ function pillDef(status: EntryStatus) {
         text: "Active",
         dot: "#22e58b",
         bg: "rgba(34,229,139,0.16)",
-      };
-    case "eliminated":
-      return {
-        text: "Eliminated",
-        dot: "#ff5e5e",
-        bg: "rgba(255,94,94,0.18)",
       };
     case "winner":
       return {
@@ -139,11 +133,10 @@ export default function EntriesIndex() {
       return;
     }
 
-const { data: trows, error: tErr } = await supabase
-  .from("tournaments")
-  .select("id, start_date, end_date, entry_fee_cents, title")
-  .in("id", tIds);
-
+    const { data: trows, error: tErr } = await supabase
+      .from("tournaments")
+      .select("id, start_date, end_date, entry_fee_cents, title")
+      .in("id", tIds);
 
     if (tErr) {
       Alert.alert("Error", tErr.message);
@@ -161,13 +154,17 @@ const { data: trows, error: tErr } = await supabase
       if (!t) continue;
 
       const d0 = parseLocalISO(String(t.start_date));
-      // your tournaments are 3 days → start_date + 2
+      // tournaments are 3 days → start_date + 2
       const d2 = addDays(d0, 2);
 
       let st: EntryStatus = "active";
-      if (e.status === "eliminated") st = "eliminated";
-      else if (e.status === "winner") st = "winner";
-      else if (now > d2) st = "finished";
+
+      if (e.status === "winner") {
+        st = "winner";
+      } else if (now > d2 || e.status === "eliminated") {
+        // treat any old "eliminated" rows as finished
+        st = "finished";
+      }
 
       rows.push({
         id: String(e.id),
@@ -202,11 +199,11 @@ const { data: trows, error: tErr } = await supabase
   const summary = useMemo(() => {
     const total = cards.length;
     const active = cards.filter((c) => c.status === "active").length;
+    const winners = cards.filter((c) => c.status === "winner").length;
     const finished = cards.filter(
       (c) => c.status === "finished" || c.status === "winner"
     ).length;
-    const eliminated = cards.filter((c) => c.status === "eliminated").length;
-    return { total, active, finished, eliminated };
+    return { total, active, finished, winners };
   }, [cards]);
 
   const onRefresh = useCallback(async () => {
@@ -256,8 +253,8 @@ const { data: trows, error: tErr } = await supabase
             <Text style={styles.summaryLabel}>Finished</Text>
           </View>
           <View style={styles.summaryPill}>
-            <Text style={styles.summaryNumber}>{summary.eliminated}</Text>
-            <Text style={styles.summaryLabel}>Eliminated</Text>
+            <Text style={styles.summaryNumber}>{summary.winners}</Text>
+            <Text style={styles.summaryLabel}>Winners</Text>
           </View>
         </View>
       </LinearGradient>
@@ -265,7 +262,7 @@ const { data: trows, error: tErr } = await supabase
       {/* Filter chips */}
       <View style={styles.filterBar}>
         {(
-          ["all", "active", "eliminated", "winner", "finished"] as FilterKey[]
+          ["all", "active", "winner", "finished"] as FilterKey[]
         ).map((k) => {
           const active = filter === k;
           return (

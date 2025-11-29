@@ -39,15 +39,22 @@ type Tournament = {
   entry_fee_cents?: number | null;
   status?: string | null;
   week_label?: string | null;
-  start_date?: string | null;
+  start_date?: string | null; // Sunday of tournament week
 };
 
 type WeekOption = {
-  key: string;   // internal key (week_label or start_date)
-  label: string; // what we show in the UI
+  key: string; // sunday ISO: "2025-11-16"
+  label: string; // "Nov 16"
+  monthKey: string; // "2025-11"
+  monthLabel: string; // "Nov 2025"
 };
 
-const TARGET_POINTS = 20; // X = 20 points
+type MonthOption = {
+  key: string;
+  label: string;
+};
+
+const TARGET_POINTS = 20;
 
 const tierLabel = (pts: number) => {
   if (pts >= TARGET_POINTS) return "100% Pool Tier";
@@ -73,15 +80,18 @@ export default function LeaderboardScreen() {
 
   const [weekOptions, setWeekOptions] = useState<WeekOption[]>([]);
   const [selectedWeekKey, setSelectedWeekKey] = useState<string | null>(null);
+  const [selectedMonthKey, setSelectedMonthKey] = useState<string | null>(null);
+
+  const [weekMenuOpen, setWeekMenuOpen] = useState(false);
 
   const title = useMemo(() => "Tournament Leaderboard", []);
 
-  /* ---------------- Fetch tournaments & build week list ---------------- */
+  /* -------- Fetch tournaments & build week + month lists -------- */
   useEffect(() => {
     let on = true;
     (async () => {
       try {
-        const todayStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+        const todayStr = new Date().toISOString().slice(0, 10);
 
         const { data, error } = await supabase
           .from("tournaments")
@@ -97,8 +107,8 @@ export default function LeaderboardScreen() {
               created_at
             `
           )
-          .lte("start_date", todayStr) // only past + current weeks
-          .order("start_date", { ascending: false }); // newest week first
+          .lte("start_date", todayStr) // remove this line if you want future weeks too
+          .order("start_date", { ascending: false });
 
         if (error) throw error;
         if (!on) return;
@@ -106,27 +116,49 @@ export default function LeaderboardScreen() {
         const all = (data || []) as Tournament[];
         setTournaments(all);
 
-        // Build distinct weeks from newest to oldest
         const weeksMap = new Map<string, WeekOption>();
 
         for (const t of all) {
-          const key = t.week_label || t.start_date || "";
-          if (!key) continue;
-          if (!weeksMap.has(key)) {
-            // For now use week_label if present, otherwise the start_date
-            weeksMap.set(key, {
-              key,
-              label: t.week_label || key,
-            });
-          }
+          if (!t.start_date) continue;
+          const iso = t.start_date;
+          if (weeksMap.has(iso)) continue;
+
+          const dt = new Date(`${iso}T00:00:00Z`);
+          const monthKey = `${dt.getFullYear()}-${String(
+            dt.getMonth() + 1
+          ).padStart(2, "0")}`;
+          const monthLabel = dt.toLocaleDateString("en-US", {
+            month: "short",
+            year: "numeric",
+          });
+          const label = dt.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+          });
+
+          weeksMap.set(iso, {
+            key: iso,
+            label,
+            monthKey,
+            monthLabel,
+          });
         }
 
-        const weeks = Array.from(weeksMap.values());
+        const weeks = Array.from(weeksMap.values()).sort((a, b) =>
+          b.key.localeCompare(a.key)
+        );
         setWeekOptions(weeks);
 
-        // Default selected week = newest
-        if (!selectedWeekKey && weeks[0]) {
+        if (weeks[0]) {
           setSelectedWeekKey(weeks[0].key);
+          setSelectedMonthKey(weeks[0].monthKey);
+
+          const weekTournaments = all.filter(
+            (t) => t.start_date === weeks[0].key
+          );
+          if (weekTournaments[0]) {
+            setSelectedTid(weekTournaments[0].id);
+          }
         }
       } catch (e: any) {
         console.warn("tournaments fetch error", e);
@@ -138,36 +170,66 @@ export default function LeaderboardScreen() {
     return () => {
       on = false;
     };
-    // we intentionally ignore selectedWeekKey here so it doesn't refetch
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* ---------------- Tournaments for the selected week ---------------- */
+  /* -------- Derived months & tournaments for selected week -------- */
+  const monthOptions: MonthOption[] = useMemo(() => {
+    const map = new Map<string, MonthOption>();
+    for (const w of weekOptions) {
+      if (!map.has(w.monthKey)) {
+        map.set(w.monthKey, { key: w.monthKey, label: w.monthLabel });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => b.key.localeCompare(a.key));
+  }, [weekOptions]);
+
   const tournamentsForWeek = useMemo(() => {
     if (!selectedWeekKey) return [];
-    return tournaments.filter(
-      (t) => (t.week_label || t.start_date) === selectedWeekKey
-    );
+    return tournaments.filter((t) => t.start_date === selectedWeekKey);
   }, [tournaments, selectedWeekKey]);
 
-  // Ensure selectedTid always belongs to the current week
+  /* -------- Week selection handler -------- */
+  const handleWeekSelect = (week: WeekOption) => {
+    setSelectedWeekKey(week.key);
+    setSelectedMonthKey(week.monthKey);
+    setWeekMenuOpen(false);
+
+    const weekTournaments = tournaments.filter(
+      (t) => t.start_date === week.key
+    );
+    if (weekTournaments[0]) {
+      setSelectedTid(weekTournaments[0].id);
+    } else {
+      setSelectedTid(null);
+      setRows([]);
+    }
+  };
+
+  // keep selectedTid inside the selected week
   useEffect(() => {
     if (!tournamentsForWeek.length) return;
 
     const existsInWeek = tournamentsForWeek.some((t) => t.id === selectedTid);
-
     if (!selectedTid || !existsInWeek) {
       setSelectedTid(tournamentsForWeek[0].id);
     }
   }, [tournamentsForWeek, selectedTid]);
 
-  /* ---------------- Fetch leaderboard for selected tournament ---------------- */
+  /* -------- Fetch leaderboard by week + optional tournament -------- */
   useEffect(() => {
     let on = true;
-
     (async () => {
       try {
-        if (!selectedTid) {
+        if (!selectedWeekKey) {
+          setRows([]);
+          return;
+        }
+
+        const weekTournamentIds = tournaments
+          .filter((t) => t.start_date === selectedWeekKey)
+          .map((t) => t.id);
+
+        if (!weekTournamentIds.length) {
           setRows([]);
           return;
         }
@@ -175,11 +237,13 @@ export default function LeaderboardScreen() {
         setLoading(true);
         setErrorMsg("");
 
-        const tId = String(selectedTid);
+        const idsFilter =
+          selectedTid && weekTournamentIds.includes(selectedTid)
+            ? [selectedTid]
+            : weekTournamentIds;
 
         let data: any[] | null = null;
 
-        // Try with profiles join (if FK exists)
         const { data: dataWithProfiles, error: errorWithProfiles } =
           await supabase
             .from("entries")
@@ -188,28 +252,23 @@ export default function LeaderboardScreen() {
               user_id,
               points_total,
               status,
+              tournament_id,
               profiles:profiles!entries_user_id_fkey (
                 id,
                 username,
                 avatar_url
               )
             `)
-            .eq("tournament_id", tId)
+            .in("tournament_id", idsFilter)
             .order("points_total", { ascending: false });
 
         if (errorWithProfiles) {
-          // If relationship not in schema cache yet, fall back to simple query
           if (errorWithProfiles.code === "PGRST200") {
-            console.warn(
-              "No FK relationship entries -> profiles in schema; falling back to basic select",
-              errorWithProfiles
-            );
             const { data: basicData, error: basicError } = await supabase
               .from("entries")
-              .select("id, user_id, points_total, status")
-              .eq("tournament_id", tId)
+              .select("id, user_id, points_total, status, tournament_id")
+              .in("tournament_id", idsFilter)
               .order("points_total", { ascending: false });
-
             if (basicError) throw basicError;
             data = basicData ?? [];
           } else {
@@ -239,22 +298,12 @@ export default function LeaderboardScreen() {
         if (on) setLoading(false);
       }
     })();
-
     return () => {
       on = false;
     };
-  }, [selectedTid]);
+  }, [selectedWeekKey, selectedTid, tournaments]);
 
-  /* ---------------- Helpers ---------------- */
-
-  const currentWeekOption = useMemo(
-    () =>
-      selectedWeekKey
-        ? weekOptions.find((w) => w.key === selectedWeekKey) || null
-        : null,
-    [weekOptions, selectedWeekKey]
-  );
-
+  /* -------- Helpers -------- */
   const currentTournament = useMemo(
     () =>
       tournamentsForWeek.find((t) => t.id === selectedTid) ||
@@ -269,8 +318,12 @@ export default function LeaderboardScreen() {
       "Current Tournament"
     : "Current Tournament";
 
-  if (loading && !selectedTid && !tournaments.length) {
-    // initial load
+  const selectedWeek = weekOptions.find((w) => w.key === selectedWeekKey);
+  const selectedWeekLabel = selectedWeek
+    ? `${selectedWeek.label} (${selectedWeek.monthLabel})`
+    : "Select week";
+
+  if (loading && !selectedWeekKey && !tournaments.length) {
     return (
       <View style={styles.center}>
         <ActivityIndicator color={PURPLE} size="large" />
@@ -298,38 +351,28 @@ export default function LeaderboardScreen() {
       <View style={styles.headerCard}>
         <Text style={styles.headerTitle}>Star Points Ranking</Text>
 
-        {/* Week selector row */}
-        {weekOptions.length > 0 && (
-          <View style={styles.weekRow}>
-            <Text style={styles.headerText}>Week:</Text>
-            <View style={styles.weekPillsWrap}>
-              {weekOptions.map((w) => {
-                const selected = w.key === selectedWeekKey;
-                return (
-                  <TouchableOpacity
-                    key={w.key}
-                    onPress={() => setSelectedWeekKey(w.key)}
-                    activeOpacity={0.9}
-                    style={[
-                      styles.weekPill,
-                      selected && styles.weekPillSelected,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.weekPillText,
-                        selected && styles.weekPillTextSelected,
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {w.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </View>
-        )}
+        {/* Week dropdown trigger */}
+        <TouchableOpacity
+          activeOpacity={0.9}
+          style={styles.dropdownTrigger}
+          onPress={() => setWeekMenuOpen(true)}
+        >
+          <Ionicons
+            name="calendar"
+            size={RFValue(14)}
+            color={GOLD}
+            style={{ marginRight: RFValue(4) }}
+          />
+          <Text style={styles.dropdownPrefix}>Week:</Text>
+          <Text style={styles.dropdownLabel} numberOfLines={1}>
+            {selectedWeekLabel}
+          </Text>
+          <Ionicons
+            name={weekMenuOpen ? "chevron-up" : "chevron-down"}
+            size={RFValue(14)}
+            color="#fff"
+          />
+        </TouchableOpacity>
 
         <Text style={styles.headerText}>
           Planet:{" "}
@@ -346,16 +389,12 @@ export default function LeaderboardScreen() {
           <Text style={{ color: "#fff" }}>total points</Text>, not survival.
         </Text>
 
-        {/* Planet / tournament filter pills for this week */}
+        {/* Planet / tournament filter pills */}
         {tournamentsForWeek.length > 0 && (
           <View style={styles.planetRow}>
             {tournamentsForWeek.map((t) => {
               const label =
-                t.planet_name ||
-                t.tier ||
-                t.week_label ||
-                "Tournament";
-
+                t.planet_name || t.tier || t.week_label || "Tournament";
               const selected = selectedTid === t.id;
               return (
                 <TouchableOpacity
@@ -401,6 +440,64 @@ export default function LeaderboardScreen() {
         </View>
       </View>
 
+      {/* Week selection overlay menu */}
+      {weekMenuOpen && (
+        <View style={styles.dropdownOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFillObject}
+            activeOpacity={1}
+            onPress={() => setWeekMenuOpen(false)}
+          />
+          <View style={styles.dropdownCard}>
+            <Text style={styles.dropdownTitle}>Select tournament week</Text>
+            <FlatList
+              data={monthOptions}
+              keyExtractor={(m) => m.key}
+              renderItem={({ item: month }) => {
+                const weeksInMonth = weekOptions.filter(
+                  (w) => w.monthKey === month.key
+                );
+                if (!weeksInMonth.length) return null;
+
+                return (
+                  <View style={styles.dropdownMonthBlock}>
+                    <View style={styles.dropdownMonthHeader}>
+                      <Text style={styles.dropdownMonthLabel}>
+                        {month.label}
+                      </Text>
+                    </View>
+                    {weeksInMonth.map((w) => {
+                      const selected = w.key === selectedWeekKey;
+                      return (
+                        <TouchableOpacity
+                          key={w.key}
+                          style={[
+                            styles.dropdownWeekRow,
+                            selected && styles.dropdownWeekRowSelected,
+                          ]}
+                          activeOpacity={0.9}
+                          onPress={() => handleWeekSelect(w)}
+                        >
+                          <View style={styles.dropdownWeekAccent} />
+                          <Text
+                            style={[
+                              styles.dropdownWeekText,
+                              selected && styles.dropdownWeekTextSelected,
+                            ]}
+                          >
+                            {w.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                );
+              }}
+            />
+          </View>
+        </View>
+      )}
+
       {/* Error card */}
       {!!errorMsg && (
         <View style={styles.errorCard}>
@@ -419,7 +516,7 @@ export default function LeaderboardScreen() {
         ) : rows.length === 0 ? (
           <View style={styles.emptyWrap}>
             <Text style={{ color: "#ccc", textAlign: "center" }}>
-              No entries yet for this tournament.
+              No entries yet for this week.
             </Text>
           </View>
         ) : (
@@ -528,40 +625,33 @@ const styles = StyleSheet.create({
   },
   headerText: { color: "#ccc", fontSize: RFValue(11), marginBottom: RFValue(2) },
 
-  // week filter
-  weekRow: {
+  /* week dropdown trigger */
+  dropdownTrigger: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: RFValue(4),
-    gap: RFValue(6),
-  },
-  weekPillsWrap: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: RFValue(6),
-    flex: 1,
-  },
-  weekPill: {
-    paddingHorizontal: RFValue(8),
-    paddingVertical: RFValue(3),
+    alignSelf: "flex-start",
+    paddingHorizontal: RFValue(10),
+    paddingVertical: RFValue(6),
     borderRadius: RFValue(999),
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.16)",
-    backgroundColor: "rgba(255,255,255,0.04)",
+    borderColor: "rgba(255,255,255,0.22)",
+    backgroundColor: "rgba(5,5,20,0.9)",
+    marginBottom: RFValue(8),
   },
-  weekPillSelected: {
-    borderColor: GOLD,
-    backgroundColor: "rgba(255,215,0,0.18)",
+  dropdownPrefix: {
+    color: "#ccc",
+    fontSize: RFValue(11),
+    marginRight: RFValue(4),
   },
-  weekPillText: {
-    color: "#eee",
-    fontSize: RFValue(10),
+  dropdownLabel: {
+    color: "#fff",
+    fontSize: RFValue(11),
     fontWeight: "700",
-  },
-  weekPillTextSelected: {
-    color: GOLD,
+    maxWidth: RFValue(180),
+    marginRight: RFValue(4),
   },
 
+  /* planet pills */
   planetRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -590,6 +680,7 @@ const styles = StyleSheet.create({
     color: GOLD,
   },
 
+  /* tier legend */
   tiersRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -611,6 +702,79 @@ const styles = StyleSheet.create({
     marginRight: RFValue(6),
   },
   tierTxt: { color: "#eee", fontSize: RFValue(10) },
+
+  /* dropdown overlay */
+  dropdownOverlay: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: RFValue(110), // sit under header
+    bottom: 0,
+    alignItems: "center",
+    zIndex: 50,
+  },
+  dropdownCard: {
+    width: "88%",
+    maxHeight: "55%",
+    backgroundColor: "rgba(6,6,18,0.98)",
+    borderRadius: RFValue(18),
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    padding: RFValue(12),
+    shadowColor: "#000",
+    shadowOpacity: 0.9,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 12 },
+  },
+  dropdownTitle: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: RFValue(13),
+    marginBottom: RFValue(8),
+  },
+  dropdownMonthBlock: {
+    marginBottom: RFValue(8),
+  },
+  dropdownMonthHeader: {
+    backgroundColor: "rgba(255,215,0,0.08)",
+    borderRadius: RFValue(999),
+    paddingVertical: RFValue(4),
+    paddingHorizontal: RFValue(8),
+    alignSelf: "flex-start",
+    marginBottom: RFValue(4),
+  },
+  dropdownMonthLabel: {
+    color: GOLD,
+    fontWeight: "700",
+    fontSize: RFValue(11),
+  },
+  dropdownWeekRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: RFValue(6),
+    paddingHorizontal: RFValue(8),
+    borderRadius: RFValue(12),
+    marginBottom: RFValue(4),
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  dropdownWeekRowSelected: {
+    backgroundColor: "rgba(255,215,0,0.15)",
+  },
+  dropdownWeekAccent: {
+    width: RFValue(3),
+    height: RFValue(16),
+    borderRadius: RFValue(2),
+    marginRight: RFValue(8),
+    backgroundColor: "rgba(255,255,255,0.2)",
+  },
+  dropdownWeekText: {
+    color: "#eee",
+    fontSize: RFValue(11),
+    fontWeight: "600",
+  },
+  dropdownWeekTextSelected: {
+    color: GOLD,
+  },
 
   errorCard: {
     marginTop: RFValue(10),

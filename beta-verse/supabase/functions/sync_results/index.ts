@@ -1,4 +1,4 @@
-// supabase/functions/sync_games/index.ts
+// supabase/functions/sync_results/index.ts
 // deno-lint-ignore-file no-explicit-any
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -7,307 +7,327 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const SDIO_KEY = Deno.env.get("SPORTSDATAIO_KEY") || "";
-const FN_SECRET = Deno.env.get("FN_SECRET") || "";
+const FN_SECRET = Deno.env.get("FN_SECRET")!; // "luxebets2025"
+const SDIO_KEY = Deno.env.get("SPORTSDATAIO_KEY")!;
 
-/**
- * Comma-separated list in env like: "NFL,NBA,MLB,NHL,WNBA"
- * You can turn leagues on/off here without code changes.
- */
-const ENABLED_SPORTS_ENV = (Deno.env.get("SPORTS_ENABLED") ?? "NFL,NBA")
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
+const sb = createClient(SUPABASE_URL, SERVICE_ROLE);
 
-const sb = createClient(SUPABASE_URL, SERVICE_ROLE, {
-  auth: { persistSession: false },
-});
+// All leagues you care about right now
+type SportKey = "nba" | "nfl" | "mlb" | "nhl" | "wnba";
+const ALL_SPORTS: SportKey[] = ["nba", "nfl", "mlb", "nhl", "wnba"];
 
-type SportKey = "nfl" | "nba" | "mlb" | "nhl" | "wnba";
+const SDIO_BASE = "https://api.sportsdata.io/v3";
 
-const ALL_SPORTS: SportKey[] = ["nfl", "nba", "mlb", "nhl", "wnba"];
-
-const SPORT_PATH: Record<SportKey, string> = {
-  nfl: "nfl",
-  nba: "nba",
-  mlb: "mlb",
-  nhl: "nhl",
-  wnba: "wnba",
-};
-
-/* ---------- tiny helpers ---------- */
-
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-fn-secret",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-};
-
-function json(body: any, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      ...CORS,
-    },
-  });
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type, x-fn-secret",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
 }
 
-function checkAuth(req: Request): Response | null {
-  if (!FN_SECRET) return null;
-  const hdr =
-    req.headers.get("x-fn-secret") ?? req.headers.get("X-Fn-Secret");
-  if (hdr !== FN_SECRET) {
-    return json({ ok: false, error: "Forbidden" }, 401);
+function checkSecret(req: Request): Response | null {
+  const header = req.headers.get("x-fn-secret");
+  if (!header || header !== FN_SECRET) {
+    return new Response("Forbidden", {
+      status: 403,
+      headers: corsHeaders(),
+    });
   }
   return null;
 }
 
-function toDayISO(d: Date | string): string {
-  const dt = typeof d === "string" ? new Date(d) : d;
-  const y = dt.getUTCFullYear();
-  const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(dt.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
+const toISODate = (d: Date) => d.toISOString().slice(0, 10);
 
-const MONTHS_ABBR = [
-  "JAN",
-  "FEB",
-  "MAR",
-  "APR",
-  "MAY",
-  "JUN",
-  "JUL",
-  "AUG",
-  "SEP",
-  "OCT",
-  "NOV",
-  "DEC",
-];
-
-function toSDIODate(dayISO: string): string {
-  const d = new Date(dayISO + "T00:00:00Z");
-  return `${d.getUTCFullYear()}-${
-    MONTHS_ABBR[d.getUTCMonth()]
-  }-${String(d.getUTCDate()).padStart(2, "0")}`;
-}
-
-/* ---------- SportsDataIO fetch + normalize ---------- */
-
-async function fetchSDIOGames(
-  sport: SportKey,
-  dayISO: string,
-): Promise<any[]> {
-  if (!SDIO_KEY) return [];
-  const base = `https://api.sportsdata.io/v3/${SPORT_PATH[sport]}/scores/json`;
-  const d = encodeURIComponent(toSDIODate(dayISO));
-
-  const urls = [
-    `${base}/ScoresByDate/${d}?key=${SDIO_KEY}`,
-    `${base}/GamesByDate/${d}?key=${SDIO_KEY}`,
-  ];
-
-  for (const url of urls) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        console.log(
-          "[sync_games] SDIO error",
-          sport,
-          dayISO,
-          res.status,
-          txt.slice(0, 200),
-        );
-        continue;
-      }
-      const json = await res.json();
-      if (Array.isArray(json) && json.length) return json;
-    } catch (err) {
-      console.log("[sync_games] fetch failed", sport, dayISO, String(err));
-    }
+/** Map sport key to SDIO path segment */
+function sportPath(sport: SportKey): string {
+  switch (sport) {
+    case "nba":
+      return "nba";
+    case "nfl":
+      return "nfl";
+    case "mlb":
+      return "mlb";
+    case "nhl":
+      return "nhl";
+    case "wnba":
+      return "wnba";
+    default:
+      return sport;
   }
-
-  return [];
-}
-
-function normalizeGame(
-  sport: SportKey,
-  g: any,
-  dayISO: string,
-) {
-  const id = String(
-    g?.GameID ??
-      g?.GameId ??
-      g?.GameKey ??
-      g?.GlobalGameId ??
-      `${g?.HomeTeam}-${g?.AwayTeam}-${g?.Date}`,
-  );
-
-  const dateStr = g?.Date ?? g?.Day ?? g?.DateTime;
-  const startUtc = dateStr ? new Date(dateStr).toISOString() : null;
-
-  const status = String(g?.Status ?? g?.GameStatus ?? "").toLowerCase();
-
-  const hs =
-    g?.HomeTeamScore ??
-    g?.HomeScore ??
-    g?.HomeTeamPoints ??
-    g?.HomeTeamRuns ??
-    null;
-  const as =
-    g?.AwayTeamScore ??
-    g?.AwayScore ??
-    g?.AwayTeamPoints ??
-    g?.AwayTeamRuns ??
-    null;
-
-  return {
-    league_game_id: id,
-    sport,
-    game_day: dayISO,
-    start_time_utc: startUtc,
-    home_team: g?.HomeTeam ?? null,
-    away_team: g?.AwayTeam ?? null,
-    status,
-    final_home_score: hs,
-    final_away_score: as,
-  };
 }
 
 /**
- * Look at picks for that date, find which sports actually have pending picks.
- * Then intersect with ENABLED_SPORTS_ENV so we don't call leagues you don't pay for.
+ * Fetch games + scores for given sport + date from SportsDataIO.
+ * Uses GamesByDate-style endpoints:
+ *   /{sport}/scores/json/GamesByDate/YYYY-MMM-DD
  */
-async function detectSportsForDay(dayISO: string): Promise<SportKey[]> {
-  const { data, error } = await sb
-    .from("picks")
-    .select("sport")
-    .eq("day_date", dayISO)
-    .is("result", null);
+async function fetchGamesForDay(
+  sport: SportKey,
+  dayISO: string,
+): Promise<any[]> {
+  const d = new Date(dayISO);
+  const year = d.getUTCFullYear();
+  const monthNames = [
+    "JAN",
+    "FEB",
+    "MAR",
+    "APR",
+    "MAY",
+    "JUN",
+    "JUL",
+    "AUG",
+    "SEP",
+    "OCT",
+    "NOV",
+    "DEC",
+  ];
+  const dateStr = `${year}-${monthNames[d.getUTCMonth()]}-${String(
+    d.getUTCDate(),
+  ).padStart(2, "0")}`;
 
-  if (error) {
-    console.error("[sync_games] detectSportsForDay error", error);
+  const path = sportPath(sport);
+  const url = `${SDIO_BASE}/${path}/scores/json/GamesByDate/${dateStr}`;
+
+  const res = await fetch(url, {
+    headers: {
+      "Ocp-Apim-Subscription-Key": SDIO_KEY,
+    },
+  });
+
+  // Handle "not authorized / not available" gracefully: just log and return []
+  if (res.status === 401 || res.status === 403 || res.status === 404) {
+    const txt = await res.text().catch(() => "");
+    console.error("SportsDataIO auth/availability issue", {
+      sport,
+      dayISO,
+      status: res.status,
+      txt,
+    });
     return [];
   }
 
-  const used = new Set<string>();
-  (data ?? []).forEach((row: any) => {
-    if (row.sport) used.add(String(row.sport).toLowerCase());
-  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    console.error("SportsDataIO error", { sport, dayISO, status: res.status, txt });
+    throw new Error(`SportsDataIO error ${sport} ${dayISO} ${res.status}`);
+  }
 
-  const enabled = new Set(ENABLED_SPORTS_ENV);
+  const data = (await res.json()) as any[];
+  return data;
+}
 
-  const result: SportKey[] = [];
-  for (const s of ALL_SPORTS) {
-    if (used.has(s) && enabled.has(s)) {
-      result.push(s);
+async function upsertGamesForDay(
+  sport: SportKey,
+  dayISO: string,
+): Promise<number> {
+  const apiGames = await fetchGamesForDay(sport, dayISO);
+  if (!apiGames.length) return 0;
+
+  const rows = apiGames
+    .map((g) => {
+      const leagueGameId = String(g.GameID ?? g.GlobalGameID ?? "");
+      if (!leagueGameId) return null;
+
+      const status =
+        (g.Status ?? "").toString().toLowerCase().trim() || "scheduled";
+      const gameDay = (g.Day ?? g.Date ?? dayISO).slice(0, 10);
+
+      return {
+        league_game_id: leagueGameId,
+        sport,
+        game_day: gameDay,
+        start_time_utc: g.DateTime ? new Date(g.DateTime).toISOString() : null,
+        home_team: g.HomeTeam ?? "",
+        away_team: g.AwayTeam ?? "",
+        status,
+        home_score:
+          typeof g.HomeTeamScore === "number" ? g.HomeTeamScore : null,
+        away_score:
+          typeof g.AwayTeamScore === "number" ? g.AwayTeamScore : null,
+        provider: "sportsdataio",
+        league: g.SeasonType ? String(g.SeasonType) : null,
+        season: g.Season ? String(g.Season) : null,
+      };
+    })
+    .filter((r) => r && r.home_team && r.away_team) as any[];
+
+  if (!rows.length) return 0;
+
+  const { error } = await sb
+    .from("games")
+    .upsert(rows, { onConflict: "league_game_id" });
+
+  if (error) {
+    console.error("upsert games error", sport, dayISO, error);
+    throw error;
+  }
+
+  return rows.length;
+}
+
+/**
+ * Targeted mode: look at picks with result IS NULL and league_game_id NOT NULL,
+ * and only call SportsDataIO for (sport, game_day) combos that actually have
+ * pending picks. This dramatically cuts down API calls.
+ */
+async function targetedSync(daysBack: number) {
+  const since = new Date();
+  since.setUTCDate(since.getUTCDate() - daysBack);
+  const sinceISO = toISODate(since);
+
+  // Distinct sport/game_day where we have pending picks with a league_game_id
+  const { data, error } = await sb
+    .from("picks")
+    .select("sport, game_day")
+    .is("result", null)
+    .not("league_game_id", "is", null)
+    .gte("game_day", sinceISO)
+    .in("sport", ALL_SPORTS as string[])
+    .order("game_day");
+
+  if (error) {
+    console.error("targetedSync: error loading pending picks", error);
+    throw error;
+  }
+
+  if (!data || !data.length) {
+    return { upserted: 0, perSport: {} as Record<string, number> };
+  }
+
+  // Build map: sport -> Set<dayISO>
+  const combos = new Map<SportKey, Set<string>>();
+  for (const row of data as { sport: SportKey; game_day: string }[]) {
+    const s = row.sport as SportKey;
+    if (!ALL_SPORTS.includes(s)) continue;
+    const dayISO = row.game_day;
+    if (!combos.has(s)) combos.set(s, new Set<string>());
+    combos.get(s)!.add(dayISO);
+  }
+
+  const perSport: Record<string, number> = {};
+  let total = 0;
+
+  for (const [sport, daySet] of combos.entries()) {
+    for (const dayISO of daySet) {
+      try {
+        const count = await upsertGamesForDay(sport, dayISO);
+        if (!perSport[sport]) perSport[sport] = 0;
+        perSport[sport] += count;
+        total += count;
+        console.log("Upserted games (targeted)", { sport, dayISO, count });
+      } catch (e) {
+        console.error("Failed upsert (targeted)", {
+          sport,
+          dayISO,
+          error: String(e),
+        });
+      }
     }
   }
 
-  return result;
+  return { upserted: total, perSport };
 }
 
-/* ---------- MAIN ---------- */
+/**
+ * Full mode: original behavior – loop over all sports x daysBack.
+ * You can trigger this manually with a body flag when you really need it.
+ */
+async function fullSync(daysBack: number, sportsOverride?: SportKey[]) {
+  const sports = sportsOverride && sportsOverride.length
+    ? sportsOverride
+    : ALL_SPORTS;
+
+  const now = new Date();
+  const dayISOs: string[] = [];
+  for (let offset = 0; offset <= daysBack; offset++) {
+    const d = new Date(now);
+    d.setUTCDate(now.getUTCDate() - offset);
+    dayISOs.push(toISODate(d));
+  }
+
+  const perSport: Record<string, number> = {};
+  let total = 0;
+
+  for (const sport of sports) {
+    for (const dayISO of dayISOs) {
+      try {
+        const count = await upsertGamesForDay(sport, dayISO);
+        if (!perSport[sport]) perSport[sport] = 0;
+        perSport[sport] += count;
+        total += count;
+        console.log("Upserted games (full)", { sport, dayISO, count });
+      } catch (e) {
+        console.error("Failed upsert (full)", {
+          sport,
+          dayISO,
+          error: String(e),
+        });
+      }
+    }
+  }
+
+  return { upserted: total, perSport };
+}
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: CORS });
+    return new Response("ok", { status: 200, headers: corsHeaders() });
   }
 
-  const auth = checkAuth(req);
-  if (auth) return auth;
-
-  if (req.method !== "GET" && req.method !== "POST") {
-    return json({ ok: false, error: "Method not allowed" }, 405);
-  }
-
-  if (!SDIO_KEY) {
-    return json(
-      { ok: false, error: "SPORTSDATAIO_KEY missing" },
-      500,
-    );
-  }
+  const forbidden = checkSecret(req);
+  if (forbidden) return forbidden;
 
   try {
-    let body: any = {};
-    if (req.method === "POST") {
-      body = await req.json().catch(() => ({}));
-    }
+    const body =
+      req.method === "POST" ? await req.json().catch(() => ({})) : {};
 
-    const dayISO: string = body.date
-      ? toDayISO(body.date)
-      : toDayISO(new Date());
+    // Default: look back 5 days
+    const daysBack: number =
+      typeof body.days_back === "number" && body.days_back >= 0
+        ? body.days_back
+        : 5;
 
-    // 1) If caller explicitly passes sports → use them
-    let sports: SportKey[] | null = null;
-    if (Array.isArray(body.sports) && body.sports.length) {
-      sports = body.sports
-        .map((s: any) => String(s).toLowerCase())
-        .filter((s: string) =>
-          ALL_SPORTS.includes(s as SportKey)
-        ) as SportKey[];
-    }
+    // full_scan: true -> run the old "all sports x days" behavior
+    const fullScan: boolean = body.full_scan === true;
 
-    // 2) Otherwise, auto-detect from picks
-    if (!sports || sports.length === 0) {
-      sports = await detectSportsForDay(dayISO);
-    }
-
-    // 3) Fallback: if still nothing, don't hit SDIO
-    if (!sports || sports.length === 0) {
-      return json({
-        ok: true,
-        upserted: 0,
-        dayISO,
-        message:
-          "No enabled sports with pending picks for this day.",
-      });
-    }
-
-    const rows: any[] = [];
-
-    for (const sport of sports) {
-      const arr = await fetchSDIOGames(sport, dayISO);
-      console.log(
-        `[sync_games] ${sport} ${dayISO} → ${arr.length} games`,
+    // Optional override list of sports for full scan
+    let sportsOverride: SportKey[] | undefined;
+    if (fullScan && Array.isArray(body.sports) && body.sports.length) {
+      const filtered = (body.sports as string[]).filter(
+        (s): s is SportKey => (ALL_SPORTS as string[]).includes(s),
       );
-      for (const g of arr) {
-        rows.push(normalizeGame(sport, g, dayISO));
-      }
+      if (filtered.length) sportsOverride = filtered;
     }
 
-    if (rows.length === 0) {
-      return json({
+    let result;
+    if (fullScan) {
+      result = await fullSync(daysBack, sportsOverride);
+    } else {
+      result = await targetedSync(daysBack);
+    }
+
+    return new Response(
+      JSON.stringify({
         ok: true,
-        upserted: 0,
-        dayISO,
-        message: "No games returned from SportsDataIO.",
-      });
-    }
-
-    const { error } = await sb
-      .from("games")
-      .upsert(rows, { onConflict: "league_game_id,sport" });
-
-    if (error) {
-      console.error("[sync_games] upsert error", error);
-      return json({ ok: false, error: error.message }, 500);
-    }
-
-    return json({
-      ok: true,
-      upserted: rows.length,
-      dayISO,
-      sports,
-    });
-  } catch (err: any) {
-    console.error("[sync_games] unexpected error", err);
-    return json(
-      { ok: false, error: String(err?.message ?? err) },
-      500,
+        mode: fullScan ? "full" : "targeted",
+        upserted: result.upserted,
+        per_sport: result.perSport,
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders(),
+        },
+      },
     );
+  } catch (err) {
+    console.error("sync_results fatal", err);
+    return new Response("Internal error", {
+      status: 500,
+      headers: corsHeaders(),
+    });
   }
 });

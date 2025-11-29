@@ -1,6 +1,6 @@
 // supabase/functions/square-payment-updated/index.ts
 // Accepts Square webhooks, logs, and credits wallet on COMPLETED payments.
-// Signature verification is DISABLED for MVP (no more 401s).
+// Signature verification is DISABLED for MVP.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -19,13 +19,11 @@ function cors() {
 
 export default async function handler(req: Request) {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors() });
-  if (req.method !== "POST") return new Response("ok", { headers: cors() }); // be permissive
+  if (req.method !== "POST") return new Response("ok", { headers: cors() });
 
-  // We want the raw text for logging
   const raw = await req.text();
 
   try {
-    // Log the raw event (visible in Supabase → Functions → Logs)
     console.log("Square webhook raw:", raw);
 
     const evt = JSON.parse(raw);
@@ -42,14 +40,14 @@ export default async function handler(req: Request) {
     const paymentId: string | undefined = payment.id;
     const amount_cents: number = payment?.amount_money?.amount ?? 0;
 
-    console.log("Parsed:", { status, orderId, paymentId, amount_cents });
+    console.log("Parsed payment:", { status, orderId, paymentId, amount_cents });
 
     if (status !== "COMPLETED" || !amount_cents) {
-      // Nothing to do yet
+      console.log("Payment not completed or no amount; ignoring.");
       return new Response("ok", { headers: cors() });
     }
 
-    // ---- Find a matching pending ledger row (prefer order_id) ----
+    // Find ledger row by ext_ref (we stored Square order_id/extRef)
     let ledger: any = null;
 
     if (orderId) {
@@ -86,8 +84,9 @@ export default async function handler(req: Request) {
       return new Response("ok", { headers: cors() });
     }
 
-    // ---- Credit the wallet using your RPC (idempotent) ----
     const extRefToMark = orderId ?? paymentId ?? ledger.ext_ref;
+
+    // Primary path: RPC
     const { error: rpcErr } = await sbAdmin.rpc("wallet_credit_balance", {
       p_ext_ref: extRefToMark,
       p_amount: amount_cents,
@@ -96,7 +95,7 @@ export default async function handler(req: Request) {
     if (rpcErr) {
       console.warn("wallet_credit_balance RPC failed, falling back:", rpcErr);
 
-      // Manual fallback (still safe)
+      // Fallback: manual update
       const { data: acct } = await sbAdmin
         .from("wallet_accounts")
         .select("balance_cents")
@@ -127,7 +126,6 @@ export default async function handler(req: Request) {
     return new Response("ok", { headers: cors() });
   } catch (e) {
     console.error("Webhook error:", e);
-    // Still return 200 so Square doesn't retry endlessly while you debug
     return new Response("ok", { headers: cors() });
   }
 }
