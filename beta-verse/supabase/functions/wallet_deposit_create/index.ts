@@ -5,8 +5,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ---------- ENV ----------
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY") ??
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SERVICE_ROLE_KEY =
+  Deno.env.get("SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const SQUARE_ACCESS_TOKEN = Deno.env.get("SQUARE_ACCESS_TOKEN")!;
 const SQUARE_LOCATION_ID = Deno.env.get("SQUARE_LOCATION_ID")!;
@@ -31,6 +31,16 @@ type ReqBody = {
   userId: string;
   amount_cents: number;
 };
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders,
+    },
+  });
+}
 
 serve(async (req: Request): Promise<Response> => {
   if (req.method === "OPTIONS") {
@@ -63,21 +73,21 @@ serve(async (req: Request): Promise<Response> => {
           "Content-Type": "application/json",
           "Square-Version": "2023-12-13",
         },
-         body: JSON.stringify({
-      idempotency_key: crypto.randomUUID(),
-      checkout_options: {
-        // Supabase Edge function that will render the confirmation page
-        redirect_url: `${SUPABASE_URL}/functions/v1/square_redirect`,
-      },
-      quick_pay: {
-        name: "Wallet deposit",
-        price_money: {
-          amount: amount_cents,
-          currency: "USD",
-        },
-        location_id: SQUARE_LOCATION_ID,
-      },
-    }),
+        body: JSON.stringify({
+          idempotency_key: crypto.randomUUID(),
+          checkout_options: {
+            // later we can switch this to a deep link or confirmation page
+            redirect_url: `${SUPABASE_URL}/functions/v1/square_redirect`,
+          },
+          quick_pay: {
+            name: "Wallet deposit",
+            price_money: {
+              amount: amount_cents,
+              currency: "USD",
+            },
+            location_id: SQUARE_LOCATION_ID,
+          },
+        }),
       },
     );
 
@@ -85,37 +95,31 @@ serve(async (req: Request): Promise<Response> => {
     let sqJson: any = {};
     try {
       sqJson = text ? JSON.parse(text) : {};
-    } catch (_e) {
+    } catch {
       sqJson = { raw: text };
     }
 
     if (!sqResp.ok) {
       console.error("Square API error:", sqResp.status, sqJson);
       return json(
-        {
-          error: "Square API error",
-          status: sqResp.status,
-          details: sqJson,
-        },
+        { error: "Square API error", status: sqResp.status, details: sqJson },
         502,
       );
     }
 
-    const checkoutUrl =
-      sqJson?.payment_link?.url ||
-      sqJson?.checkout?.checkout_page_url ||
-      null;
+    const paymentLink = sqJson?.payment_link ?? sqJson?.payment_links?.[0];
+    const checkoutUrl: string | undefined = paymentLink?.url;
+    const orderId: string | undefined = paymentLink?.order_id;
 
-    if (!checkoutUrl) {
-      console.error("Square response missing checkoutUrl:", sqJson);
+    if (!checkoutUrl || !orderId) {
+      console.error("Missing checkoutUrl/orderId:", sqJson);
       return json(
-        { error: "Square did not return a checkout URL", details: sqJson },
+        { error: "Missing checkoutUrl/orderId from Square", details: sqJson },
         500,
       );
     }
 
-    const providerRef =
-      sqJson?.payment_link?.id ?? sqJson?.checkout?.id ?? null;
+    const providerRef = orderId;
 
     // ---------- 2) insert a pending deposit ----------
     const { data: dep, error: depErr } = await sb
@@ -125,7 +129,7 @@ serve(async (req: Request): Promise<Response> => {
         amount_cents,
         status: "pending",
         provider: "square",
-        provider_ref: providerRef,
+        provider_ref: providerRef, // Square order_id
         checkout_url: checkoutUrl,
       })
       .select("*")
@@ -158,13 +162,3 @@ serve(async (req: Request): Promise<Response> => {
     );
   }
 });
-
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      ...corsHeaders,
-    },
-  });
-}
