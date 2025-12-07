@@ -1,4 +1,4 @@
-// app/(tabs)/wallet.tsx — LuxeBETS Wallet with inline Deposit/Withdraw modals
+// app/(tabs)/wallet.tsx — LuxeBETS Wallet (Galaxy v2)
 
 import React, {
   useMemo,
@@ -41,12 +41,15 @@ if (
 
 /** -------- THEME -------- */
 const PURPLE = "#613DC1";
-const DEEP_PURPLE = "#2C0735";
-const MID_PURPLE = "#4A2E99";
+const DEEP_PURPLE = "#1A0827";
+const MID_PURPLE = "#3C1B68";
 const GOLD = "#FFD700";
-const INK = "#0E0A12";
-const GLASS = "rgba(30,30,30,0.75)";
-const BORDER = "rgba(255,255,255,0.10)";
+const INK = "#05010A";
+const GLASS = "rgba(7,7,20,0.95)";
+const BORDER = "rgba(255,255,255,0.12)";
+const BAD_RED = "#f97373";
+const GOOD_GREEN = "#22c55e";
+const AMBER = "#fbbf24";
 
 /** -------- TYPES -------- */
 type TxnType = "deposit" | "bid" | "win" | "withdraw";
@@ -55,12 +58,16 @@ type Txn = {
   id: string | number;
   icon: any;
   title: string;
-  date: string;              // display string
-  amount: string;            // base amount (no sign)
+  date: string; // display string
+  amount: string; // base amount (no sign)
   type: TxnType;
-  signedCents: number;       // + = green, - = red, 0 = neutral
-  pending?: boolean;         // pending withdraw request
-  requestStatus?: "pending" | "approved" | "rejected" | "paid";
+  signedCents: number; // + = green, - = red, 0 = neutral
+  pending?: boolean; // pending withdraw request
+  requestStatus?: "pending" | "approved" | "rejected" | "paid" | "canceled";
+
+  // referral metadata for tournament entries
+  referralCode?: string;
+  referralDiscountCents?: number;
 };
 
 type LedgerRow = {
@@ -71,13 +78,16 @@ type LedgerRow = {
   status: "pending" | "succeeded" | "failed" | "canceled";
   ext_ref: string | null;
   created_at: string;
+
+  referral_code?: string | null;
+  referral_discount_cents?: number | null;
 };
 
 type WithdrawRequestRow = {
   id: number;
   user_id: string;
   amount_cents: number;
-  status: "pending" | "approved" | "rejected" | "paid";
+  status: "pending" | "approved" | "rejected" | "paid" | "canceled";
   created_at: string;
 };
 
@@ -89,6 +99,7 @@ function chipTextFromType(t?: TxnType) {
   if (t === "withdraw") return "Withdraw";
   return "Other";
 }
+
 function formatUsd(n: number) {
   try {
     return n.toLocaleString(undefined, {
@@ -100,6 +111,46 @@ function formatUsd(n: number) {
   }
 }
 
+/** Color system for pills by transaction type */
+function pillColors(t: Txn) {
+  if (t.pending) {
+    return {
+      bg: "rgba(234,179,8,0.18)",
+      border: "rgba(234,179,8,0.6)",
+      text: "#fde68a",
+    };
+  }
+
+  switch (t.type) {
+    case "deposit":
+      return {
+        bg: "rgba(34,197,94,0.16)",
+        border: "rgba(34,197,94,0.65)",
+        text: "#bbf7d0",
+      };
+    case "bid":
+      return {
+        bg: "rgba(245,158,11,0.18)",
+        border: "rgba(245,158,11,0.7)",
+        text: "#fed7aa",
+      };
+    case "win":
+      return {
+        bg: "rgba(129,140,248,0.2)",
+        border: "rgba(196,181,253,0.7)",
+        text: "#e9d5ff",
+      };
+    case "withdraw":
+    default:
+      return {
+        bg: "rgba(248,113,113,0.2)",
+        border: "rgba(248,113,113,0.7)",
+        text: "#fecaca",
+      };
+  }
+}
+
+/** Map ledger → UI transaction */
 function mapLedgerToTxn(row: LedgerRow): Txn | null {
   if (row.status !== "succeeded") return null;
 
@@ -117,16 +168,30 @@ function mapLedgerToTxn(row: LedgerRow): Txn | null {
 
   if (row.type === "adjust") {
     const isWin = row.amount_cents >= 0;
+
+    if (isWin) {
+      return {
+        id: row.id,
+        icon: require("@/assets/icons/trophy.png"),
+        title: "Winnings",
+        date: new Date(row.created_at).toLocaleString(),
+        amount: (Math.abs(row.amount_cents) / 100).toFixed(2),
+        type: "win",
+        signedCents: row.amount_cents,
+      };
+    }
+
+    // NEGATIVE adjust = Tournament entry / bid
     return {
       id: row.id,
-      icon: isWin
-        ? require("@/assets/icons/trophy.png")
-        : require("@/assets/icons/target.png"),
-      title: isWin ? "Winnings" : "Adjustment",
+      icon: require("@/assets/icons/target.png"),
+      title: "Tournament Entry",
       date: new Date(row.created_at).toLocaleString(),
       amount: (Math.abs(row.amount_cents) / 100).toFixed(2),
-      type: isWin ? "win" : "bid",
-      signedCents: row.amount_cents, // + = win, - = adjustment down
+      type: "bid",
+      signedCents: row.amount_cents,
+      referralCode: row.referral_code ?? undefined,
+      referralDiscountCents: row.referral_discount_cents ?? undefined,
     };
   }
 
@@ -145,18 +210,24 @@ function mapLedgerToTxn(row: LedgerRow): Txn | null {
   return null;
 }
 
+/** Map withdraw_requests → pending / history rows */
 function mapWithdrawReqToTxn(row: WithdrawRequestRow): Txn {
-  // withdraw_requests don’t move money directly in wallet yet → signedCents = 0
   const isPending = row.status === "pending";
+  const isCanceled =
+    row.status === "rejected" || row.status === "canceled";
 
   return {
     id: row.id,
     icon: require("@/assets/icons/target.png"),
-    title: isPending ? "Withdrawal (pending)" : "Withdrawal",
+    title: isPending
+      ? "Withdrawal (pending)"
+      : isCanceled
+      ? "Withdrawal (canceled)"
+      : "Withdrawal",
     date: new Date(row.created_at).toLocaleString(),
     amount: (row.amount_cents / 100).toFixed(2),
     type: "withdraw",
-    signedCents: 0,
+    signedCents: 0, // these don’t move money directly
     pending: isPending,
     requestStatus: row.status,
   };
@@ -286,21 +357,28 @@ export default function WalletScreen() {
     let deposits = 0;
     let wins = 0;
     let spends = 0;
+    let bids = 0;
+
     for (const t of rows) {
-      // only count things that actually moved money (signedCents != 0 and not pending)
       if (t.pending) continue;
       if (t.signedCents === 0) continue;
 
       const v = t.signedCents / 100;
       if (t.type === "deposit") deposits += v;
       else if (t.type === "win") wins += v;
-      else if (t.type === "bid" || t.type === "withdraw")
+      else if (t.type === "bid") {
         spends += Math.abs(v);
+        bids += Math.abs(v);
+      } else if (t.type === "withdraw") {
+        spends += Math.abs(v);
+      }
     }
+
     return {
       deposits,
       wins,
       spends,
+      bids,
       balance: balanceCents / 100,
     };
   }, [rows, balanceCents]);
@@ -316,7 +394,7 @@ export default function WalletScreen() {
     router.push("/user/settings");
   }, [router]);
 
-  /** ---------- Deposit + Withdraw handlers inside modal ---------- */
+  /** ---------- Deposit + Withdraw handlers ---------- */
 
   const handleStartDeposit = useCallback(async () => {
     if (depositLoading) return;
@@ -447,7 +525,7 @@ export default function WalletScreen() {
     <ImageBackground
       source={BG}
       style={styles.bg}
-      imageStyle={{ opacity: 0.55 }}
+      imageStyle={{ opacity: 0.7 }}
     >
       {/* Top Bar */}
       <View style={styles.topBar}>
@@ -461,13 +539,13 @@ export default function WalletScreen() {
       {/* Balance Card */}
       <View style={styles.padX}>
         <LinearGradient
-          colors={[PURPLE, MID_PURPLE, DEEP_PURPLE]}
+          colors={["#7C3AED", "#4F46E5", "#1D1033"]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={styles.balanceCard}
         >
           <LinearGradient
-            colors={["rgba(255,255,255,0.18)", "rgba(255,255,255,0.02)"]}
+            colors={["rgba(255,255,255,0.25)", "transparent"]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={styles.gloss}
@@ -509,24 +587,32 @@ export default function WalletScreen() {
         </LinearGradient>
       </View>
 
-      {/* Quick Stats */}
-      <View style={[styles.padX, { marginTop: 6 }]}>
+      {/* Quick Stats (glass) */}
+      <View style={[styles.padX, { marginTop: 8 }]}>
         <View style={styles.statsRow}>
-          <BlurView intensity={70} tint="dark" style={styles.statCard}>
+          <BlurView intensity={80} tint="dark" style={styles.statCard}>
             <Text style={styles.statLabel}>Deposits</Text>
-            <Text style={[styles.statValue, { color: "#22c55e" }]}>
+            <Text style={[styles.statValue, { color: GOOD_GREEN }]}>
               {formatUsd(totals.deposits)}
             </Text>
           </BlurView>
-          <BlurView intensity={70} tint="dark" style={styles.statCard}>
+          <BlurView intensity={80} tint="dark" style={styles.statCard}>
+            <Text style={styles.statLabel}>Bids</Text>
+            <Text style={[styles.statValue, { color: AMBER }]}>
+              {formatUsd(totals.bids)}
+            </Text>
+          </BlurView>
+        </View>
+        <View style={[styles.statsRow, { marginTop: 8 }]}>
+          <BlurView intensity={80} tint="dark" style={styles.statCard}>
             <Text style={styles.statLabel}>Winnings</Text>
             <Text style={[styles.statValue, { color: GOLD }]}>
               {formatUsd(totals.wins)}
             </Text>
           </BlurView>
-          <BlurView intensity={70} tint="dark" style={styles.statCard}>
+          <BlurView intensity={80} tint="dark" style={styles.statCard}>
             <Text style={styles.statLabel}>Spent</Text>
-            <Text style={[styles.statValue, { color: "#ef4444" }]}>
+            <Text style={[styles.statValue, { color: BAD_RED }]}>
               {formatUsd(totals.spends)}
             </Text>
           </BlurView>
@@ -534,7 +620,7 @@ export default function WalletScreen() {
       </View>
 
       {/* Filters */}
-      <View style={[styles.padX, { marginTop: 12 }]}>
+      <View style={[styles.padX, { marginTop: 14 }]}>
         <View style={styles.filterRow}>
           {["ALL", "deposit", "bid", "win", "withdraw"].map((k) => {
             const selected = filter === (k as any);
@@ -547,8 +633,11 @@ export default function WalletScreen() {
                   );
                   setFilter(k as any);
                 }}
-                activeOpacity={0.85}
-                style={[styles.chip, selected && styles.chipSelected]}
+                activeOpacity={0.9}
+                style={[
+                  styles.chip,
+                  selected && styles.chipSelected,
+                ]}
               >
                 <Text
                   style={[
@@ -576,28 +665,34 @@ export default function WalletScreen() {
           />
         }
         renderItem={({ item }) => {
-          // derive pill + amount display
+          const pill = pillColors(item);
+
           let pillText = chipTextFromType(item.type);
-          if (item.pending) pillText = "Pending";
-          else if (item.requestStatus === "rejected") pillText = "Canceled";
+          if (item.pending) {
+            pillText = "Pending";
+          } else if (
+            item.requestStatus === "rejected" ||
+            item.requestStatus === "canceled"
+          ) {
+            pillText = "Canceled";
+          }
 
           let displayAmount = item.amount;
           let color = "#e5e7eb";
 
           if (item.pending) {
-            // pending request: neutral / gold
             displayAmount = Number(item.amount).toFixed(2);
-            color = "#eab308";
+            color = AMBER;
           } else if (item.signedCents < 0) {
             displayAmount = `-${(
               Math.abs(item.signedCents) / 100
             ).toFixed(2)}`;
-            color = "#ef4444"; // red
+            color = item.type === "bid" ? AMBER : BAD_RED;
           } else if (item.signedCents > 0) {
             displayAmount = `+${(
               Math.abs(item.signedCents) / 100
             ).toFixed(2)}`;
-            color = "#22c55e"; // green
+            color = item.type === "win" ? GOLD : GOOD_GREEN;
           } else {
             displayAmount = Number(item.amount || "0").toFixed(2);
           }
@@ -608,7 +703,7 @@ export default function WalletScreen() {
           return (
             <View style={styles.rowPad}>
               <TouchableOpacity
-                activeOpacity={canCancel ? 0.7 : 1}
+                activeOpacity={canCancel ? 0.75 : 1}
                 onPress={() => {
                   if (canCancel) {
                     Alert.alert(
@@ -627,26 +722,80 @@ export default function WalletScreen() {
                   }
                 }}
               >
-                <BlurView intensity={60} tint="dark" style={styles.txnCard}>
+                <BlurView intensity={70} tint="dark" style={styles.txnCard}>
                   <LinearGradient
                     colors={[
-                      "rgba(97,61,193,0.25)",
-                      "rgba(44,7,53,0.25)",
+                      "rgba(250,250,255,0.05)",
+                      "rgba(88,28,135,0.35)",
                     ]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
                     style={StyleSheet.absoluteFill}
                   />
-                  <Image source={item.icon} style={styles.icon} />
+
+                  {/* Color bar on left based on type */}
+                  <View
+                    style={[
+                      styles.leftAccent,
+                      item.type === "deposit" && {
+                        backgroundColor: "rgba(34,197,94,0.9)",
+                      },
+                      item.type === "bid" && {
+                        backgroundColor: "rgba(245,158,11,0.95)",
+                      },
+                      item.type === "win" && {
+                        backgroundColor: "rgba(129,140,248,0.95)",
+                      },
+                      item.type === "withdraw" && {
+                        backgroundColor: "rgba(248,113,113,0.95)",
+                      },
+                    ]}
+                  />
+
+                  <View style={styles.iconWrap}>
+                    <Image source={item.icon} style={styles.icon} />
+                  </View>
+
                   <View style={{ flex: 1 }}>
                     <View style={styles.txnTitleRow}>
                       <Text numberOfLines={1} style={styles.txnTitle}>
                         {item.title}
                       </Text>
-                      <View style={styles.typePill}>
-                        <Text style={styles.typePillText}>{pillText}</Text>
+                      <View
+                        style={[
+                          styles.typePill,
+                          {
+                            backgroundColor: pill.bg,
+                            borderColor: pill.border,
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.typePillText,
+                            { color: pill.text },
+                          ]}
+                        >
+                          {pillText}
+                        </Text>
                       </View>
                     </View>
+
+                    {/* Referral info for bids */}
+                    {item.type === "bid" &&
+                    item.referralCode &&
+                    typeof item.referralDiscountCents === "number" &&
+                    item.referralDiscountCents > 0 ? (
+                      <Text style={styles.txnReferral}>
+                        {`Referral ${item.referralCode} · -$${(
+                          item.referralDiscountCents / 100
+                        ).toFixed(2)}`}
+                      </Text>
+                    ) : null}
+
                     <Text style={styles.txnDate}>{item.date}</Text>
                   </View>
+
                   <Text
                     style={[
                       styles.txnAmount,
@@ -662,7 +811,7 @@ export default function WalletScreen() {
         }}
         ListHeaderComponent={
           <View
-            style={[styles.padX, { marginTop: 16, marginBottom: 4 }]}
+            style={[styles.padX, { marginTop: 18, marginBottom: 4 }]}
           >
             <Text style={styles.sectionTitle}>Transaction History</Text>
           </View>
@@ -677,15 +826,6 @@ export default function WalletScreen() {
         contentContainerStyle={{ paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}
       />
-
-      {/* Floating Deposit Button */}
-      <TouchableOpacity
-        onPress={() => setShowAction("deposit")}
-        activeOpacity={0.9}
-        style={styles.fab}
-      >
-        <Ionicons name="add" size={24} color={INK} />
-      </TouchableOpacity>
 
       {/* Action Modal */}
       <Modal
@@ -809,27 +949,27 @@ const styles = StyleSheet.create({
     fontSize: 22,
     color: "#fff",
     fontFamily: "PoppinsBold",
-    letterSpacing: 0.3,
+    letterSpacing: 0.4,
   },
 
   padX: { paddingHorizontal: 18 },
   rowPad: { paddingHorizontal: 18, marginBottom: 10 },
 
   balanceCard: {
-    borderRadius: 18,
+    borderRadius: 20,
     padding: 18,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.15)",
+    borderColor: "rgba(255,255,255,0.2)",
     overflow: "hidden",
   },
   gloss: {
     position: "absolute",
-    left: 0,
-    right: -40,
-    top: 0,
-    height: 80,
-    transform: [{ skewX: "-12deg" }],
-    opacity: 0.5,
+    left: -20,
+    right: 40,
+    top: -10,
+    height: 90,
+    transform: [{ skewX: "-18deg" }],
+    opacity: 0.55,
   },
   balanceRowTop: {
     flexDirection: "row",
@@ -851,7 +991,11 @@ const styles = StyleSheet.create({
     backgroundColor: GOLD,
     borderRadius: 999,
   },
-  badgeText: { color: INK, fontFamily: "PoppinsSemiBold", fontSize: 12 },
+  badgeText: {
+    color: INK,
+    fontFamily: "PoppinsSemiBold",
+    fontSize: 12,
+  },
 
   balanceAmount: {
     fontSize: 34,
@@ -867,7 +1011,7 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 12,
     justifyContent: "center",
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
   },
   actionPrimary: {
@@ -894,8 +1038,8 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection: "row", gap: 10 },
   statCard: {
     flex: 1,
-    borderRadius: 14,
-    paddingVertical: 12,
+    borderRadius: 16,
+    paddingVertical: 11,
     paddingHorizontal: 12,
     backgroundColor: GLASS,
     borderWidth: 1,
@@ -904,33 +1048,47 @@ const styles = StyleSheet.create({
   statLabel: {
     fontFamily: "Poppins",
     color: "rgba(255,255,255,0.8)",
-    fontSize: 12,
+    fontSize: 11,
   },
   statValue: {
     fontFamily: "PoppinsSemiBold",
     color: "#fff",
-    fontSize: 16,
+    fontSize: 15,
     marginTop: 4,
   },
 
-  filterRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
+  filterRow: {
+    flexDirection: "row",
+    gap: 8,
+    flexWrap: "wrap",
+  },
   chip: {
     paddingHorizontal: 12,
     paddingVertical: 7,
-    borderRadius: 12,
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.2)",
-    backgroundColor: "rgba(44,7,53,0.8)",
+    borderColor: "rgba(148,163,184,0.45)",
+    backgroundColor: "rgba(15,23,42,0.85)",
   },
-  chipSelected: { backgroundColor: PURPLE, borderColor: GOLD },
-  chipText: { color: "#fff", fontFamily: "PoppinsMedium", fontSize: 13 },
-  chipTextSelected: { color: GOLD, fontFamily: "PoppinsSemiBold" },
+  chipSelected: {
+    backgroundColor: PURPLE,
+    borderColor: GOLD,
+  },
+  chipText: {
+    color: "#e5e7eb",
+    fontFamily: "PoppinsMedium",
+    fontSize: 12,
+  },
+  chipTextSelected: {
+    color: GOLD,
+    fontFamily: "PoppinsSemiBold",
+  },
 
   sectionTitle: {
     fontSize: 16,
     fontFamily: "PoppinsSemiBold",
     color: "#fff",
-    opacity: 0.95,
+    opacity: 0.96,
   },
 
   txnCard: {
@@ -938,40 +1096,66 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 12,
     paddingHorizontal: 12,
-    borderRadius: 14,
+    borderRadius: 16,
     overflow: "hidden",
-    backgroundColor: GLASS,
+    backgroundColor: "rgba(6,6,20,0.96)",
     borderWidth: 1,
     borderColor: BORDER,
   },
-  icon: { width: 40, height: 40, marginRight: 12, borderRadius: 10 },
+  leftAccent: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+    borderTopLeftRadius: 16,
+    borderBottomLeftRadius: 16,
+  },
+  iconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    marginRight: 12,
+    overflow: "hidden",
+    backgroundColor: "rgba(15,23,42,0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  icon: { width: 30, height: 30 },
 
-  txnTitleRow: { flexDirection: "row", alignItems: "center" },
+  txnTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
   txnTitle: {
     fontSize: 14,
     color: "#fff",
     fontFamily: "PoppinsMedium",
     flexShrink: 1,
-    maxWidth: "75%",
+    maxWidth: "70%",
   },
   typePill: {
     marginLeft: 8,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 999,
-    backgroundColor: "rgba(255,215,0,0.12)",
     borderWidth: 1,
-    borderColor: "rgba(255,215,0,0.3)",
   },
   typePillText: {
-    color: GOLD,
     fontSize: 10,
     fontFamily: "PoppinsSemiBold",
   },
 
+  txnReferral: {
+    fontSize: 11,
+    color: GOLD,
+    fontFamily: "PoppinsMedium",
+    marginTop: 2,
+  },
+
   txnDate: {
-    fontSize: 12,
-    color: "rgba(255,255,255,0.75)",
+    fontSize: 11,
+    color: "rgba(203,213,225,0.85)",
     fontFamily: "Poppins",
     marginTop: 2,
   },
@@ -1001,7 +1185,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.35,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 6 },
     elevation: 10,
@@ -1009,7 +1193,7 @@ const styles = StyleSheet.create({
 
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: "rgba(3,4,10,0.75)",
     padding: 18,
     justifyContent: "center",
     alignItems: "center",
@@ -1017,13 +1201,17 @@ const styles = StyleSheet.create({
   modalCard: {
     width: "100%",
     maxWidth: 520,
-    backgroundColor: "rgba(20,10,35,0.96)",
+    backgroundColor: "rgba(10,6,24,0.98)",
     borderWidth: 1,
     borderColor: BORDER,
-    borderRadius: 18,
+    borderRadius: 20,
     padding: 18,
   },
-  modalTitle: { color: "#fff", fontFamily: "PoppinsBold", fontSize: 18 },
+  modalTitle: {
+    color: "#fff",
+    fontFamily: "PoppinsBold",
+    fontSize: 18,
+  },
   modalNote: {
     color: "rgba(255,255,255,0.8)",
     fontFamily: "Poppins",
@@ -1034,10 +1222,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     marginTop: 8,
-    borderRadius: 12,
-    backgroundColor: "rgba(5,5,15,0.95)",
+    borderRadius: 14,
+    backgroundColor: "rgba(3,7,18,0.98)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
+    borderColor: "rgba(148,163,184,0.5)",
     paddingHorizontal: 12,
     paddingVertical: 6,
   },

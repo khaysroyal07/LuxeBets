@@ -12,3 +12,9 @@ I need to fix picks modal
 fix Status
 new logic leaderboard
 Tournamnet history and status
+There is a lkot more to do still we must work exr=tra hard!!!
+
+sigh my boss sent:
+Uh Sooo ive been tryna work w/ sportsdata.io and i was told that it is up to $500 to $1000 per month😃. So Ive honestly been tryna work on a plan B because as a simple starter thats in the early stages and isnt working for a profit, its a bit much. I been tryna work on a plan b api instead but, is a plan b api too late😭? Wat i was suggested was to use Odds API combined w/ another one called OddsJam which would still be 200 a month. So wat i’m thinking is to do the 7 day free trial as we officially test it & then once its all said & done & im ready to begin the next phase of launching as a business, then officially buy an api atp & pay you to officially implement it. Cus a lot of it was 500/m, 750+/m & all that just for the display aspect is crazy so wat do u think?
+
+also lets keep sports data io becasue ill use for testing but thsi version well work on wihtout messing up db since people will nbe testing

@@ -1,4 +1,5 @@
 // app/admin/withdrawals.tsx
+
 import React, {
   useCallback,
   useEffect,
@@ -19,6 +20,7 @@ import {
   Pressable,
   ScrollView,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/AuthContext";
@@ -57,7 +59,7 @@ type LedgerRow = {
 };
 
 export default function AdminWithdrawalsScreen() {
-  const { user, signOut } = useAuth();
+  const { user } = useAuth();
   const router = useRouter();
 
   const [rows, setRows] = useState<WithdrawRow[]>([]);
@@ -65,16 +67,14 @@ export default function AdminWithdrawalsScreen() {
   const [processingId, setProcessingId] = useState<number | null>(null);
 
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<
-    "all" | WithdrawStatus
-  >("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | WithdrawStatus>(
+    "all"
+  );
 
   // Reject modal state
   const [rejectVisible, setRejectVisible] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
-  const [rejectTarget, setRejectTarget] = useState<WithdrawRow | null>(
-    null
-  );
+  const [rejectTarget, setRejectTarget] = useState<WithdrawRow | null>(null);
 
   // Info modal state
   const [infoVisible, setInfoVisible] = useState(false);
@@ -141,17 +141,6 @@ export default function AdminWithdrawalsScreen() {
   useEffect(() => {
     fetchRequests();
   }, [fetchRequests]);
-
-  /** ---------- LOGOUT ---------- */
-
-  const handleLogout = useCallback(async () => {
-    try {
-      await signOut();
-      router.replace("/user/login");
-    } catch (e: any) {
-      Alert.alert("Logout error", e?.message ?? String(e));
-    }
-  }, [signOut, router]);
 
   /** ---------- FILTER / SEARCH ---------- */
 
@@ -227,52 +216,49 @@ export default function AdminWithdrawalsScreen() {
 
   /** ---------- INFO MODAL (USER WALLET SNAPSHOT) ---------- */
 
-  const openInfo = useCallback(
-    async (row: WithdrawRow) => {
-      setInfoTarget(row);
-      setInfoVisible(true);
-      setInfoLoading(true);
-      try {
-        const uid = row.user_id;
+  const openInfo = useCallback(async (row: WithdrawRow) => {
+    setInfoTarget(row);
+    setInfoVisible(true);
+    setInfoLoading(true);
+    try {
+      const uid = row.user_id;
 
-        const [{ data: acct }, { data: ledger }] = await Promise.all([
-          supabase
-            .from("wallet_accounts")
-            .select("balance_cents")
-            .eq("user_id", uid)
-            .maybeSingle(),
-          supabase
-            .from("wallet_ledger")
-            .select("id, type, amount_cents, status, created_at")
-            .eq("user_id", uid)
-            .order("created_at", { ascending: false })
-            .limit(15),
-        ]);
+      const [{ data: acct }, { data: ledger }] = await Promise.all([
+        supabase
+          .from("wallet_accounts")
+          .select("balance_cents")
+          .eq("user_id", uid)
+          .maybeSingle(),
+        supabase
+          .from("wallet_ledger")
+          .select("id, type, amount_cents, status, created_at")
+          .eq("user_id", uid)
+          .order("created_at", { ascending: false })
+          .limit(15),
+      ]);
 
-        setInfoBalance(acct?.balance_cents ?? 0);
-        setInfoLedger((ledger ?? []) as LedgerRow[]);
+      setInfoBalance(acct?.balance_cents ?? 0);
+      setInfoLedger((ledger ?? []) as LedgerRow[]);
 
-        let deposits = 0;
-        let withdraws = 0;
-        for (const row of (ledger ?? []) as LedgerRow[]) {
-          if (row.status !== "succeeded") continue;
-          if (row.type === "deposit") deposits += row.amount_cents;
-          if (row.type === "withdraw") withdraws += row.amount_cents;
-        }
-        setInfoTotals({
-          deposits: deposits / 100,
-          withdraws: withdraws / 100,
-          net: (deposits - withdraws) / 100,
-        });
-      } catch (e: any) {
-        console.error("info load error", e);
-        Alert.alert("Error", e?.message ?? String(e));
-      } finally {
-        setInfoLoading(false);
+      let deposits = 0;
+      let withdraws = 0;
+      for (const row of (ledger ?? []) as LedgerRow[]) {
+        if (row.status !== "succeeded") continue;
+        if (row.type === "deposit") deposits += row.amount_cents;
+        if (row.type === "withdraw") withdraws += row.amount_cents;
       }
-    },
-    []
-  );
+      setInfoTotals({
+        deposits: deposits / 100,
+        withdraws: withdraws / 100,
+        net: (deposits - withdraws) / 100,
+      });
+    } catch (e: any) {
+      console.error("info load error", e);
+      Alert.alert("Error", e?.message ?? String(e));
+    } finally {
+      setInfoLoading(false);
+    }
+  }, []);
 
   const closeInfo = () => {
     setInfoVisible(false);
@@ -282,7 +268,7 @@ export default function AdminWithdrawalsScreen() {
     setInfoBalance(null);
   };
 
-  /** ---------- RENDER ---------- */
+  /** ---------- RENDER ROW ---------- */
 
   const renderItem = ({ item }: { item: WithdrawRow }) => {
     const dollars = (item.amount_cents / 100).toFixed(2);
@@ -344,6 +330,7 @@ export default function AdminWithdrawalsScreen() {
               style={[styles.btn, styles.btnApprove]}
               onPress={() => handleApprove(item)}
               disabled={processingId === item.id}
+              activeOpacity={0.9}
             >
               {processingId === item.id ? (
                 <ActivityIndicator color="#fff" />
@@ -362,8 +349,13 @@ export default function AdminWithdrawalsScreen() {
               style={[styles.btn, styles.btnReject]}
               onPress={() => openRejectModal(item)}
               disabled={processingId === item.id}
+              activeOpacity={0.9}
             >
-              <Ionicons name="close-circle" size={16} color="#fff" />
+              <Ionicons
+                name="close-circle"
+                size={16}
+                color="#fff"
+              />
               <Text style={styles.btnText}>Reject</Text>
             </TouchableOpacity>
           </View>
@@ -378,241 +370,282 @@ export default function AdminWithdrawalsScreen() {
       style={styles.bg}
       imageStyle={{ opacity: 0.6 }}
     >
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.title}>Admin · Withdraw Requests</Text>
-        <TouchableOpacity onPress={handleLogout} activeOpacity={0.85}>
-          <Ionicons name="log-out-outline" size={22} color={GOLD} />
-        </TouchableOpacity>
-      </View>
+      <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
+        {/* Simple page header instead of navbar */}
+        <View style={styles.pageHeader}>
+          <TouchableOpacity
+            style={styles.breadcrumb}
+            onPress={() => router.push("/admin")}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="chevron-back" size={16} color={GOLD} />
+            <Text style={styles.breadcrumbText}>Admin Home</Text>
+          </TouchableOpacity>
 
-      {/* Filters */}
-      <View style={styles.filterRow}>
-        {[
-          { key: "all", label: "All" },
-          { key: "pending", label: "Pending" },
-          { key: "approved", label: "Approved" },
-          { key: "rejected", label: "Rejected" },
-          { key: "canceled", label: "Canceled" },
-        ].map((f) => {
-          const selected = statusFilter === f.key;
-          return (
-            <TouchableOpacity
-              key={f.key}
-              style={[
-                styles.filterChip,
-                selected && styles.filterChipSelected,
-              ]}
-              onPress={() =>
-                setStatusFilter(
-                  f.key as typeof statusFilter
-                )
-              }
-              activeOpacity={0.85}
-            >
-              <Text
-                style={[
-                  styles.filterChipText,
-                  selected && styles.filterChipTextSelected,
-                ]}
-              >
-                {f.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      {/* Search */}
-      <View style={styles.searchBox}>
-        <Ionicons
-          name="search-outline"
-          size={18}
-          color="rgba(255,255,255,0.7)"
-          style={{ marginRight: 8 }}
-        />
-        <TextInput
-          placeholder="Search by name or email"
-          placeholderTextColor="rgba(255,255,255,0.6)"
-          value={search}
-          onChangeText={setSearch}
-          style={styles.searchInput}
-        />
-      </View>
-
-      {/* List */}
-      {loading ? (
-        <ActivityIndicator color="#fff" style={{ marginTop: 20 }} />
-      ) : filteredRows.length === 0 ? (
-        <Text style={styles.empty}>No withdraw requests yet.</Text>
-      ) : (
-        <FlatList
-          data={filteredRows}
-          keyExtractor={(item) => String(item.id)}
-          renderItem={renderItem}
-          contentContainerStyle={{ paddingBottom: 40 }}
-        />
-      )}
-
-      {/* Reject Modal */}
-      <Modal
-        visible={rejectVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setRejectVisible(false)}
-      >
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setRejectVisible(false)}
-        >
-          <Pressable style={styles.modalCard} onPress={() => {}}>
-            <Text style={styles.modalTitle}>Reject withdrawal</Text>
-            <Text style={styles.modalSubtitle}>
-              Optional: add a reason for rejecting this request.
+          <View style={{ marginTop: 6 }}>
+            <Text style={styles.pageTitle}>Withdraw Requests</Text>
+            <Text style={styles.pageSubtitle}>
+              Review, approve, or reject player cash-outs.
             </Text>
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Reason (optional)"
-              placeholderTextColor="rgba(255,255,255,0.6)"
-              value={rejectReason}
-              onChangeText={setRejectReason}
-              multiline
+          </View>
+        </View>
+
+        {/* Filters + search */}
+        <View style={styles.topControls}>
+          <View style={styles.filterRow}>
+            {[
+              { key: "all", label: "All" },
+              { key: "pending", label: "Pending" },
+              { key: "approved", label: "Approved" },
+              { key: "rejected", label: "Rejected" },
+              { key: "canceled", label: "Canceled" },
+            ].map((f) => {
+              const selected = statusFilter === f.key;
+              return (
+                <TouchableOpacity
+                  key={f.key}
+                  style={[
+                    styles.filterChip,
+                    selected && styles.filterChipSelected,
+                  ]}
+                  onPress={() =>
+                    setStatusFilter(f.key as typeof statusFilter)
+                  }
+                  activeOpacity={0.85}
+                >
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      selected && styles.filterChipTextSelected,
+                    ]}
+                  >
+                    {f.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <View style={styles.searchBox}>
+            <Ionicons
+              name="search-outline"
+              size={18}
+              color="rgba(255,255,255,0.7)"
+              style={{ marginRight: 8 }}
             />
-            <View style={styles.modalBtnRow}>
-              <TouchableOpacity
-                style={[styles.modalBtn, styles.modalBtnCancel]}
-                onPress={() => setRejectVisible(false)}
-              >
-                <Text style={styles.modalBtnCancelText}>Close</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modalBtn, styles.modalBtnDestructive]}
-                onPress={submitReject}
-                disabled={!rejectTarget}
-              >
-                <Text style={styles.modalBtnDestructiveText}>
-                  Reject
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
+            <TextInput
+              placeholder="Search by name or email"
+              placeholderTextColor="rgba(255,255,255,0.6)"
+              value={search}
+              onChangeText={setSearch}
+              style={styles.searchInput}
+            />
+          </View>
+        </View>
 
-      {/* Info Modal */}
-      <Modal
-        visible={infoVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={closeInfo}
-      >
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={closeInfo}
+        {/* List */}
+        {loading ? (
+          <ActivityIndicator
+            color="#fff"
+            style={{ marginTop: 20 }}
+          />
+        ) : filteredRows.length === 0 ? (
+          <Text style={styles.empty}>No withdraw requests yet.</Text>
+        ) : (
+          <FlatList
+            data={filteredRows}
+            keyExtractor={(item) => String(item.id)}
+            renderItem={renderItem}
+            contentContainerStyle={{ paddingBottom: 40 }}
+          />
+        )}
+
+        {/* Reject Modal */}
+        <Modal
+          visible={rejectVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setRejectVisible(false)}
         >
-          <Pressable style={styles.modalCardLarge} onPress={() => {}}>
-            <Text style={styles.modalTitle}>
-              Player wallet overview
-            </Text>
-            <Text style={styles.modalSubtitle}>
-              {infoTarget?.user?.full_name ??
-                infoTarget?.user?.email ??
-                infoTarget?.user_id}
-            </Text>
-
-            {infoLoading ? (
-              <ActivityIndicator
-                color="#fff"
-                style={{ marginTop: 16 }}
-              />
-            ) : (
-              <ScrollView
-                style={{ marginTop: 12, maxHeight: 380 }}
-                showsVerticalScrollIndicator={false}
-              >
-                <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>
-                    Current balance
-                  </Text>
-                  <Text style={styles.infoValue}>
-                    $
-                    {((infoBalance ?? 0) / 100).toFixed(2)}
-                  </Text>
-                </View>
-                {infoTotals && (
-                  <>
-                    <View style={styles.infoRow}>
-                      <Text style={styles.infoLabel}>
-                        Total deposits
-                      </Text>
-                      <Text style={styles.infoValue}>
-                        ${infoTotals.deposits.toFixed(2)}
-                      </Text>
-                    </View>
-                    <View style={styles.infoRow}>
-                      <Text style={styles.infoLabel}>
-                        Total withdrawals
-                      </Text>
-                      <Text style={styles.infoValue}>
-                        ${infoTotals.withdraws.toFixed(2)}
-                      </Text>
-                    </View>
-                    <View style={styles.infoRow}>
-                      <Text style={styles.infoLabel}>Net</Text>
-                      <Text style={styles.infoValue}>
-                        ${infoTotals.net.toFixed(2)}
-                      </Text>
-                    </View>
-                  </>
-                )}
-
-                <Text style={styles.historyTitle}>
-                  Recent money history
-                </Text>
-                {infoLedger.length === 0 ? (
-                  <Text style={styles.historyEmpty}>
-                    No ledger entries yet.
-                  </Text>
-                ) : (
-                  infoLedger.map((l) => (
-                    <View key={l.id} style={styles.historyRow}>
-                      <Text style={styles.historyType}>
-                        {l.type.toUpperCase()}
-                      </Text>
-                      <Text style={styles.historyMeta}>
-                        {new Date(
-                          l.created_at
-                        ).toLocaleString()}{" "}
-                        • {l.status}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.historyAmount,
-                          {
-                            color:
-                              l.amount_cents >= 0
-                                ? "#22c55e"
-                                : "#ef4444",
-                          },
-                        ]}
-                      >
-                        {(l.amount_cents / 100).toFixed(2)}
-                      </Text>
-                    </View>
-                  ))
-                )}
-              </ScrollView>
-            )}
-
-            <TouchableOpacity
-              style={[styles.modalBtn, styles.modalBtnCancel]}
-              onPress={closeInfo}
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => setRejectVisible(false)}
+          >
+            <Pressable
+              style={styles.modalCard}
+              onPress={() => {}}
             >
-              <Text style={styles.modalBtnCancelText}>Close</Text>
-            </TouchableOpacity>
+              <Text style={styles.modalTitle}>
+                Reject withdrawal
+              </Text>
+              <Text style={styles.modalSubtitle}>
+                Optional: add a reason for rejecting this request.
+              </Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="Reason (optional)"
+                placeholderTextColor="rgba(255,255,255,0.6)"
+                value={rejectReason}
+                onChangeText={setRejectReason}
+                multiline
+              />
+              <View style={styles.modalBtnRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.modalBtn,
+                    styles.modalBtnCancel,
+                  ]}
+                  onPress={() => setRejectVisible(false)}
+                >
+                  <Text style={styles.modalBtnCancelText}>
+                    Close
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.modalBtn,
+                    styles.modalBtnDestructive,
+                  ]}
+                  onPress={submitReject}
+                  disabled={!rejectTarget}
+                >
+                  <Text style={styles.modalBtnDestructiveText}>
+                    Reject
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </Pressable>
           </Pressable>
-        </Pressable>
-      </Modal>
+        </Modal>
+
+        {/* Info Modal */}
+        <Modal
+          visible={infoVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={closeInfo}
+        >
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={closeInfo}
+          >
+            <Pressable
+              style={styles.modalCardLarge}
+              onPress={() => {}}
+            >
+              <Text style={styles.modalTitle}>
+                Player wallet overview
+              </Text>
+              <Text style={styles.modalSubtitle}>
+                {infoTarget?.user?.full_name ??
+                  infoTarget?.user?.email ??
+                  infoTarget?.user_id}
+              </Text>
+
+              {infoLoading ? (
+                <ActivityIndicator
+                  color="#fff"
+                  style={{ marginTop: 16 }}
+                />
+              ) : (
+                <ScrollView
+                  style={{ marginTop: 12, maxHeight: 380 }}
+                  showsVerticalScrollIndicator={false}
+                >
+                  <View style={styles.infoRow}>
+                    <Text style={styles.infoLabel}>
+                      Current balance
+                    </Text>
+                    <Text style={styles.infoValue}>
+                      $
+                      {((infoBalance ?? 0) / 100).toFixed(2)}
+                    </Text>
+                  </View>
+                  {infoTotals && (
+                    <>
+                      <View style={styles.infoRow}>
+                        <Text style={styles.infoLabel}>
+                          Total deposits
+                        </Text>
+                        <Text style={styles.infoValue}>
+                          ${infoTotals.deposits.toFixed(2)}
+                        </Text>
+                      </View>
+                      <View style={styles.infoRow}>
+                        <Text style={styles.infoLabel}>
+                          Total withdrawals
+                        </Text>
+                        <Text style={styles.infoValue}>
+                          ${infoTotals.withdraws.toFixed(2)}
+                        </Text>
+                      </View>
+                      <View style={styles.infoRow}>
+                        <Text style={styles.infoLabel}>
+                          Net
+                        </Text>
+                        <Text style={styles.infoValue}>
+                          ${infoTotals.net.toFixed(2)}
+                        </Text>
+                      </View>
+                    </>
+                  )}
+
+                  <Text style={styles.historyTitle}>
+                    Recent money history
+                  </Text>
+                  {infoLedger.length === 0 ? (
+                    <Text style={styles.historyEmpty}>
+                      No ledger entries yet.
+                    </Text>
+                  ) : (
+                    infoLedger.map((l) => (
+                      <View
+                        key={l.id}
+                        style={styles.historyRow}
+                      >
+                        <Text style={styles.historyType}>
+                          {l.type.toUpperCase()}
+                        </Text>
+                        <Text style={styles.historyMeta}>
+                          {new Date(
+                            l.created_at
+                          ).toLocaleString()}{" "}
+                          • {l.status}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.historyAmount,
+                            {
+                              color:
+                                l.amount_cents >= 0
+                                  ? "#22c55e"
+                                  : "#ef4444",
+                            },
+                          ]}
+                        >
+                          {(l.amount_cents / 100).toFixed(2)}
+                        </Text>
+                      </View>
+                    ))
+                  )}
+                </ScrollView>
+              )}
+
+              <TouchableOpacity
+                style={[
+                  styles.modalBtn,
+                  styles.modalBtnCancel,
+                ]}
+                onPress={closeInfo}
+              >
+                <Text style={styles.modalBtnCancelText}>
+                  Close
+                </Text>
+              </TouchableOpacity>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      </SafeAreaView>
     </ImageBackground>
   );
 }
@@ -621,19 +654,49 @@ const styles = StyleSheet.create({
   bg: {
     flex: 1,
     backgroundColor: INK,
+  },
+  safe: {
+    flex: 1,
     paddingHorizontal: 16,
-    paddingTop: 50,
+    paddingTop: 8,
   },
-  header: {
+
+  /** ---- SIMPLE PAGE HEADER ---- */
+  pageHeader: {
+    marginBottom: 10,
+  },
+  breadcrumb: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 14,
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.25)",
+    backgroundColor: "rgba(10,10,20,0.9)",
   },
-  title: {
+  breadcrumbText: {
+    marginLeft: 4,
+    color: GOLD,
+    fontFamily: "PoppinsMedium",
+    fontSize: 11,
+  },
+  pageTitle: {
     color: "#fff",
     fontSize: 20,
     fontFamily: "PoppinsBold",
+  },
+  pageSubtitle: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 12,
+    fontFamily: "Poppins",
+    marginTop: 2,
+  },
+
+  /** ---- FILTERS / SEARCH ---- */
+  topControls: {
+    marginBottom: 10,
   },
   empty: {
     color: "rgba(255,255,255,0.7)",
@@ -644,8 +707,7 @@ const styles = StyleSheet.create({
   filterRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
-    marginBottom: 10,
+    marginBottom: 8,
   },
   filterChip: {
     paddingHorizontal: 12,
@@ -654,6 +716,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.25)",
     backgroundColor: "rgba(10,10,20,0.9)",
+    marginRight: 8,
+    marginBottom: 6,
   },
   filterChipSelected: {
     backgroundColor: GOLD,
@@ -677,7 +741,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     backgroundColor: "rgba(5,5,15,0.95)",
-    marginBottom: 12,
   },
   searchInput: {
     flex: 1,
@@ -685,6 +748,8 @@ const styles = StyleSheet.create({
     fontFamily: "Poppins",
     fontSize: 13,
   },
+
+  /** ---- CARDS ---- */
   card: {
     backgroundColor: CARD,
     borderRadius: 14,
@@ -733,7 +798,6 @@ const styles = StyleSheet.create({
   },
   actionsRow: {
     flexDirection: "row",
-    gap: 8,
     marginTop: 10,
   },
   btn: {
@@ -743,16 +807,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
-    gap: 6,
+    marginRight: 8,
   },
   btnApprove: { backgroundColor: "#22c55e" },
-  btnReject: { backgroundColor: "#ef4444" },
+  btnReject: { backgroundColor: "#ef4444", marginRight: 0 },
   btnText: {
     color: "#fff",
     fontFamily: "PoppinsSemiBold",
     fontSize: 13,
+    marginLeft: 6,
   },
 
+  /** ---- MODALS ---- */
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.6)",
@@ -806,13 +872,13 @@ const styles = StyleSheet.create({
   modalBtnRow: {
     flexDirection: "row",
     justifyContent: "flex-end",
-    gap: 10,
     marginTop: 16,
   },
   modalBtn: {
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 999,
+    marginLeft: 10,
   },
   modalBtnCancel: {
     backgroundColor: "transparent",
@@ -831,6 +897,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
 
+  /** ---- INFO / HISTORY ---- */
   infoRow: {
     flexDirection: "row",
     justifyContent: "space-between",

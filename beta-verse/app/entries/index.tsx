@@ -224,7 +224,7 @@ export default function EntriesIndex() {
           style={styles.backBtn}
         >
           <Ionicons name="chevron-back" size={RFValue(18)} color="#fff" />
-          <Text style={styles.backTxt}>Tournaments</Text>
+          <Text style={styles.backTxt}></Text>
         </TouchableOpacity>
         <Text style={styles.title}>My Galaxy Entries</Text>
         <View style={{ width: RFValue(90) }} />

@@ -14,8 +14,8 @@ type SignUpInput = {
   full_name: string;
   dob: string; // 'YYYY-MM-DD'
   phone?: string;
-  country: string;
-  state?: string;
+  country: string; // e.g. 'US'
+  state?: string; // we’ll treat this as state_code (e.g. 'FL')
   username?: string;
   referral_code?: string;
   termsAccepted: boolean;
@@ -112,48 +112,55 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     return { score, label };
   };
 
+  // ---------- SIGN UP ----------
   const signUp = async (input: SignUpInput) => {
-    const { email, password, ...meta } = input;
+    const {
+      email,
+      password,
+      full_name,
+      dob,
+      phone,
+      country,
+      state,
+      username,
+      referral_code,
+      termsAccepted,
+      geoConsent,
+    } = input;
+
+    const nowISO = new Date().toISOString();
 
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: {
-          full_name: meta.full_name,
-          dob: meta.dob,
-          username: meta.username,
-          phone: meta.phone,
-          country: meta.country,
-          state: meta.state,
-          referral_code: meta.referral_code,
-          geoConsent: meta.geoConsent,
-          termsAccepted: meta.termsAccepted,
+          // names here MUST match what the trigger reads
+          full_name,
+          display_name: full_name,
+          username,
+          dob, // 'YYYY-MM-DD'
+          phone,
+          country,
+          state_code: state, // treat input.state as 'FL'
+          state,             // you can later store full name if you want
+          referral_code,
+          avatar_url: null,
+          allow_geo: geoConsent,
+          geo_consent: geoConsent,
+          terms_accepted: termsAccepted,
+          accepted_terms_at: termsAccepted ? nowISO : null,
+          terms_accepted_at: termsAccepted ? nowISO : null,
         },
       },
     });
+
     if (error) throw error;
 
-    if (data.session?.user?.id) {
-      const uid = data.session.user.id;
-      await supabase.from("profiles").upsert(
-        {
-          id: uid,
-          email,
-          full_name: meta.full_name,
-          username: meta.username,
-          dob: meta.dob,
-          phone: meta.phone,
-          country: meta.country,
-          state: meta.state,
-          referral_code: meta.referral_code,
-          geo_consent: meta.geoConsent,
-          terms_accepted: meta.termsAccepted,
-          terms_accepted_at: meta.termsAccepted ? new Date().toISOString() : null,
-        },
-        { onConflict: "id" }
-      );
-      await loadProfile(uid);
+    // if email confirmation is disabled you’ll get a session here
+    const uid = data.user?.id ?? data.session?.user?.id;
+    if (uid) {
+      await loadProfile(uid); // row created by trigger
     }
   };
 

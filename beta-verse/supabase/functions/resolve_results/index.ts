@@ -1,307 +1,320 @@
 // supabase/functions/resolve_results/index.ts
 // deno-lint-ignore-file no-explicit-any
-
-import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+type SportCode = "nba" | "nfl" | "mlb" | "nhl";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const FN_SECRET = Deno.env.get("FN_SECRET")!; // "luxebets2025"
-
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE);
 
-// 🔴 Make sure these match your public.pick_result enum values
-const RESULT_WIN = "win";
-const RESULT_LOSS = "loss";
-const RESULT_PUSH = "push";
+// ENV: which sports are active
+const ACTIVE_SPORTS_ENV = Deno.env.get("SPORTS_ACTIVE");
+const ACTIVE_SPORTS: SportCode[] =
+  (ACTIVE_SPORTS_ENV
+    ? ACTIVE_SPORTS_ENV.split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter((s): s is SportCode =>
+          s === "nba" || s === "nfl" || s === "mlb" || s === "nhl"
+        )
+    : ["nba"]) || ["nba"];
 
-type GameRow = {
-  league_game_id: string;
-  sport: string;
-  game_day: string;
-  status: string;
-  home_team: string;
-  away_team: string;
-  home_score: number | null;
-  away_score: number | null;
-};
+const TZ = "America/New_York";
 
-type PickRow = {
-  id: string;
-  league_game_id: string | null;
-  sport: string;
-  game_day: string;
-  market: string;
-  selection: any;
-};
+function toDayISO(d: Date | string) {
+  const dt = typeof d === "string" ? new Date(d) : d;
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
-function corsHeaders() {
+function getYesterdayISO_ET(): string {
+  const now = new Date();
+  const nowET = new Date(now.toLocaleString("en-US", { timeZone: TZ }));
+  nowET.setDate(nowET.getDate() - 1);
+  nowET.setHours(0, 0, 0, 0);
+  return toDayISO(nowET);
+}
+
+/**
+ * Map picks.selection → "home" | "away" | null
+ * Handles:
+ *  - selection = { side: "home" | "away", team: "UTA", ... }
+ *  - selection = "home"/"away"
+ *  - selection = "UTA"/"HOU" or abbreviations
+ */
+function selectionToSide(
+  selection: any,
+  homeTeam: string,
+  awayTeam: string,
+): "home" | "away" | null {
+  // 1) If it's an object with a side field, trust that first
+  if (selection && typeof selection === "object") {
+    const rawSide =
+      (selection.side ?? selection.Side ?? selection.SIDE) as
+        | string
+        | undefined;
+    if (rawSide) {
+      const sideNorm = String(rawSide).trim().toLowerCase();
+      if (sideNorm === "home" || sideNorm === "h") return "home";
+      if (sideNorm === "away" || sideNorm === "a") return "away";
+    }
+
+    // fallback: try its "team" field vs home/away
+    const rawTeam =
+      (selection.team ?? selection.Team ?? selection.TEAM) as
+        | string
+        | undefined;
+    if (rawTeam) {
+      const t = String(rawTeam).trim().toLowerCase();
+      const home = homeTeam.trim().toLowerCase();
+      const away = awayTeam.trim().toLowerCase();
+
+      if (t === home) return "home";
+      if (t === away) return "away";
+
+      const onlyLetters = (x: string) => x.replace(/[^a-z]/gi, "");
+      const t2 = onlyLetters(t);
+      const home2 = onlyLetters(home);
+      const away2 = onlyLetters(away);
+      if (t2 && t2 === home2) return "home";
+      if (t2 && t2 === away2) return "away";
+    }
+  }
+
+  // 2) Otherwise treat selection as a primitive and try string logic
+  const s = String(selection ?? "")
+    .trim()
+    .toLowerCase();
+  if (!s) return null;
+
+  if (s === "home" || s === "h") return "home";
+  if (s === "away" || s === "a") return "away";
+
+  const home = homeTeam.trim().toLowerCase();
+  const away = awayTeam.trim().toLowerCase();
+
+  if (s === home) return "home";
+  if (s === away) return "away";
+
+  const onlyLetters = (x: string) => x.replace(/[^a-z]/gi, "");
+  const s2 = onlyLetters(s);
+  const home2 = onlyLetters(home);
+  const away2 = onlyLetters(away);
+
+  if (s2 && s2 === home2) return "home";
+  if (s2 && s2 === away2) return "away";
+
+  return null;
+}
+
+async function gradeDay(dayISO: string) {
+  // 1) Get all completed games for that day
+  const { data: games, error: gamesErr } = await sb
+    .from("games")
+    .select("*")
+    .in("sport", ACTIVE_SPORTS)
+    .eq("game_day", dayISO)
+    .not("home_score", "is", null)
+    .not("away_score", "is", null);
+
+  if (gamesErr) {
+    console.error("[resolve_results] Error fetching games", {
+      dayISO,
+      gamesErr,
+    });
+    throw gamesErr;
+  }
+
+  if (!games || games.length === 0) {
+    console.log("[resolve_results] No completed games to grade on", dayISO);
+    return { gamesProcessed: 0, picksUpdated: 0 };
+  }
+
+  let totalPicksUpdated = 0;
+  const nowISO = new Date().toISOString();
+
+  for (const g of games as any[]) {
+    const sport: SportCode = g.sport;
+    const leagueGameId: string = g.league_game_id;
+    const homeTeam: string = g.home_team;
+    const awayTeam: string = g.away_team;
+    const homeScore: number = g.home_score;
+    const awayScore: number = g.away_score;
+
+    let winnerSide: "home" | "away" | null = null;
+    let isTie = false;
+
+    if (homeScore > awayScore) {
+      winnerSide = "home";
+    } else if (awayScore > homeScore) {
+      winnerSide = "away";
+    } else {
+      isTie = true;
+    }
+
+    // 2) Grab all ungraded picks tied to this game
+    const { data: picks, error: picksErr } = await sb
+      .from("picks")
+      .select("id, selection")
+      .eq("sport", sport)
+      .eq("game_day", dayISO)
+      .eq("league_game_id", leagueGameId)
+      .is("result", null);
+
+    if (picksErr) {
+      console.error("[resolve_results] Error fetching picks for game", {
+        sport,
+        dayISO,
+        leagueGameId,
+        picksErr,
+      });
+      continue;
+    }
+
+    if (!picks || picks.length === 0) {
+      continue;
+    }
+
+    const winIds: string[] = [];
+    const loseIds: string[] = [];
+    const pushIds: string[] = [];
+
+    if (isTie) {
+      // all picks are pushes
+      for (const p of picks as any[]) {
+        pushIds.push(p.id);
+      }
+    } else {
+      for (const p of picks as any[]) {
+        const side = selectionToSide(p.selection, homeTeam, awayTeam);
+        if (!side) {
+          console.log("[resolve_results] Unknown selection, skipping pick", {
+            pickId: p.id,
+            selection: p.selection,
+            homeTeam,
+            awayTeam,
+          });
+          continue;
+        }
+        if (side === winnerSide) {
+          winIds.push(p.id);
+        } else {
+          loseIds.push(p.id);
+        }
+      }
+    }
+
+    // 3) Apply updates
+
+    if (pushIds.length > 0) {
+      const { error } = await sb
+        .from("picks")
+        .update({
+          result: "push",
+          is_correct: null,
+          points: 0,
+          graded_at: nowISO,
+          resolved_at: nowISO,
+        })
+        .in("id", pushIds);
+
+      if (error) {
+        console.error("[resolve_results] Error updating push picks", {
+          sport,
+          dayISO,
+          leagueGameId,
+          error,
+        });
+      } else {
+        totalPicksUpdated += pushIds.length;
+      }
+    }
+
+    if (winIds.length > 0) {
+      const { error } = await sb
+        .from("picks")
+        .update({
+          result: "win",
+          is_correct: true,
+          points: 1, // change if you want different scoring
+          graded_at: nowISO,
+          resolved_at: nowISO,
+        })
+        .in("id", winIds);
+
+      if (error) {
+        console.error("[resolve_results] Error updating winner picks", {
+          sport,
+          dayISO,
+          leagueGameId,
+          error,
+        });
+      } else {
+        totalPicksUpdated += winIds.length;
+      }
+    }
+
+    if (loseIds.length > 0) {
+      const { error } = await sb
+        .from("picks")
+        .update({
+          result: "loss", // 👈 enum requires "loss", not "lose"
+          is_correct: false,
+          points: 0,
+          graded_at: nowISO,
+          resolved_at: nowISO,
+        })
+        .in("id", loseIds);
+
+      if (error) {
+        console.error("[resolve_results] Error updating loser picks", {
+          sport,
+          dayISO,
+          leagueGameId,
+          error,
+        });
+      } else {
+        totalPicksUpdated += loseIds.length;
+      }
+    }
+  }
+
   return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, x-fn-secret",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    gamesProcessed: (games as any[]).length,
+    picksUpdated: totalPicksUpdated,
   };
 }
 
-function checkSecret(req: Request): Response | null {
-  const header = req.headers.get("x-fn-secret");
-  if (!header || header !== FN_SECRET) {
-    return new Response("Forbidden", {
-      status: 403,
-      headers: corsHeaders(),
-    });
-  }
-  return null;
-}
-
-function isFinal(status: string | null | undefined): boolean {
-  if (!status) return false;
-  const s = status.toLowerCase();
-  // SportsDataIO sometimes uses "Final", "F/OT", etc.
-  return (
-    s.includes("final") ||
-    s === "closed" ||
-    s === "complete" ||
-    s.startsWith("f/")
-  );
-}
-
-/**
- * Grade by side only (home/away), ignoring team letters ("R", "S", etc).
- * This works for both moneyline and spread with your current data.
- */
-function gradeSide(side: string, game: GameRow) {
-  if (game.home_score == null || game.away_score == null) return null;
-
-  const s = side.toLowerCase();
-  const homeWins = game.home_score > game.away_score;
-  const awayWins = game.away_score > game.home_score;
-
-  if (!homeWins && !awayWins) {
-    // tie -> treat as push
-    return { result: RESULT_PUSH, is_correct: false, points: 0 };
-  }
-
-  if (s === "home" || s === "h") {
-    if (homeWins) {
-      return { result: RESULT_WIN, is_correct: true, points: 1 };
-    } else {
-      return { result: RESULT_LOSS, is_correct: false, points: 0 };
-    }
-  }
-
-  if (s === "away" || s === "a") {
-    if (awayWins) {
-      return { result: RESULT_WIN, is_correct: true, points: 1 };
-    } else {
-      return { result: RESULT_LOSS, is_correct: false, points: 0 };
-    }
-  }
-
-  return null;
-}
-
-/**
- * For totals we *don't have the line* in your selection JSON right now.
- * To avoid "Pending forever", we mark them as a 0-point PUSH.
- * (You can upgrade this later once you store the total line.)
- */
-function gradeTotalPlaceholder(side: string, game: GameRow) {
-  if (game.home_score == null || game.away_score == null) return null;
-
-  // Just mark as graded, 0 points.
-  return { result: RESULT_PUSH, is_correct: false, points: 0 };
-}
-
-function computeGrade(pick: PickRow, game: GameRow) {
-  if (!isFinal(game.status)) return null;
-  if (game.home_score == null || game.away_score == null) return null;
-
-  const sel = pick.selection || {};
-  const market = String(pick.market || "").toLowerCase();
-  const side: string =
-    sel.side ??
-    sel.s ??
-    sel.bet ??
-    "";
-
-  if (!side) return null;
-
-  if (market === "ml" || market === "moneyline") {
-    return gradeSide(side, game);
-  }
-
-  if (market === "spread") {
-    // Using side (home/away), ignoring actual spread line for now.
-    return gradeSide(side, game);
-  }
-
-  if (market === "total" || market === "totals" || market === "ou") {
-    return gradeTotalPlaceholder(side, game);
-  }
-
-  // Unknown market -> skip
-  return null;
-}
-
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { status: 200, headers: corsHeaders() });
-  }
-
-  const forbidden = checkSecret(req);
-  if (forbidden) return forbidden;
-
   try {
-    // 1) Load all ungraded picks for the last 7 days
-    const daysBack = 7;
-    const sinceDate = new Date();
-    sinceDate.setUTCDate(sinceDate.getUTCDate() - daysBack);
-    const sinceISO = sinceDate.toISOString().slice(0, 10);
+    let dayISO: string | undefined;
 
-    const { data: picks, error: picksErr } = await sb
-      .from("picks")
-      .select("id, league_game_id, sport, game_day, market, selection")
-      .is("result", null)
-      .gte("game_day", sinceISO)
-      .limit(1000);
-
-    if (picksErr) {
-      console.error("load picks error", picksErr);
-      return new Response("Error loading picks", {
-        status: 500,
-        headers: corsHeaders(),
-      });
-    }
-
-    if (!picks || !picks.length) {
-      return new Response(
-        JSON.stringify({ ok: true, graded: 0, reason: "no ungraded picks" }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json", ...corsHeaders() },
-        },
-      );
-    }
-
-    const leagueIds = Array.from(
-      new Set(
-        picks
-          .map((p: any) => p.league_game_id)
-          .filter((x: any) => typeof x === "string" && x.length > 0),
-      ),
-    );
-
-    if (!leagueIds.length) {
-      return new Response(
-        JSON.stringify({
-          ok: true,
-          graded: 0,
-          reason: "no league_game_ids on picks",
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json", ...corsHeaders() },
-        },
-      );
-    }
-
-    // 2) Load the matching games
-    const { data: games, error: gamesErr } = await sb
-      .from("games")
-      .select(
-        "league_game_id, sport, game_day, status, home_team, away_team, home_score, away_score",
-      )
-      .in("league_game_id", leagueIds);
-
-    if (gamesErr) {
-      console.error("load games error", gamesErr);
-      return new Response("Error loading games", {
-        status: 500,
-        headers: corsHeaders(),
-      });
-    }
-
-    const gameMap = new Map<string, GameRow>();
-    (games ?? []).forEach((g: any) => {
-      if (g.league_game_id) {
-        gameMap.set(g.league_game_id, g as GameRow);
+    // Optional manual override: POST { "dayISO": "YYYY-MM-DD" }
+    if (req.method === "POST") {
+      try {
+        const body = await req.json();
+        dayISO = body?.dayISO;
+      } catch {
+        // ignore bad JSON
       }
-    });
-
-    // 3) Grade picks
-    const updates: {
-      id: string;
-      result: string;
-      is_correct: boolean;
-      points: number;
-      graded_at: string;
-      resolved_at: string;
-    }[] = [];
-
-    for (const p of picks as PickRow[]) {
-      if (!p.league_game_id) continue;
-      const g = gameMap.get(p.league_game_id);
-      if (!g) continue;
-
-      const grade = computeGrade(p, g);
-      if (!grade) continue;
-
-      updates.push({
-        id: p.id,
-        result: grade.result,
-        is_correct: grade.is_correct,
-        points: grade.points,
-        graded_at: new Date().toISOString(),
-        resolved_at: new Date().toISOString(),
-      });
     }
 
-    if (!updates.length) {
-      return new Response(
-        JSON.stringify({ ok: true, graded: 0, reason: "no gradeable picks" }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json", ...corsHeaders() },
-        },
-      );
+    // Default to "yesterday in ET" (used by cron)
+    if (!dayISO) {
+      dayISO = getYesterdayISO_ET();
     }
 
-    // 4) Persist updates using UPDATE (no upsert, avoids entry_id issue)
-    let updatedCount = 0;
-    for (const u of updates) {
-      const { error: updErr } = await sb
-        .from("picks")
-        .update({
-          result: u.result,
-          is_correct: u.is_correct,
-          points: u.points,
-          graded_at: u.graded_at,
-          resolved_at: u.resolved_at,
-        })
-        .eq("id", u.id);
-
-      if (updErr) {
-        console.error("update single pick error", u.id, updErr);
-        continue;
-      }
-      updatedCount++;
-    }
+    const result = await gradeDay(dayISO);
 
     return new Response(
-      JSON.stringify({ ok: true, graded: updatedCount }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json", ...corsHeaders() },
-      },
+      JSON.stringify({ ok: true, dayISO, ...result }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
     );
   } catch (err) {
-    console.error("resolve_results fatal", err);
-    return new Response("Internal error", {
-      status: 500,
-      headers: corsHeaders(),
-    });
+    console.error("[resolve_results] top-level error", err);
+    return new Response("Internal error in resolve_results", { status: 500 });
   }
 });

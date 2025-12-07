@@ -6,7 +6,6 @@ import { useAuth } from "@/hooks/AuthContext";
 export default function AdminLayout() {
   const { user } = useAuth();
 
-  // No user? → login
   if (!user) {
     return <Redirect href="/user/login" />;
   }
@@ -15,15 +14,23 @@ export default function AdminLayout() {
     user?.user_metadata?.is_admin === true ||
     user?.app_metadata?.role === "admin";
 
-  // Logged in but not admin? → push back into main app
   if (!isAdmin) {
     return <Redirect href="/(tabs)/wallet" />;
   }
 
-  // Admin only stack
   return (
     <Stack screenOptions={{ headerShown: false }}>
+      {/* Admin Dashboard / Menu */}
+      <Stack.Screen name="index" />
+
+      {/* Withdrawals module */}
       <Stack.Screen name="withdrawals" />
+
+      {/* Referrals module */}
+      <Stack.Screen name="referrals" />
+
+      {/* NEW: Grade Games */}
+      <Stack.Screen name="grade_games" />
     </Stack>
   );
 }

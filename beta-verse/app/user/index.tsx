@@ -90,7 +90,7 @@ export default function Login() {
     >
       <View style={styles.log_contain}>
         <Animated.Text style={[styles.log_sub, animatedTextSharedStyle]}>
-          You vs. the
+          Rise Above The
         </Animated.Text>
 
         <Animated.Text style={[styles.log_head, animatedWorldStyle, textShadowStyle]}>
@@ -108,8 +108,8 @@ export default function Login() {
         <View style={styles.welc_cont}>
           <Text style={styles.log_welc}>Welcome</Text>
           <Text style={styles.login_text}>
-            🏆 Welcome to LuxeBets 🏆
-            Get ready to experience the thrill of the game like never before!...ff! 🚀🔥.
+            🏆 Welcome to Premnix! 🏆 
+            Sign-up now and Enjoy $5 off of your first tournament!🚀🔥.
           </Text>
         </View>
 
@@ -142,18 +142,18 @@ const styles = StyleSheet.create({
     fontSize: RFValue(32),
     color: "white",
     marginBottom: RFValue(0),
-    height: 40,
+    height: RFValue(40),
   },
   log_head: {
     fontFamily: "PoppinsSemiBold",
     fontSize: RFValue(54),
     color: "white",
-    marginBottom: RFValue(20),
+    marginBottom: RFValue(7),
   },
   log_img_cont: {
     width: "100%",
     alignItems: "center",
-    marginBottom: RFValue(15),
+    marginBottom: RFValue(2),
   },
   logo: {
     width: width * 0.9,
@@ -194,6 +194,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     alignSelf: "stretch",
+    marginBottom: RFValue(30),
   },
   create_text: {
     textDecorationLine: "underline",

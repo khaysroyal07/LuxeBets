@@ -261,7 +261,7 @@ export default function Dash() {
   }, [sportKey]);
 
   async function fetchWindowSerial(
-    center: Date,
+   center: Date,
     aheadDays: number,
     backDays: number,
     stopAfter: number
@@ -572,6 +572,7 @@ export default function Dash() {
     }
   };
 
+  /** 🪧 DARK, SEMI-TRANSPARENT HERO AD CARD */
   const HeroTournamentCard = () => (
     <TouchableOpacity
       activeOpacity={0.9}
@@ -582,43 +583,64 @@ export default function Dash() {
         } as any)
       }
     >
-      <BlurView intensity={60} tint="dark" style={styles.heroCardBlur}>
+      <BlurView intensity={45} tint="dark" style={styles.heroCardBlur}>
+        {/* subtle dark galaxy blend */}
         <LinearGradient
           colors={[
-            "rgba(138,68,255,0.95)",
-            "rgba(82,15,130,0.95)",
-            "rgba(5,0,40,0.9)",
+            "rgba(15,23,42,0.85)",  // navy
+            "rgba(76,29,149,0.8)",  // deep purple
+            "rgba(15,23,42,0.9)",   // back to navy
           ]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={StyleSheet.absoluteFill}
         />
+
         <View style={styles.heroContent}>
+          {/* LEFT: copy */}
           <View style={styles.heroLeft}>
-            <Text style={styles.heroTitle}>Luxe Weekly</Text>
+            <View style={styles.heroBrandRow}>
+              <Text style={styles.heroBrandDot}>●</Text>
+              <Text style={styles.heroBrandText}>PREMNIX</Text>
+              <Text style={styles.heroBrandTag}>GALAXY SPORTS</Text>
+            </View>
+
+            <Text style={styles.heroTitle}>Bet the Galaxy.</Text>
             <Text style={styles.heroSubtitle}>
-              Tap any matchup or hit “Enter” to join this week’s galaxy
-              tournament.
+              One weekly slate. One entry. Chase the top of the Premnix
+              leaderboard.
             </Text>
-            <View style={styles.heroTagsRow}>
-              <View style={styles.heroPill}>
-                <Text style={styles.heroPillText}>Entry from ${DEFAULT_TIER}</Text>
+
+            <View style={styles.heroBottomRow}>
+              <View style={styles.heroPillDark}>
+                <Text style={styles.heroPillDarkText}>
+                  From ${DEFAULT_TIER} to play
+                </Text>
               </View>
-              <View style={[styles.heroPill, { backgroundColor: "#22c55e" }]}>
-                <Text style={[styles.heroPillText, { color: "#022c1a" }]}>
-                  Points • No elim
+              <View style={styles.heroPillOutline}>
+                <Text style={styles.heroPillOutlineText}>
+                  Sun–Tues • Weekly
                 </Text>
               </View>
             </View>
           </View>
+
+          {/* RIGHT: badge + shiny button */}
           <View style={styles.heroRight}>
-            <Text style={styles.heroSparkles}>✨</Text>
-            <TouchableOpacity
-              style={styles.heroCta}
-              activeOpacity={0.9}
-            >
-              <Text style={styles.heroCtaText}>Enter now</Text>
-            </TouchableOpacity>
+            <View style={styles.heroRightBadge}>
+              <Text style={styles.heroRightBadgeText}>FEATURED</Text>
+            </View>
+
+            <View style={styles.heroCtaWrapper}>
+              <LinearGradient
+                colors={["#fef9c3", "#fde68a", "#facc15"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.heroCtaButton}
+              >
+                <Text style={styles.heroCtaTextSub}>Spots open • Sun–Tues</Text>
+              </LinearGradient>
+            </View>
           </View>
         </View>
       </BlurView>
@@ -634,26 +656,10 @@ export default function Dash() {
       {/* TOP BAR */}
       <View style={styles.topBar}>
         <View style={{ flexDirection: "row", alignItems: "center" }}>
-          <Text style={styles.appTitle}>LuxeBETS</Text>
-          <Text style={styles.appSubtitle}> • Galaxy Picks</Text>
+          <Text style={styles.appTitle}>Premnix</Text>
         </View>
 
         <View style={{ flexDirection: "row", gap: RFValue(12) }}>
-          <TouchableOpacity
-            onPress={() => {
-              setStreakOpen(true);
-              loadStreaks();
-            }}
-            activeOpacity={0.85}
-          >
-            <Image
-              source={{
-                uri: "https://img.icons8.com/fluency/96/fire-element.png",
-              }}
-              style={[styles.iconSmall, { tintColor: undefined }]}
-            />
-          </TouchableOpacity>
-
           <TouchableOpacity
             onPress={() => router.push("/leaderboard")}
             activeOpacity={0.85}
@@ -859,10 +865,7 @@ export default function Dash() {
         <View style={styles.modalBackdrop}>
           <BlurView intensity={80} tint="dark" style={styles.modalCard}>
             <LinearGradient
-              colors={[
-                "rgba(97,61,193,0.35)",
-                "rgba(44,7,53,0.35)",
-              ]}
+              colors={["rgba(97,61,193,0.35)", "rgba(44,7,53,0.35)"]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={StyleSheet.absoluteFill}
@@ -987,20 +990,12 @@ export default function Dash() {
             ) : null}
 
             {!!notEnabled && (
-              <Text
-                style={styles.infoText}
-              >
+              <Text style={styles.infoText}>
                 This league isn’t enabled on your SportsDataIO key yet.
               </Text>
             )}
 
-            {!!note && (
-              <Text
-                style={styles.infoText}
-              >
-                {note}
-              </Text>
-            )}
+            {!!note && <Text style={styles.infoText}>{note}</Text>}
           </>
         }
         ListEmptyComponent={
@@ -1147,73 +1142,143 @@ const styles = StyleSheet.create({
     color: "#fff",
   },
 
+  /** 🪧 HERO (DARK TRANSPARENT) */
   heroCardBlur: {
     width: width * 0.94,
     alignSelf: "center",
     borderRadius: RFValue(22),
-    marginTop: RFValue(6),
+    marginTop: RFValue(8),
     overflow: "hidden",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(4,7,20,0.7)",
   },
   heroContent: {
     flexDirection: "row",
-    paddingHorizontal: RFValue(14),
-    paddingVertical: RFValue(12),
+    paddingHorizontal: RFValue(16),
+    paddingVertical: RFValue(14),
   },
-  heroLeft: { flex: 1, paddingRight: RFValue(8) },
+  heroLeft: {
+    flex: 1.4,
+    paddingRight: RFValue(10),
+  },
   heroRight: {
+    flex: 0.9,
     alignItems: "flex-end",
     justifyContent: "space-between",
   },
+  heroBrandRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: RFValue(4),
+  },
+  heroBrandDot: {
+    fontSize: RFValue(10),
+    color: GOLD,
+    marginRight: RFValue(4),
+  },
+  heroBrandText: {
+    fontFamily: "PoppinsBold",
+    fontSize: RFValue(11),
+    color: "#e5e7eb",
+    marginRight: RFValue(6),
+  },
+  heroBrandTag: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(9),
+    color: "rgba(226,232,240,0.8)",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
   heroTitle: {
     fontFamily: "PoppinsBold",
-    fontSize: RFValue(16),
+    fontSize: RFValue(20),
     color: "#fff",
     marginBottom: RFValue(2),
   },
   heroSubtitle: {
     fontFamily: "Poppins",
     fontSize: RFValue(11),
-    color: "rgba(255,255,255,0.9)",
+    color: "rgba(241,245,249,0.92)",
   },
-  heroTagsRow: {
+  heroBottomRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    marginTop: RFValue(8),
+    marginTop: RFValue(10),
     gap: RFValue(6),
   },
-  heroPill: {
+  heroPillDark: {
     paddingHorizontal: RFValue(10),
-    paddingVertical: RFValue(4),
+    paddingVertical: RFValue(5),
     borderRadius: RFValue(999),
-    backgroundColor: "rgba(255,215,0,0.18)",
+    backgroundColor: "rgba(15,23,42,0.85)",
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.9)",
   },
-  heroPillText: {
+  heroPillDarkText: {
     fontFamily: "PoppinsMedium",
     fontSize: RFValue(10),
     color: GOLD,
   },
-  heroSparkles: {
-    fontSize: RFValue(26),
+  heroPillOutline: {
+    paddingHorizontal: RFValue(10),
+    paddingVertical: RFValue(5),
+    borderRadius: RFValue(999),
+    backgroundColor: "transparent",
+    borderWidth: 1,
+    borderColor: "rgba(226,232,240,0.9)",
+  },
+  heroPillOutlineText: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(10),
+    color: "rgba(248,250,252,0.96)",
+  },
+  heroRightBadge: {
+    paddingHorizontal: RFValue(10),
+    paddingVertical: RFValue(4),
+    borderRadius: RFValue(999),
+    backgroundColor: "rgba(15,23,42,0.9)",
+    borderWidth: 1,
+    borderColor: "rgba(248,250,252,0.5)",
     marginBottom: RFValue(10),
   },
-  heroCta: {
-    paddingHorizontal: RFValue(14),
-    paddingVertical: RFValue(6),
-    borderRadius: RFValue(999),
-    backgroundColor: GOLD,
-  },
-  heroCtaText: {
+  heroRightBadgeText: {
     fontFamily: "PoppinsSemiBold",
-    fontSize: RFValue(12),
-    color: "#111",
+    fontSize: RFValue(9),
+    color: "#e5e7eb",
+    letterSpacing: 1.1,
+  },
+  heroCtaWrapper: {
+    marginTop: "auto",
+    shadowColor: "#facc15",
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6,
+  },
+  heroCtaButton: {
+    borderRadius: RFValue(20),
+    paddingHorizontal: RFValue(14),
+    paddingVertical: RFValue(8),
+    borderWidth: 1,
+    borderColor: "rgba(234,179,8,0.9)",
+  },
+  heroCtaTextMain: {
+    fontFamily: "PoppinsSemiBold",
+    fontSize: RFValue(11.5),
+    color: "#111827",
+  },
+  heroCtaTextSub: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(9),
+    color: "rgba(15,23,42,0.85)",
+    marginTop: RFValue(2),
   },
 
   sectionHeaderRow: {
     flexDirection: "row",
     alignItems: "baseline",
-    justifyContent: "space-between",
+    justifyContent: "space_between",
     paddingHorizontal: RFValue(16),
     marginTop: RFValue(4),
   },

@@ -6,10 +6,12 @@ import {
   ImageBackground,
   TouchableOpacity,
   Platform,
+  Alert
 } from "react-native";
 import { RFValue } from "react-native-responsive-fontsize";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { useAuth } from "@/hooks/AuthContext";
 
 const PURPLE = "#613DC1";
 const GOLD = "#FFD700";
@@ -20,7 +22,17 @@ const BG = require("@/assets/images/bgDash.png"); // starry background
 
 const Settings: React.FC = () => {
   const router = useRouter();
-
+    const { user, signOut } = useAuth();
+  
+  // NEW: sign out + go to login
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+      router.replace("/user/login");
+    } catch (e: any) {
+      Alert.alert("Sign out failed", e.message ?? "Please try again.");
+    }
+  };
   return (
     <ImageBackground source={BG} resizeMode="cover" style={styles.bg}>
       {/* Top Bar */}
@@ -93,8 +105,7 @@ const Settings: React.FC = () => {
           <SettingsItem
             icon="log-out-outline"
             text="Log out"
-            onPress={() => router.push("/auth/logout")}
-            isLast
+            onPress={handleSignOut}
           />
         </SettingsCard>
       </View>

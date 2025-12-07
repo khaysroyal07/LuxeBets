@@ -58,7 +58,7 @@ export default function TabLayout() {
 
   // If admin logged in, DO NOT show tabs → send to admin area only
   if (isAdmin) {
-    return <Redirect href="/admin/withdrawals" />;
+    return <Redirect href="/admin" />;
   }
 
   // Normal player → show tabs
