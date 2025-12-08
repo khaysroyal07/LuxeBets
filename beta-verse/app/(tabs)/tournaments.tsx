@@ -1,4 +1,4 @@
-// app/tournaments/index.tsx (or wherever your screen lives)
+// app/(tabs)/tournaments/index.tsx
 import React, { useCallback, useEffect, useState } from "react";
 import {
   View,
@@ -104,15 +104,12 @@ export default function TournamentsScreen() {
   const [loading, setLoading] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
-  // auth + entries
   const [userId, setUserId] = useState<string | null>(null);
 
-  // join modal state
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [selectedTournament, setSelectedTournament] =
     useState<TournamentCard | null>(null);
 
-  // success galaxy alert
   const [showSuccessAlert, setShowSuccessAlert] = useState(false);
 
   // grab user id once
@@ -129,150 +126,133 @@ export default function TournamentsScreen() {
     })();
   }, []);
 
-  const loadTournaments = useCallback(
-    async () => {
-      setLoading(true);
-      try {
-        const { data, error } = await supabase
-          .from("tournaments")
-          .select(
-            "id,tier,status,start_date,end_date,join_open_at,join_close_at"
-          )
-          .order("start_date", { ascending: true });
+  const loadTournaments = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("tournaments")
+        .select(
+          "id,tier,status,start_date,end_date,join_open_at,join_close_at"
+        )
+        .order("start_date", { ascending: true });
 
-        if (error) throw error;
+      if (error) throw error;
 
-        const rows = (data ?? []) as DbTournament[];
-        const now = new Date();
+      const rows = (data ?? []) as DbTournament[];
+      const now = new Date();
 
-        // normalize & keep only tiers we care about
-        const normalized: TournamentCard[] = rows
-          .map((row) => {
-            const rawTier = row.tier;
-            const tierKey = (rawTier || "").toLowerCase() as TierKey;
-            if (!["mars", "jupiter", "saturn"].includes(tierKey))
-              return null;
+      // normalize & keep only tiers we care about
+      const normalized: TournamentCard[] = rows
+        .map((row) => {
+          const rawTier = row.tier;
+          const tierKey = (rawTier || "").toLowerCase() as TierKey;
+          if (!["mars", "jupiter", "saturn"].includes(tierKey)) return null;
 
-            return {
-              id: row.id,
-              tier: tierKey,
-              status: row.status || "locked",
-              startDate: row.start_date ?? null,
-              endDate: row.end_date ?? null,
-              joinOpensAt: row.join_open_at ?? null,
-              joinClosesAt: row.join_close_at ?? null,
-              isPlaceholder: false,
-            } as TournamentCard;
-          })
-          .filter(Boolean) as TournamentCard[];
+          return {
+            id: row.id,
+            tier: tierKey,
+            status: row.status || "active",
+            startDate: row.start_date ?? null,
+            endDate: row.end_date ?? null,
+            joinOpensAt: row.join_open_at ?? null,
+            joinClosesAt: row.join_close_at ?? null,
+            isPlaceholder: false,
+          } as TournamentCard;
+        })
+        .filter(Boolean) as TournamentCard[];
 
-        // pick 1 per tier
-        const mergedBase: TournamentCard[] = TIERS.map(
-          (tierMeta) => {
-            const tierRows = normalized.filter(
-              (t) => t.tier === tierMeta.key
-            );
+      // pick 1 per tier
+      const mergedBase: TournamentCard[] = TIERS.map((tierMeta) => {
+        const tierRows = normalized.filter((t) => t.tier === tierMeta.key);
 
-            if (tierRows.length === 0) {
-              return {
-                id: `placeholder-${tierMeta.key}`,
-                tier: tierMeta.key,
-                status: "locked",
-                isPlaceholder: true,
-              };
-            }
-
-            const withStart = tierRows.map((t) => ({
-              ...t,
-              _start: toDate(t.startDate),
-            }));
-
-            const upcoming = withStart
-              .filter((t) => t._start && t._start >= now)
-              .sort(
-                (a, b) => a._start!.getTime() - b._start!.getTime()
-              );
-
-            if (upcoming.length > 0) {
-              const chosen = upcoming[0];
-              const { _start, ...rest } = chosen;
-              return rest;
-            }
-
-            const past = withStart
-              .filter((t) => t._start && t._start < now)
-              .sort(
-                (a, b) => b._start!.getTime() - a._start!.getTime()
-              );
-
-            if (past.length > 0) {
-              const chosen = past[0];
-              const { _start, ...rest } = chosen;
-              return rest;
-            }
-
-            // fallback
-            return tierRows[0];
-          }
-        );
-
-        // if no user, just show the base list
-        if (!userId) {
-          setTournaments(mergedBase);
-          return;
-        }
-
-        // mark which tournaments the user has already joined
-        const realTournamentIds = mergedBase
-          .filter((t) => !t.isPlaceholder)
-          .map((t) => t.id);
-
-        if (realTournamentIds.length === 0) {
-          setTournaments(mergedBase);
-          return;
-        }
-
-        const { data: entryRows, error: entryErr } = await supabase
-          .from("entries")
-          .select("tournament_id")
-          .eq("user_id", userId)
-          .in("tournament_id", realTournamentIds);
-
-        if (entryErr) throw entryErr;
-
-        const joinedSet = new Set(
-          (entryRows ?? []).map((row: any) => row.tournament_id)
-        );
-
-        const mergedWithJoined = mergedBase.map((t) =>
-          joinedSet.has(t.id) ? { ...t, joined: true } : t
-        );
-
-        setTournaments(mergedWithJoined);
-      } catch (err) {
-        console.error("tournament fetch error", err);
-        Alert.alert(
-          "Error",
-          "Unable to load tournaments right now."
-        );
-
-        // fallback to placeholders if we have nothing
-        setTournaments((prev) => {
-          if (prev.length > 0) return prev;
-          return TIERS.map((tierMeta) => ({
+        if (tierRows.length === 0) {
+          return {
             id: `placeholder-${tierMeta.key}`,
             tier: tierMeta.key,
-            status: "locked" as const,
+            status: "locked",
             isPlaceholder: true,
-          }));
-        });
-      } finally {
-        setLoading(false);
-        setRefreshing(false);
+          };
+        }
+
+        const withStart = tierRows.map((t) => ({
+          ...t,
+          _start: toDate(t.startDate),
+        }));
+
+        const upcoming = withStart
+          .filter((t) => t._start && t._start >= now)
+          .sort((a, b) => a._start!.getTime() - b._start!.getTime());
+
+        if (upcoming.length > 0) {
+          const chosen = upcoming[0];
+          const { _start, ...rest } = chosen;
+          return rest;
+        }
+
+        const past = withStart
+          .filter((t) => t._start && t._start < now)
+          .sort((a, b) => b._start!.getTime() - a._start!.getTime());
+
+        if (past.length > 0) {
+          const chosen = past[0];
+          const { _start, ...rest } = chosen;
+          return rest;
+        }
+
+        return tierRows[0];
+      });
+
+      // if no user, just show the base list
+      if (!userId) {
+        setTournaments(mergedBase);
+        return;
       }
-    },
-    [userId]
-  );
+
+      // mark which tournaments the user has already joined
+      const realTournamentIds = mergedBase
+        .filter((t) => !t.isPlaceholder)
+        .map((t) => t.id);
+
+      if (realTournamentIds.length === 0) {
+        setTournaments(mergedBase);
+        return;
+      }
+
+      const { data: entryRows, error: entryErr } = await supabase
+        .from("entries")
+        .select("tournament_id")
+        .eq("user_id", userId)
+        .in("tournament_id", realTournamentIds);
+
+      if (entryErr) throw entryErr;
+
+      const joinedSet = new Set(
+        (entryRows ?? []).map((row: any) => row.tournament_id)
+      );
+
+      const mergedWithJoined = mergedBase.map((t) =>
+        joinedSet.has(t.id) ? { ...t, joined: true } : t
+      );
+
+      setTournaments(mergedWithJoined);
+    } catch (err) {
+      console.error("tournament fetch error", err);
+      Alert.alert("Error", "Unable to load tournaments right now.");
+
+      setTournaments((prev) => {
+        if (prev.length > 0) return prev;
+        return TIERS.map((tierMeta) => ({
+          id: `placeholder-${tierMeta.key}`,
+          tier: tierMeta.key,
+          status: "locked" as const,
+          isPlaceholder: true,
+        }));
+      });
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [userId]);
 
   useEffect(() => {
     loadTournaments();
@@ -287,16 +267,9 @@ export default function TournamentsScreen() {
   const handlePressTournament = (item: TournamentCard) => {
     if (item.isPlaceholder) return;
 
-    const now = new Date();
-    const openAt = toDate(item.joinOpensAt);
-    const closeAt = toDate(item.joinClosesAt);
-    const inWindow =
-      openAt && closeAt && now >= openAt && now <= closeAt;
+    // For now: every real tournament is open
+    const isOpen = !item.isPlaceholder;
 
-    const isOpen =
-      (item.status === "open" || inWindow) && !item.isPlaceholder;
-
-    // already joined → go to entries
     if (item.joined) {
       router.push("/entries");
       return;
@@ -310,53 +283,25 @@ export default function TournamentsScreen() {
 
   const renderTournament = ({ item }: { item: TournamentCard }) => {
     const tierMeta = TIERS.find((t) => t.key === item.tier)!;
-
-    const now = new Date();
-    const openAt = toDate(item.joinOpensAt);
-    const closeAt = toDate(item.joinClosesAt);
-    const inWindow =
-      openAt && closeAt && now >= openAt && now <= closeAt;
-
-    const isOpen =
-      (item.status === "open" || inWindow) && !item.isPlaceholder;
+    const isOpen = !item.isPlaceholder;
     const isJoined = !!item.joined;
 
-    const weekStart = formatShort(item.startDate);
-    const weekEnd = formatShort(item.endDate);
-    const weekLabel =
-      weekStart && weekEnd
-        ? `Week: ${weekStart} – ${weekEnd}`
-        : weekStart
-        ? `Week of ${weekStart}`
-        : null;
+    // Week label logic
+    const startStr = formatShort(item.startDate ?? item.joinOpensAt);
+    const endStr = formatShort(item.endDate ?? item.joinClosesAt);
+    let weekLabel: string | null = null;
+    if (startStr && endStr && startStr !== endStr) {
+      weekLabel = `Week: ${startStr} – ${endStr}`;
+    } else if (startStr) {
+      weekLabel = `Week of ${startStr}`;
+    }
 
-    const joinStart = formatShort(item.joinOpensAt);
-    const joinEnd = formatShort(item.joinClosesAt);
-    const joinLabel =
-      joinStart && joinEnd
-        ? `Join: ${joinStart} – ${joinEnd}`
-        : joinStart
-        ? `Join from ${joinStart}`
-        : null;
+    const joinLabel = "Join anytime before it ends";
 
-    const lockedLabel = item.isPlaceholder
-      ? "Opens Sunday"
-      : item.status === "finished"
-      ? "Finished"
-      : "Locked";
+    const badgeText = isOpen ? (isJoined ? "Joined" : "Open") : "Locked";
 
-    const badgeText = isOpen
-      ? isJoined
-        ? "Joined"
-        : "Open"
-      : lockedLabel;
-
-    const buttonLabel = isJoined
-      ? "Joined"
-      : isOpen
-      ? "Enter Now"
-      : "Locked";
-    const buttonDisabled = !isOpen || isJoined;
+    const buttonLabel = isJoined ? "Joined" : "Enter Now";
+    const buttonDisabled = isJoined || !isOpen;
 
     return (
       <TouchableOpacity
@@ -373,22 +318,12 @@ export default function TournamentsScreen() {
           >
             <View style={styles.cardHeaderRow}>
               <View>
-                <Text style={styles.cardTitle}>
-                  {tierMeta.title}
-                </Text>
-                <Text style={styles.cardSubtitle}>
-                  {tierMeta.subtitle}
-                </Text>
+                <Text style={styles.cardTitle}>{tierMeta.title}</Text>
+                <Text style={styles.cardSubtitle}>{tierMeta.subtitle}</Text>
                 {weekLabel && (
-                  <Text style={styles.weekLabel}>
-                    {weekLabel}
-                  </Text>
+                  <Text style={styles.weekLabel}>{weekLabel}</Text>
                 )}
-                {joinLabel && (
-                  <Text style={styles.joinLabel}>
-                    {joinLabel}
-                  </Text>
-                )}
+                <Text style={styles.joinLabel}>{joinLabel}</Text>
               </View>
               <View style={styles.badge}>
                 <Ionicons
@@ -404,9 +339,7 @@ export default function TournamentsScreen() {
             <View style={styles.cardFooterRow}>
               <View>
                 <Text style={styles.metaLabel}>Target</Text>
-                <Text style={styles.metaValue}>
-                  20 pts wins all
-                </Text>
+                <Text style={styles.metaValue}>20 pts wins all</Text>
               </View>
 
               <TouchableOpacity
@@ -422,8 +355,7 @@ export default function TournamentsScreen() {
                 <Text
                   style={[
                     styles.actionBtnTxt,
-                    (buttonDisabled || isJoined) &&
-                      styles.actionBtnTxtDisabled,
+                    (buttonDisabled || isJoined) && styles.actionBtnTxtDisabled,
                   ]}
                 >
                   {buttonLabel}
@@ -436,45 +368,28 @@ export default function TournamentsScreen() {
     );
   };
 
-  // compute selected meta for modal
   const selectedTierMeta = selectedTournament
     ? TIERS.find((t) => t.key === selectedTournament.tier)
     : undefined;
 
   const selectedWeekLabel = selectedTournament
     ? (() => {
-        const ws = formatShort(selectedTournament.startDate);
-        const we = formatShort(selectedTournament.endDate);
-        if (ws && we) return `Week: ${ws} – ${we}`;
-        if (ws) return `Week of ${ws}`;
-        return null;
-      })()
-    : null;
-
-  const selectedJoinLabel = selectedTournament
-    ? (() => {
-        const js = formatShort(selectedTournament.joinOpensAt);
-        const je = formatShort(selectedTournament.joinClosesAt);
-        if (js && je) return `Join: ${js} – ${je}`;
-        if (js) return `Join from ${js}`;
+        const s = formatShort(selectedTournament.startDate);
+        const e = formatShort(selectedTournament.endDate);
+        if (s && e && s !== e) return `Week: ${s} – ${e}`;
+        if (s) return `Week of ${s}`;
         return null;
       })()
     : null;
 
   return (
-    <ImageBackground
-      source={BG}
-      style={styles.bgImage}
-      resizeMode="cover"
-    >
+    <ImageBackground source={BG} style={styles.bgImage} resizeMode="cover">
       <View style={styles.overlay}>
         <View style={styles.headerRow}>
           <View>
-            <Text style={styles.headerTitle}>
-              Available Tournaments
-            </Text>
+            <Text style={styles.headerTitle}>Available Tournaments</Text>
             <Text style={styles.headerSub}>
-              Opens every Sunday · Closes Tuesday 5pm
+              Weekly tournaments · Join any time before they end
             </Text>
           </View>
 
@@ -511,10 +426,10 @@ export default function TournamentsScreen() {
         >
           <View>
             <Text style={styles.bannerTitle}>
-              Opens every Sunday · Join within 3 days
+              Pick your tier and join whenever you’re ready
             </Text>
             <Text style={styles.bannerSub}>
-              Closes 30m before first Tuesday game.
+              Entries stay open while the tournament is active.
             </Text>
           </View>
         </LinearGradient>
@@ -538,9 +453,7 @@ export default function TournamentsScreen() {
           <TouchableOpacity
             style={styles.menuBtn}
             activeOpacity={0.9}
-            onPress={() =>
-              router.push("/tournaments/TournamentHistory")
-            }
+            onPress={() => router.push("/tournaments/TournamentHistory")}
           >
             <Ionicons
               name="time-outline"
@@ -590,16 +503,12 @@ export default function TournamentsScreen() {
                   tournamentTitle={
                     selectedTierMeta?.title ?? "Tournament entry"
                   }
-                  tournamentSubtitle={
-                    selectedTierMeta?.subtitle ?? ""
-                  }
-                  entryLabel={
-                    selectedTierMeta?.buyInLabel ?? undefined
-                  }
+                  tournamentSubtitle={selectedTierMeta?.subtitle ?? ""}
+                  entryLabel={selectedTierMeta?.buyInLabel ?? undefined}
                   weekLabel={selectedWeekLabel}
-                  joinLabel={selectedJoinLabel}
+                  joinLabel="Join anytime before it ends"
                   onClose={() => setShowJoinModal(false)}
-                  onJoined={(entryId) => {
+                  onJoined={() => {
                     setShowJoinModal(false);
                     setSelectedTournament(null);
                     loadTournaments();
@@ -628,9 +537,7 @@ export default function TournamentsScreen() {
 }
 
 const styles = StyleSheet.create({
-  bgImage: {
-    flex: 1,
-  },
+  bgImage: { flex: 1 },
   overlay: {
     flex: 1,
     paddingTop: RFValue(60),
@@ -698,9 +605,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
-  menuIcon: {
-    marginRight: RFValue(6),
-  },
+  menuIcon: { marginRight: RFValue(6) },
   menuTxt: {
     color: "#fff",
     fontSize: RFValue(11),

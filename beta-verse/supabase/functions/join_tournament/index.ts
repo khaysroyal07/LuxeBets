@@ -38,7 +38,7 @@ serve(async (req) => {
   if (!SUPABASE_URL || !SERVICE_ROLE) {
     return json(
       { ok: false, message: "Missing SUPABASE_URL or SERVICE_ROLE" },
-      500,
+      500
     );
   }
 
@@ -73,7 +73,7 @@ serve(async (req) => {
     body?.tournament_id ??
       body?.id ??
       url.searchParams.get("tournament_id") ??
-      "",
+      ""
   );
   if (!tid) {
     return json({ ok: false, message: "tournament_id required" }, 400);
@@ -92,21 +92,13 @@ serve(async (req) => {
   if (tRes.error) {
     return json(
       { ok: false, message: `load tournament: ${tRes.error.message}` },
-      400,
+      400
     );
   }
   const t: any = tRes.data;
   if (!t) return json({ ok: false, message: "Tournament not found" }, 404);
 
   const nowMs = Date.now();
-  const openAt = t.join_open_at ? new Date(t.join_open_at).getTime() : null;
-  const closeAt = t.join_close_at ? new Date(t.join_close_at).getTime() : null;
-  const windowOpen =
-    (openAt == null || nowMs >= openAt) && (closeAt == null || nowMs < closeAt);
-
-  if (!windowOpen || t.status !== "open") {
-    return json({ ok: false, message: "Join window closed" }, 409);
-  }
 
   // ---- already joined? ----
   const found = await admin
@@ -119,7 +111,7 @@ serve(async (req) => {
   if (found.error) {
     return json(
       { ok: false, message: `find: ${found.error.message}` },
-      400,
+      400
     );
   }
   if (found.data?.id) {
@@ -133,7 +125,6 @@ serve(async (req) => {
   // ---- determine base entry fee (cents) ----
   let baseFeeCents: number | null = null;
 
-  // 1) main source of truth: entry_fee_cents (int)
   if (
     typeof t.entry_fee_cents === "number" &&
     Number.isFinite(t.entry_fee_cents) &&
@@ -142,7 +133,6 @@ serve(async (req) => {
     baseFeeCents = t.entry_fee_cents;
   }
 
-  // 2) fallback: entry_fee numeric (dollars)
   if (
     baseFeeCents == null &&
     typeof t.entry_fee === "number" &&
@@ -152,7 +142,6 @@ serve(async (req) => {
     baseFeeCents = Math.round(t.entry_fee * 100);
   }
 
-  // 3) fallback: tier
   if (baseFeeCents == null && typeof t.tier === "string") {
     const tier = String(t.tier).toLowerCase();
     if (tier === "mars") baseFeeCents = 2000; // $20
@@ -160,7 +149,6 @@ serve(async (req) => {
     else if (tier === "saturn") baseFeeCents = 10000; // $100
   }
 
-  // 4) extra fallback: planet_name
   if (baseFeeCents == null && typeof t.planet_name === "string") {
     const planet = String(t.planet_name).toLowerCase();
     if (planet === "mars") baseFeeCents = 2000;
@@ -171,7 +159,7 @@ serve(async (req) => {
   if (baseFeeCents == null || baseFeeCents <= 0) {
     return json(
       { ok: false, message: "Tournament is misconfigured (no entry fee)" },
-      500,
+      500
     );
   }
 
@@ -183,7 +171,7 @@ serve(async (req) => {
     const { data: ref, error: refErr } = await admin
       .from("referral_codes")
       .select("*")
-      .ilike("code", referralCodeRaw) // case-insensitive
+      .ilike("code", referralCodeRaw)
       .eq("is_active", true)
       .maybeSingle();
 
@@ -194,7 +182,7 @@ serve(async (req) => {
           message: "Referral lookup failed",
           details: refErr.message,
         },
-        400,
+        400
       );
     }
 
@@ -205,11 +193,10 @@ serve(async (req) => {
           message: "Referral code is invalid or inactive",
           code_error: "not_found",
         },
-        400,
+        400
       );
     }
 
-    // tournament restriction (if set)
     if (
       ref.applies_to_tournament_id &&
       ref.applies_to_tournament_id !== tid
@@ -220,11 +207,10 @@ serve(async (req) => {
           message: "Referral code cannot be used for this tournament",
           code_error: "wrong_tournament",
         },
-        400,
+        400
       );
     }
 
-    // expiry
     if (ref.expire_at) {
       const expMs = new Date(ref.expire_at).getTime();
       if (!isNaN(expMs) && expMs <= nowMs) {
@@ -234,12 +220,11 @@ serve(async (req) => {
             message: "Referral code has expired",
             code_error: "expired",
           },
-          400,
+          400
         );
       }
     }
 
-    // max uses
     if (
       ref.max_uses !== null &&
       ref.max_uses !== undefined &&
@@ -252,11 +237,10 @@ serve(async (req) => {
           message: "Referral code usage limit reached",
           code_error: "max_uses",
         },
-        400,
+        400
       );
     }
 
-    // NEW USER ONLY check
     if (ref.new_user_only === true) {
       const { data: priorEntry, error: priorErr } = await admin
         .from("entries")
@@ -272,7 +256,7 @@ serve(async (req) => {
             message: "Failed to check new-user eligibility",
             details: priorErr.message,
           },
-          400,
+          400
         );
       }
 
@@ -283,7 +267,7 @@ serve(async (req) => {
             message: "This referral code is only for new users.",
             code_error: "not_new_user",
           },
-          400,
+          400
         );
       }
     }
@@ -297,13 +281,12 @@ serve(async (req) => {
     }
   }
 
-  // cap discount to fee
   if (discountCents < 0) discountCents = 0;
   if (discountCents > baseFeeCents) discountCents = baseFeeCents;
 
   const effectiveCostCents = baseFeeCents - discountCents;
 
-  // ---- wallet check (must have enough for effective cost) ----
+  // ---- wallet check ----
   if (effectiveCostCents > 0) {
     const { data: acct, error: acctErr } = await admin
       .from("wallet_accounts")
@@ -314,7 +297,7 @@ serve(async (req) => {
     if (acctErr) {
       return json(
         { ok: false, message: `wallet: ${acctErr.message}` },
-        400,
+        400
       );
     }
 
@@ -328,7 +311,7 @@ serve(async (req) => {
           required_cents: effectiveCostCents,
           balance_cents: balance,
         },
-        402,
+        402
       );
     }
   }
@@ -352,7 +335,7 @@ serve(async (req) => {
     }
     return json(
       { ok: false, message: `insert: ${ins.error.message}` },
-      400,
+      400
     );
   }
 
@@ -360,18 +343,20 @@ serve(async (req) => {
 
   // ---- debit wallet & ledger ----
   if (effectiveCostCents > 0 && entryId) {
-    const { error: debitErr } =
-      await admin.rpc("wallet_debit_for_tournament_entry", {
+    const { error: debitErr } = await admin.rpc(
+      "wallet_debit_for_tournament_entry",
+      {
         p_user_id: userId,
         p_amount_cents: effectiveCostCents,
         p_referral_code: referral ? referral.code : null,
         p_referral_discount_cents: discountCents,
-      });
+      }
+    );
 
     if (debitErr) {
       console.error(
         "wallet_debit_for_tournament_entry error",
-        debitErr,
+        debitErr
       );
       return json(
         {
@@ -379,12 +364,12 @@ serve(async (req) => {
           message:
             "Entry created but wallet debit failed. Contact support.",
         },
-        500,
+        500
       );
     }
   }
 
-  // ---- record referral usage & bump used_count ----
+  // ---- record referral usage ----
   if (referral && entryId) {
     const usageIns = await admin.from("referral_usages").insert({
       code_id: referral.id,
@@ -395,7 +380,7 @@ serve(async (req) => {
     if (usageIns.error) {
       console.error(
         "referral_usages insert error",
-        usageIns.error,
+        usageIns.error
       );
     }
 
@@ -415,10 +400,7 @@ serve(async (req) => {
       .eq("id", referral.id);
 
     if (upd.error) {
-      console.error(
-        "referral_codes update error",
-        upd.error,
-      );
+      console.error("referral_codes update error", upd.error);
     }
   }
 

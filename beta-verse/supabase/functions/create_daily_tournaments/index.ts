@@ -5,13 +5,6 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-/**
- * Env required:
- *  - SUPABASE_URL
- *  - SUPABASE_SERVICE_ROLE_KEY
- *  - FN_SECRET   (simple shared secret to call this function)
- */
-
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const FN_SECRET = Deno.env.get("FN_SECRET")!;
@@ -87,13 +80,11 @@ serve(async (req: Request): Promise<Response> => {
     return json({ ok: false, message: "Method not allowed" }, 405);
   }
 
-  // simple shared secret (keeps this endpoint private)
   const secret = req.headers.get("x-fn-secret") ?? "";
   if (!secret || secret !== FN_SECRET) {
     return json({ ok: false, message: "Invalid x-fn-secret" }, 401);
   }
 
-  // ----- Parse body (all optional with sensible defaults) -----
   let body: any = {};
   try {
     body = await req.json();
@@ -101,63 +92,57 @@ serve(async (req: Request): Promise<Response> => {
     // allow empty body
   }
 
-  // Default entry fees for Mars/Jupiter/Saturn
   const entryFees: number[] = (body.entry_fees ?? [20, 50, 100]).map((n: any) =>
     Number(n)
   );
 
-  // IMPORTANT: dayDate is expected to be the SUNDAY of that tournament week ("YYYY-MM-DD" in ET).
-  // If omitted, we use todayET() (which will be Sunday when called by the weekly cron).
-  const dayDate: string = body.day_date ?? todayET(); // "YYYY-MM-DD" ET
+  // Sunday of tournament week (ET)
+  const dayDate: string = body.day_date ?? todayET(); // "YYYY-MM-DD"
 
   const tzOffsetMin: number = Number.isFinite(body.tz_offset_min)
     ? body.tz_offset_min
-    : -240; // -240 DST, -300 standard (you can tweak this seasonally if needed)
+    : -240; // -240 DST, -300 standard
 
   const weekLabel: string | null = body.week_label ?? null;
 
-  // ----- Compute join window based on boss logic -----
-  // Boss: Open every Sunday 12:00am, Close every Tuesday 5:00pm (ET)
-
-  // We'll treat start_date/end_date as the Sunday for that week's tournaments
+  // Week start: Sunday
   const start_date = dayDate;
-  const end_date = dayDate;
+  // Week end: Tuesday (Sunday + 2)
+  const tuesdayDate = addDaysEt(dayDate, 2);
+  const end_date = tuesdayDate;
 
-  // Open: Sunday 12:00am ET (midnight of dayDate)
+  // Open: Sunday 00:00 ET
   const join_open_at = midnightEtUtcIso(dayDate, tzOffsetMin);
-
-  // Close: Tuesday 5:00pm ET → Sunday + 2 days at 17:00
-  const tuesdayDate = addDaysEt(dayDate, 2); // Sunday + 2 days = Tuesday
+  // Close: Tuesday 17:00 ET
   const join_close_at = etToUtcIso(`${tuesdayDate}T17:00:00`, tzOffsetMin);
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE, {
     auth: { persistSession: false },
   });
 
-  // ----- Build rows for upsert -----
   const rows = entryFees.map((fee) => {
     const { tier, title } = tierForFee(fee);
     return {
       title,
-      tier, // used in onConflict
+      tier,
       entry_fee_cents: Math.round(fee * 100),
       start_date,
       end_date,
       join_open_at,
       join_close_at,
       settled_at: null,
+      day_date: dayDate,
       ...(weekLabel ? { week_label: weekLabel } : {}),
     };
   });
 
-  // Upsert keyed by (start_date, tier)
   const { data, error } = await admin
     .from("tournaments")
     .upsert(rows, {
       onConflict: "start_date,tier",
     })
     .select(
-      "id, title, tier, entry_fee_cents, start_date, join_open_at, join_close_at",
+      "id, title, tier, entry_fee_cents, start_date, end_date, join_open_at, join_close_at"
     );
 
   if (error) {
