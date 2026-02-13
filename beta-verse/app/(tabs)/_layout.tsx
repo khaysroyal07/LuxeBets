@@ -49,7 +49,7 @@ export default function TabLayout() {
   const { user } = useAuth();
 
   // Not logged in? → login screen
-  if (!user) return <Redirect href="/user/login" />;
+  if (!user) return <Redirect href="/user" />;
 
   // 🔑 Check admin flag (adjust to match how you’re storing it)
   const isAdmin =

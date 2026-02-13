@@ -1,35 +1,43 @@
 // supabase/functions/resolve_results/index.ts
 // deno-lint-ignore-file no-explicit-any
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-type SportCode = "nba" | "nfl" | "mlb" | "nhl";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.48.0";
+
+type SportCode = "nba" | "nfl" | "mlb" | "nhl" | "wnba";
+type Market = "ml" | "spread" | "total";
+type Side = "home" | "away" | "over" | "under";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const sb = createClient(SUPABASE_URL, SERVICE_ROLE);
+const FUNCTION_SECRET = Deno.env.get("FUNCTIONS_SECRET") || Deno.env.get("FN_SECRET") || "";
 
-// ENV: which sports are active
-const ACTIVE_SPORTS_ENV = Deno.env.get("SPORTS_ACTIVE");
-const ACTIVE_SPORTS: SportCode[] =
-  (ACTIVE_SPORTS_ENV
-    ? ACTIVE_SPORTS_ENV.split(",")
-        .map((s) => s.trim().toLowerCase())
-        .filter((s): s is SportCode =>
-          s === "nba" || s === "nfl" || s === "mlb" || s === "nhl"
-        )
-    : ["nba"]) || ["nba"];
+const sb = createClient(SUPABASE_URL, SERVICE_ROLE, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
 
-const TZ = "America/New_York";
+const ACTIVE_SPORTS: SportCode[] = (Deno.env.get("SPORTS_ACTIVE") || "nba,nfl")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter((s): s is SportCode =>
+    s === "nba" || s === "nfl" || s === "mlb" || s === "nhl" || s === "wnba"
+  );
 
-function toDayISO(d: Date | string) {
-  const dt = typeof d === "string" ? new Date(d) : d;
-  const y = dt.getFullYear();
-  const m = String(dt.getMonth() + 1).padStart(2, "0");
-  const day = String(dt.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+function authOrNull(req: Request): Response | null {
+  if (!FUNCTION_SECRET) return null;
+  const token = req.headers.get("Authorization")?.replace("Bearer ", "").trim();
+  if (!token || token !== FUNCTION_SECRET) return new Response("Unauthorized", { status: 401 });
+  return null;
 }
 
+const TZ = "America/New_York";
+function toDayISO(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 function getYesterdayISO_ET(): string {
   const now = new Date();
   const nowET = new Date(now.toLocaleString("en-US", { timeZone: TZ }));
@@ -38,283 +46,287 @@ function getYesterdayISO_ET(): string {
   return toDayISO(nowET);
 }
 
-/**
- * Map picks.selection → "home" | "away" | null
- * Handles:
- *  - selection = { side: "home" | "away", team: "UTA", ... }
- *  - selection = "home"/"away"
- *  - selection = "UTA"/"HOU" or abbreviations
- */
-function selectionToSide(
-  selection: any,
-  homeTeam: string,
-  awayTeam: string,
-): "home" | "away" | null {
-  // 1) If it's an object with a side field, trust that first
-  if (selection && typeof selection === "object") {
-    const rawSide =
-      (selection.side ?? selection.Side ?? selection.SIDE) as
-        | string
-        | undefined;
-    if (rawSide) {
-      const sideNorm = String(rawSide).trim().toLowerCase();
-      if (sideNorm === "home" || sideNorm === "h") return "home";
-      if (sideNorm === "away" || sideNorm === "a") return "away";
-    }
+function readMarket(p: any): Market {
+  const col = String(p.market ?? "").toLowerCase();
+  if (col === "spread") return "spread";
+  if (col === "total") return "total";
+  return "ml";
+}
 
-    // fallback: try its "team" field vs home/away
-    const rawTeam =
-      (selection.team ?? selection.Team ?? selection.TEAM) as
-        | string
-        | undefined;
-    if (rawTeam) {
-      const t = String(rawTeam).trim().toLowerCase();
-      const home = homeTeam.trim().toLowerCase();
-      const away = awayTeam.trim().toLowerCase();
+function readSide(p: any): Side | null {
+  const sel = p.selection || {};
+  const s = String(sel.side ?? "").toLowerCase();
+  return s === "home" || s === "away" || s === "over" || s === "under" ? s : null;
+}
 
-      if (t === home) return "home";
-      if (t === away) return "away";
+function toNumOrNull(v: any): number | null {
+  if (v == null) return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 
-      const onlyLetters = (x: string) => x.replace(/[^a-z]/gi, "");
-      const t2 = onlyLetters(t);
-      const home2 = onlyLetters(home);
-      const away2 = onlyLetters(away);
-      if (t2 && t2 === home2) return "home";
-      if (t2 && t2 === away2) return "away";
+function readLine(p: any): number | null {
+  const sel = p.selection || {};
+  return (
+    toNumOrNull(sel.line) ??
+    toNumOrNull(sel.spread) ??
+    toNumOrNull(sel.handicap) ??
+    toNumOrNull(sel.points) ??
+    toNumOrNull(sel.total) ??
+    toNumOrNull(sel.value) ??
+    toNumOrNull(sel.number) ??
+    null
+  );
+}
+
+type Grade = { result: "win" | "loss" | "push"; is_correct: boolean | null; points: number };
+
+function gradePick(
+  market: Market,
+  side: Side,
+  line: number | null,
+  home: number,
+  away: number,
+): Grade | null {
+  const total = home + away;
+  const WIN_PTS = 10;
+  const PUSH_PTS = 5;
+  const LOSS_PTS = 0;
+
+  if (market === "ml") {
+    if (home === away) return { result: "push", is_correct: null, points: PUSH_PTS };
+    const winSide = home > away ? "home" : "away";
+    const won = side === winSide;
+    return { result: won ? "win" : "loss", is_correct: won, points: won ? WIN_PTS : LOSS_PTS };
+  }
+
+  if (market === "spread") {
+    if (line == null) return null;
+    if (side !== "home" && side !== "away") return null;
+
+    if (side === "home") {
+      const adj = home + line;
+      if (adj === away) return { result: "push", is_correct: null, points: PUSH_PTS };
+      const won = adj > away;
+      return { result: won ? "win" : "loss", is_correct: won, points: won ? WIN_PTS : LOSS_PTS };
+    } else {
+      const adj = away + line;
+      if (adj === home) return { result: "push", is_correct: null, points: PUSH_PTS };
+      const won = adj > home;
+      return { result: won ? "win" : "loss", is_correct: won, points: won ? WIN_PTS : LOSS_PTS };
     }
   }
 
-  // 2) Otherwise treat selection as a primitive and try string logic
-  const s = String(selection ?? "")
-    .trim()
-    .toLowerCase();
-  if (!s) return null;
+  if (market === "total") {
+    if (line == null) return null;
+    if (side !== "over" && side !== "under") return null;
 
-  if (s === "home" || s === "h") return "home";
-  if (s === "away" || s === "a") return "away";
+    if (total === line) return { result: "push", is_correct: null, points: PUSH_PTS };
 
-  const home = homeTeam.trim().toLowerCase();
-  const away = awayTeam.trim().toLowerCase();
-
-  if (s === home) return "home";
-  if (s === away) return "away";
-
-  const onlyLetters = (x: string) => x.replace(/[^a-z]/gi, "");
-  const s2 = onlyLetters(s);
-  const home2 = onlyLetters(home);
-  const away2 = onlyLetters(away);
-
-  if (s2 && s2 === home2) return "home";
-  if (s2 && s2 === away2) return "away";
+    if (side === "over") {
+      const won = total > line;
+      return { result: won ? "win" : "loss", is_correct: won, points: won ? WIN_PTS : LOSS_PTS };
+    } else {
+      const won = total < line;
+      return { result: won ? "win" : "loss", is_correct: won, points: won ? WIN_PTS : LOSS_PTS };
+    }
+  }
 
   return null;
 }
 
-async function gradeDay(dayISO: string) {
-  // 1) Get all completed games for that day
-  const { data: games, error: gamesErr } = await sb
+function isNumericId(s: string) {
+  return /^\d+$/.test(s);
+}
+
+// Your NFL pick keys look like: "CAR-LAR-2026-01-10T16:30:00"
+// That should match games.game_key (we’ll backfill it in SQL)
+function pickGameKey(p: any): string | null {
+  const fromColumn = String(p.game_key ?? "").trim();
+  if (fromColumn) return fromColumn;
+
+  const lg = String(p.league_game_id ?? "").trim();
+  if (!lg) return null;
+  if (isNumericId(lg)) return null; // numeric should match league_game_id map
+
+  // treat it as a key already
+  return lg;
+}
+
+async function fetchGamesWithScores(startISO: string, endISO: string, sports: SportCode[]) {
+  const { data, error } = await sb
     .from("games")
-    .select("*")
-    .in("sport", ACTIVE_SPORTS)
-    .eq("game_day", dayISO)
+    .select("id, sport, league_game_id, game_key, game_day, home_score, away_score")
+    .gte("game_day", startISO)
+    .lte("game_day", endISO)
+    .in("sport", sports)
     .not("home_score", "is", null)
     .not("away_score", "is", null);
 
-  if (gamesErr) {
-    console.error("[resolve_results] Error fetching games", {
-      dayISO,
-      gamesErr,
-    });
-    throw gamesErr;
+  if (error) throw error;
+
+  const byLeagueId = new Map<string, any>();
+  const byGameKey = new Map<string, any>();
+
+  for (const g of (data ?? []) as any[]) {
+    const sport = String(g.sport);
+    const lgid = String(g.league_game_id ?? "").trim();
+    const gk = String(g.game_key ?? "").trim();
+
+    if (lgid) byLeagueId.set(`${sport}::${lgid}`, g);
+    if (gk) byGameKey.set(`${sport}::${gk}`, g);
   }
 
-  if (!games || games.length === 0) {
-    console.log("[resolve_results] No completed games to grade on", dayISO);
-    return { gamesProcessed: 0, picksUpdated: 0 };
-  }
+  return { games: data ?? [], byLeagueId, byGameKey };
+}
 
-  let totalPicksUpdated = 0;
+async function fetchUngradedPicksRange(startISO: string, endISO: string, sports: SportCode[]) {
+  const q = await sb
+    .from("picks")
+    .select("id, sport, league_game_id, game_key, market, selection, game_day, day_date")
+    .in("sport", sports)
+    .is("graded_at", null)
+    .or(
+      [
+        `game_day.gte.${startISO},game_day.lte.${endISO}`,
+        `day_date.gte.${startISO},day_date.lte.${endISO}`,
+      ].join(","),
+    );
+
+  if (q.error) throw q.error;
+  return q.data ?? [];
+}
+
+function chunk<T>(arr: T[], size: number) {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+async function gradeRange(startISO: string, endISO: string, sports: SportCode[]) {
+  const { games, byLeagueId, byGameKey } = await fetchGamesWithScores(startISO, endISO, sports);
+  const picks = await fetchUngradedPicksRange(startISO, endISO, sports);
+
+  let picksUpdated = 0;
+  let skippedNoMatchingGame = 0;
+  let skippedMissingLine = 0;
+  let skippedBadSide = 0;
+  let matchedByLeagueId = 0;
+  let matchedByGameKey = 0;
+
   const nowISO = new Date().toISOString();
+  const updates: any[] = [];
 
-  for (const g of games as any[]) {
-    const sport: SportCode = g.sport;
-    const leagueGameId: string = g.league_game_id;
-    const homeTeam: string = g.home_team;
-    const awayTeam: string = g.away_team;
-    const homeScore: number = g.home_score;
-    const awayScore: number = g.away_score;
+  for (const p of picks as any[]) {
+    const sport = String(p.sport);
+    const lgid = String(p.league_game_id ?? "").trim();
 
-    let winnerSide: "home" | "away" | null = null;
-    let isTie = false;
+    let g: any | null = null;
 
-    if (homeScore > awayScore) {
-      winnerSide = "home";
-    } else if (awayScore > homeScore) {
-      winnerSide = "away";
-    } else {
-      isTie = true;
+    if (lgid && isNumericId(lgid)) {
+      g = byLeagueId.get(`${sport}::${lgid}`) ?? null;
+      if (g) matchedByLeagueId++;
     }
 
-    // 2) Grab all ungraded picks tied to this game
-    const { data: picks, error: picksErr } = await sb
-      .from("picks")
-      .select("id, selection")
-      .eq("sport", sport)
-      .eq("game_day", dayISO)
-      .eq("league_game_id", leagueGameId)
-      .is("result", null);
+    if (!g) {
+      const gk = pickGameKey(p);
+      if (gk) {
+        g = byGameKey.get(`${sport}::${gk}`) ?? null;
+        if (g) matchedByGameKey++;
+      }
+    }
 
-    if (picksErr) {
-      console.error("[resolve_results] Error fetching picks for game", {
-        sport,
-        dayISO,
-        leagueGameId,
-        picksErr,
-      });
+    if (!g) {
+      skippedNoMatchingGame++;
       continue;
     }
 
-    if (!picks || picks.length === 0) {
+    const home = Number(g.home_score);
+    const away = Number(g.away_score);
+    if (!Number.isFinite(home) || !Number.isFinite(away)) {
+      skippedNoMatchingGame++;
       continue;
     }
 
-    const winIds: string[] = [];
-    const loseIds: string[] = [];
-    const pushIds: string[] = [];
-
-    if (isTie) {
-      // all picks are pushes
-      for (const p of picks as any[]) {
-        pushIds.push(p.id);
-      }
-    } else {
-      for (const p of picks as any[]) {
-        const side = selectionToSide(p.selection, homeTeam, awayTeam);
-        if (!side) {
-          console.log("[resolve_results] Unknown selection, skipping pick", {
-            pickId: p.id,
-            selection: p.selection,
-            homeTeam,
-            awayTeam,
-          });
-          continue;
-        }
-        if (side === winnerSide) {
-          winIds.push(p.id);
-        } else {
-          loseIds.push(p.id);
-        }
-      }
+    const market = readMarket(p);
+    const side = readSide(p);
+    if (!side) {
+      skippedBadSide++;
+      continue;
     }
 
-    // 3) Apply updates
-
-    if (pushIds.length > 0) {
-      const { error } = await sb
-        .from("picks")
-        .update({
-          result: "push",
-          is_correct: null,
-          points: 0,
-          graded_at: nowISO,
-          resolved_at: nowISO,
-        })
-        .in("id", pushIds);
-
-      if (error) {
-        console.error("[resolve_results] Error updating push picks", {
-          sport,
-          dayISO,
-          leagueGameId,
-          error,
-        });
-      } else {
-        totalPicksUpdated += pushIds.length;
-      }
+    const line = readLine(p);
+    if ((market === "spread" || market === "total") && line == null) {
+      skippedMissingLine++;
+      continue;
     }
 
-    if (winIds.length > 0) {
-      const { error } = await sb
-        .from("picks")
-        .update({
-          result: "win",
-          is_correct: true,
-          points: 1, // change if you want different scoring
-          graded_at: nowISO,
-          resolved_at: nowISO,
-        })
-        .in("id", winIds);
+    const graded = gradePick(market, side, line, home, away);
+    if (!graded) continue;
 
-      if (error) {
-        console.error("[resolve_results] Error updating winner picks", {
-          sport,
-          dayISO,
-          leagueGameId,
-          error,
-        });
-      } else {
-        totalPicksUpdated += winIds.length;
-      }
-    }
+    updates.push({
+      id: p.id,
+      result: graded.result,
+      is_correct: graded.is_correct,
+      points: graded.points,
+      graded_at: nowISO,
+      resolved_at: nowISO,
+    });
+  }
 
-    if (loseIds.length > 0) {
-      const { error } = await sb
-        .from("picks")
-        .update({
-          result: "loss", // 👈 enum requires "loss", not "lose"
-          is_correct: false,
-          points: 0,
-          graded_at: nowISO,
-          resolved_at: nowISO,
-        })
-        .in("id", loseIds);
-
-      if (error) {
-        console.error("[resolve_results] Error updating loser picks", {
-          sport,
-          dayISO,
-          leagueGameId,
-          error,
-        });
-      } else {
-        totalPicksUpdated += loseIds.length;
-      }
-    }
+  for (const batch of chunk(updates, 200)) {
+    const { error } = await sb.from("picks").upsert(batch, { onConflict: "id" });
+    if (error) throw error;
+    picksUpdated += batch.length;
   }
 
   return {
-    gamesProcessed: (games as any[]).length,
-    picksUpdated: totalPicksUpdated,
+    startISO,
+    endISO,
+    sports,
+    gamesWithScores: games.length,
+    picksFound: picks.length,
+    picksToUpdate: updates.length,
+    picksUpdated,
+    matchedByLeagueId,
+    matchedByGameKey,
+    skippedNoMatchingGame,
+    skippedMissingLine,
+    skippedBadSide,
   };
 }
 
 serve(async (req) => {
+  const auth = authOrNull(req);
+  if (auth) return auth;
+
   try {
-    let dayISO: string | undefined;
+    const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
 
-    // Optional manual override: POST { "dayISO": "YYYY-MM-DD" }
-    if (req.method === "POST") {
-      try {
-        const body = await req.json();
-        dayISO = body?.dayISO;
-      } catch {
-        // ignore bad JSON
-      }
-    }
+    const dayISO = typeof body?.dayISO === "string" ? body.dayISO.slice(0, 10) : undefined;
+    let startISO = typeof body?.startISO === "string" ? body.startISO.slice(0, 10) : undefined;
+    let endISO = typeof body?.endISO === "string" ? body.endISO.slice(0, 10) : undefined;
 
-    // Default to "yesterday in ET" (used by cron)
-    if (!dayISO) {
-      dayISO = getYesterdayISO_ET();
-    }
+    if (dayISO) { startISO = dayISO; endISO = dayISO; }
+    if (!startISO || !endISO) { startISO = getYesterdayISO_ET(); endISO = startISO; }
 
-    const result = await gradeDay(dayISO);
+    const s = String(body?.sport ?? "").toLowerCase().trim();
+    const sports: SportCode[] =
+      s === "nba" || s === "nfl" || s === "mlb" || s === "nhl" || s === "wnba"
+        ? [s]
+        : ACTIVE_SPORTS;
 
-    return new Response(
-      JSON.stringify({ ok: true, dayISO, ...result }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    );
-  } catch (err) {
-    console.error("[resolve_results] top-level error", err);
-    return new Response("Internal error in resolve_results", { status: 500 });
+    const result = await gradeRange(startISO, endISO, sports);
+
+    return new Response(JSON.stringify({ ok: true, ...result }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (err: any) {
+    console.error("[resolve_results] error", err);
+    return new Response(JSON.stringify({ ok: false, error: err?.message || String(err) }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 });

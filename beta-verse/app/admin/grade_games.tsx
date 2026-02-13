@@ -1,10 +1,5 @@
 // app/admin/gradegames.tsx
-import React, {
-  useEffect,
-  useState,
-  useCallback,
-  useMemo,
-} from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -59,40 +54,46 @@ export default function GradeGamesScreen() {
   const [games, setGames] = useState<UngradedGame[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
   const [savingId, setSavingId] = useState<string | null>(null);
   const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkRegrading, setBulkRegrading] = useState(false);
 
   const [scoreInputs, setScoreInputs] = useState<ScoreInputsMap>({});
   const [search, setSearch] = useState("");
-  const [sportFilter, setSportFilter] = useState<
-    "all" | SportCode
-  >("all");
+  const [sportFilter, setSportFilter] = useState<"all" | SportCode>("all");
   const [statusFilter, setStatusFilter] = useState<
     "all" | "scheduled" | "in_progress" | "final"
   >("all");
+
+  // UI-only filter (front-end): useful for narrowing list visually
   const [onlyPendingML, setOnlyPendingML] = useState(false);
 
-  /** ---------- LOAD DATA ---------- */
+  // Backend toggle: actually fetch ALL games (even with 0 pending)
+  const [showAllGames, setShowAllGames] = useState(true);
 
+  // Optional: widen/narrow your window
+  const DAYS_BACK = 21;
+
+  /** ---------- LOAD DATA ---------- */
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase.rpc(
-        "admin_list_ungraded_games",
-      );
+
+      // If showAllGames is true => do NOT filter server-side by pending picks
+      const { data, error } = await supabase.rpc("admin_list_ungraded_games", {
+        p_days_back: DAYS_BACK,
+        p_only_pending_ml: showAllGames ? false : true,
+      });
 
       if (error) {
         console.error("admin_list_ungraded_games error", error);
-        Alert.alert(
-          "Error",
-          error.message ?? "Failed to load games.",
-        );
+        Alert.alert("Error", error.message ?? "Failed to load games.");
         return;
       }
 
       const rows = (data || []) as UngradedGame[];
 
-      // Initialize input state from existing scores (if any)
       const nextInputs: ScoreInputsMap = {};
       rows.forEach((g) => {
         nextInputs[g.league_game_id] = {
@@ -112,7 +113,7 @@ export default function GradeGamesScreen() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [showAllGames]);
 
   useEffect(() => {
     loadData();
@@ -125,38 +126,22 @@ export default function GradeGamesScreen() {
   }, [loadData]);
 
   /** ---------- FILTER / SEARCH ---------- */
-
   const filteredGames = useMemo(() => {
     const q = search.trim().toLowerCase();
 
     return games.filter((g) => {
-      if (sportFilter !== "all" && g.sport !== sportFilter) {
-        return false;
-      }
+      if (sportFilter !== "all" && g.sport !== sportFilter) return false;
 
       if (statusFilter !== "all") {
         const s = (g.status ?? "").toLowerCase();
-        if (statusFilter === "scheduled" && s !== "scheduled") {
+        if (statusFilter === "scheduled" && s !== "scheduled") return false;
+        if (statusFilter === "in_progress" && s !== "in_progress") return false;
+        if (statusFilter === "final" && s !== "final" && s !== "finished")
           return false;
-        }
-        if (
-          statusFilter === "in_progress" &&
-          s !== "in_progress"
-        ) {
-          return false;
-        }
-        if (
-          statusFilter === "final" &&
-          s !== "final" &&
-          s !== "finished"
-        ) {
-          return false;
-        }
       }
 
-      if (onlyPendingML && g.ungraded_ml_picks <= 0) {
-        return false;
-      }
+      // Front-end filter (optional)
+      if (onlyPendingML && g.ungraded_ml_picks <= 0) return false;
 
       if (!q) return true;
 
@@ -165,21 +150,15 @@ export default function GradeGamesScreen() {
       const id = (g.league_game_id ?? "").toLowerCase();
       const day = (g.game_day ?? "").toLowerCase();
 
-      return (
-        home.includes(q) ||
-        away.includes(q) ||
-        id.includes(q) ||
-        day.includes(q)
-      );
+      return home.includes(q) || away.includes(q) || id.includes(q) || day.includes(q);
     });
   }, [games, sportFilter, statusFilter, onlyPendingML, search]);
 
   /** ---------- INPUT HANDLING ---------- */
-
   const updateInput = (
     leagueGameId: string,
     field: "home_score" | "away_score",
-    value: string,
+    value: string
   ) => {
     setScoreInputs((prev) => ({
       ...prev,
@@ -192,57 +171,46 @@ export default function GradeGamesScreen() {
   };
 
   /** ---------- CORE GRADE LOGIC (single game) ---------- */
-
   const gradeGameOnce = useCallback(
     async (
       game: UngradedGame,
       homeScoreNum: number,
       awayScoreNum: number,
-      showAlerts: boolean,
+      showAlerts: boolean
     ) => {
       // 1) Ensure game row is set/updated
-      const { error: setErr } = await supabase.rpc(
-        "admin_set_game_result",
-        {
-          p_league_game_id: game.league_game_id,
-          p_sport: game.sport,
-          p_game_day: game.game_day,
-          p_home_team: game.home_team ?? "",
-          p_away_team: game.away_team ?? "",
-          p_home_score: homeScoreNum,
-          p_away_score: awayScoreNum,
-        },
-      );
+      const { error: setErr } = await supabase.rpc("admin_set_game_result", {
+        p_league_game_id: game.league_game_id,
+        p_sport: game.sport,
+        p_game_day: game.game_day,
+        p_home_team: game.home_team ?? "",
+        p_away_team: game.away_team ?? "",
+        p_home_score: homeScoreNum,
+        p_away_score: awayScoreNum,
+      });
 
       if (setErr) {
         console.error("admin_set_game_result error", setErr);
         if (showAlerts) {
-          Alert.alert(
-            "Error",
-            setErr.message ?? "Failed to save game result.",
-          );
+          Alert.alert("Error", setErr.message ?? "Failed to save game result.");
         }
         throw setErr;
       }
 
       // 2) Grade moneyline picks for this game/day
-      const { data: gradedCount, error: gradeErr } =
-        await supabase.rpc("admin_grade_game_moneyline", {
+      const { data: gradedCount, error: gradeErr } = await supabase.rpc(
+        "admin_grade_game_moneyline",
+        {
           p_league_game_id: game.league_game_id,
           p_game_day: game.game_day,
           p_sport: game.sport,
-        });
+        }
+      );
 
       if (gradeErr) {
-        console.error(
-          "admin_grade_game_moneyline error",
-          gradeErr,
-        );
+        console.error("admin_grade_game_moneyline error", gradeErr);
         if (showAlerts) {
-          Alert.alert(
-            "Error",
-            gradeErr.message ?? "Failed to grade picks.",
-          );
+          Alert.alert("Error", gradeErr.message ?? "Failed to grade picks.");
         }
         throw gradeErr;
       }
@@ -250,70 +218,96 @@ export default function GradeGamesScreen() {
       if (showAlerts) {
         Alert.alert(
           "Graded",
-          `Updated ${gradedCount ?? 0} moneyline picks for this game.`,
+          `Updated ${gradedCount ?? 0} moneyline picks for this game.`
         );
       }
 
       return gradedCount ?? 0;
     },
-    [],
+    []
   );
 
-  /** ---------- SINGLE GAME ACTION ---------- */
+  /** ---------- FORCE REGRADE (single game) ---------- */
+  const regradeGameOnce = useCallback(async (game: UngradedGame, showAlerts: boolean) => {
+    const { data: regradedCount, error } = await supabase.rpc(
+      "admin_regrade_game_moneyline",
+      {
+        p_league_game_id: game.league_game_id,
+        p_game_day: game.game_day,
+        p_sport: game.sport,
+      }
+    );
 
+    if (error) {
+      console.error("admin_regrade_game_moneyline error", error);
+      if (showAlerts) {
+        Alert.alert("Error", error.message ?? "Failed to regrade picks.");
+      }
+      throw error;
+    }
+
+    if (showAlerts) {
+      Alert.alert("Regraded", `Regraded ${regradedCount ?? 0} moneyline picks for this game.`);
+    }
+
+    return regradedCount ?? 0;
+  }, []);
+
+  /** ---------- SINGLE GAME ACTION ---------- */
   const handleGradeGame = async (game: UngradedGame) => {
     const key = game.league_game_id;
-    const inputs = scoreInputs[key] || {
-      home_score: "",
-      away_score: "",
-    };
+    const inputs = scoreInputs[key] || { home_score: "", away_score: "" };
     const homeScoreNum = Number(inputs.home_score);
     const awayScoreNum = Number(inputs.away_score);
 
-    if (
-      Number.isNaN(homeScoreNum) ||
-      Number.isNaN(awayScoreNum)
-    ) {
-      Alert.alert(
-        "Invalid scores",
-        "Please enter numeric scores for both teams.",
-      );
+    if (Number.isNaN(homeScoreNum) || Number.isNaN(awayScoreNum)) {
+      Alert.alert("Invalid scores", "Please enter numeric scores for both teams.");
       return;
     }
 
     setSavingId(game.league_game_id);
     try {
-      await gradeGameOnce(
-        game,
-        homeScoreNum,
-        awayScoreNum,
-        true,
-      );
+      await gradeGameOnce(game, homeScoreNum, awayScoreNum, true);
       await loadData();
     } finally {
       setSavingId(null);
     }
   };
 
-  /** ---------- BULK GRADE VISIBLE GAMES ---------- */
+  const handleRegradeGame = async (game: UngradedGame) => {
+    Alert.alert(
+      "Regrade this game?",
+      "This will reset ML pick results for this game and grade them again.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Regrade",
+          style: "destructive",
+          onPress: async () => {
+            setSavingId(game.league_game_id);
+            try {
+              await regradeGameOnce(game, true);
+              await loadData();
+            } finally {
+              setSavingId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
 
+  /** ---------- BULK GRADE VISIBLE GAMES ---------- */
   const handleGradeAllVisible = () => {
     const targets = filteredGames.filter((g) => {
-      const inp =
-        scoreInputs[g.league_game_id] || {
-          home_score: "",
-          away_score: "",
-        };
+      const inp = scoreInputs[g.league_game_id] || { home_score: "", away_score: "" };
       const hs = Number(inp.home_score);
       const as = Number(inp.away_score);
       return !Number.isNaN(hs) && !Number.isNaN(as);
     });
 
     if (targets.length === 0) {
-      Alert.alert(
-        "Nothing to grade",
-        "Enter scores for at least one visible game.",
-      );
+      Alert.alert("Nothing to grade", "Enter scores for at least one visible game.");
       return;
     }
 
@@ -330,31 +324,18 @@ export default function GradeGamesScreen() {
             try {
               let totalGraded = 0;
               for (const g of targets) {
-                const inp =
-                  scoreInputs[g.league_game_id] || {
-                    home_score: "",
-                    away_score: "",
-                  };
+                const inp = scoreInputs[g.league_game_id] || { home_score: "", away_score: "" };
                 const hs = Number(inp.home_score);
                 const as = Number(inp.away_score);
-                if (
-                  Number.isNaN(hs) ||
-                  Number.isNaN(as)
-                ) {
-                  continue;
-                }
-                const count = await gradeGameOnce(
-                  g,
-                  hs,
-                  as,
-                  false,
-                );
+                if (Number.isNaN(hs) || Number.isNaN(as)) continue;
+
+                const count = await gradeGameOnce(g, hs, as, false);
                 totalGraded += count;
               }
 
               Alert.alert(
                 "Bulk grading complete",
-                `Updated ~${totalGraded} moneyline picks across ${targets.length} game(s).`,
+                `Updated ~${totalGraded} moneyline picks across ${targets.length} game(s).`
               );
               await loadData();
             } catch (e) {
@@ -364,17 +345,56 @@ export default function GradeGamesScreen() {
             }
           },
         },
-      ],
+      ]
+    );
+  };
+
+  /** ---------- BULK REGRADE VISIBLE GAMES ---------- */
+  const handleRegradeAllVisible = () => {
+    const targets = filteredGames;
+
+    if (targets.length === 0) {
+      Alert.alert("Nothing to regrade", "No games are visible with your current filters.");
+      return;
+    }
+
+    Alert.alert(
+      "Regrade all visible games?",
+      `This will reset & regrade ML pick results for ${targets.length} game(s).`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Regrade all",
+          style: "destructive",
+          onPress: async () => {
+            setBulkRegrading(true);
+            try {
+              let totalRegraded = 0;
+
+              for (const g of targets) {
+                const count = await regradeGameOnce(g, false);
+                totalRegraded += count;
+              }
+
+              Alert.alert(
+                "Bulk regrade complete",
+                `Regraded ~${totalRegraded} moneyline picks across ${targets.length} game(s).`
+              );
+              await loadData();
+            } catch (e) {
+              console.error("bulk regrade error", e);
+            } finally {
+              setBulkRegrading(false);
+            }
+          },
+        },
+      ]
     );
   };
 
   /** ---------- RENDER ITEM ---------- */
-
   const renderItem = ({ item }: { item: UngradedGame }) => {
-    const inputs = scoreInputs[item.league_game_id] || {
-      home_score: "",
-      away_score: "",
-    };
+    const inputs = scoreInputs[item.league_game_id] || { home_score: "", away_score: "" };
     const statusLower = (item.status ?? "").toLowerCase();
     const isScheduled = statusLower === "scheduled";
 
@@ -392,70 +412,55 @@ export default function GradeGamesScreen() {
         ? "#60a5fa"
         : "#e5e7eb";
 
+    const busy = savingId === item.league_game_id;
+
     return (
       <View style={styles.card}>
         <View style={styles.cardHeader}>
           <View style={{ flex: 1 }}>
             <Text style={styles.gameTitle}>
-              {item.away_team ?? "??"} @{" "}
-              {item.home_team ?? "??"}
+              {item.away_team ?? "??"} @ {item.home_team ?? "??"}
             </Text>
             <Text style={styles.gameMeta}>
               {item.sport.toUpperCase()} • {item.game_day}
             </Text>
-            <Text style={styles.gameMeta}>
-              ID: {item.league_game_id}
-            </Text>
+            <Text style={styles.gameMeta}>ID: {item.league_game_id}</Text>
           </View>
 
           <View style={styles.statusPillRow}>
-            <View
-              style={[
-                styles.statusPill,
-                { backgroundColor: tagBg },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.statusPillText,
-                  { color: tagColor },
-                ]}
-              >
+            <View style={[styles.statusPill, { backgroundColor: tagBg }]}>
+              <Text style={[styles.statusPillText, { color: tagColor }]}>
                 {item.status ?? "unknown"}
               </Text>
             </View>
-            {item.ungraded_ml_picks > 0 && (
-              <View style={styles.pendingPill}>
-                <Ionicons
-                  name="alert-circle"
-                  size={12}
-                  color={GOLD}
-                  style={{ marginRight: 4 }}
-                />
-                <Text style={styles.pendingPillText}>
-                  {item.ungraded_ml_picks} pending ML
-                </Text>
-              </View>
-            )}
+
+            <View style={styles.pendingPill}>
+              <Ionicons
+                name="alert-circle"
+                size={12}
+                color={item.ungraded_ml_picks > 0 ? GOLD : "rgba(255,255,255,0.35)"}
+                style={{ marginRight: 4 }}
+              />
+              <Text
+                style={[
+                  styles.pendingPillText,
+                  item.ungraded_ml_picks <= 0 && { color: "rgba(255,255,255,0.6)" },
+                ]}
+              >
+                {item.ungraded_ml_picks} pending ML
+              </Text>
+            </View>
           </View>
         </View>
 
         <View style={styles.scoreRow}>
           <View style={styles.scoreCol}>
-            <Text style={styles.scoreLabel}>
-              {item.home_team ?? "Home"} score
-            </Text>
+            <Text style={styles.scoreLabel}>{item.home_team ?? "Home"} score</Text>
             <TextInput
               style={styles.scoreInput}
               keyboardType="number-pad"
               value={inputs.home_score}
-              onChangeText={(txt) =>
-                updateInput(
-                  item.league_game_id,
-                  "home_score",
-                  txt,
-                )
-              }
+              onChangeText={(txt) => updateInput(item.league_game_id, "home_score", txt)}
               placeholder={
                 item.home_score !== null
                   ? String(item.home_score)
@@ -468,20 +473,12 @@ export default function GradeGamesScreen() {
           </View>
 
           <View style={styles.scoreCol}>
-            <Text style={styles.scoreLabel}>
-              {item.away_team ?? "Away"} score
-            </Text>
+            <Text style={styles.scoreLabel}>{item.away_team ?? "Away"} score</Text>
             <TextInput
               style={styles.scoreInput}
               keyboardType="number-pad"
               value={inputs.away_score}
-              onChangeText={(txt) =>
-                updateInput(
-                  item.league_game_id,
-                  "away_score",
-                  txt,
-                )
-              }
+              onChangeText={(txt) => updateInput(item.league_game_id, "away_score", txt)}
               placeholder={
                 item.away_score !== null
                   ? String(item.away_score)
@@ -494,62 +491,48 @@ export default function GradeGamesScreen() {
           </View>
         </View>
 
+        {/* Save & Grade */}
         <TouchableOpacity
-          style={[
-            styles.gradeButton,
-            savingId === item.league_game_id && {
-              opacity: 0.6,
-            },
-          ]}
-          disabled={savingId === item.league_game_id}
+          style={[styles.gradeButton, busy && { opacity: 0.6 }]}
+          disabled={busy}
           onPress={() => handleGradeGame(item)}
         >
-          {savingId === item.league_game_id ? (
+          {busy ? (
             <ActivityIndicator />
           ) : (
             <>
-              <Ionicons
-                name="checkmark-done"
-                size={18}
-                color="#000"
-              />
-              <Text style={styles.gradeButtonText}>
-                Save & Grade ML Picks
-              </Text>
+              <Ionicons name="checkmark-done" size={18} color="#000" />
+              <Text style={styles.gradeButtonText}>Save & Grade ML Picks</Text>
             </>
           )}
+        </TouchableOpacity>
+
+        {/* Regrade */}
+        <TouchableOpacity
+          style={[styles.regradeButton, busy && { opacity: 0.55 }]}
+          disabled={busy}
+          onPress={() => handleRegradeGame(item)}
+        >
+          <Ionicons name="refresh" size={16} color={GOLD} />
+          <Text style={styles.regradeButtonText}>Regrade ML Picks</Text>
         </TouchableOpacity>
       </View>
     );
   };
 
   /** ---------- RENDER ---------- */
-
   return (
-    <ImageBackground
-      source={BG}
-      style={styles.bg}
-      imageStyle={{ opacity: 0.55 }}
-    >
+    <ImageBackground source={BG} style={styles.bg} imageStyle={{ opacity: 0.55 }}>
       <View style={styles.overlay}>
         {/* Header / Top Bar */}
         <View style={styles.header}>
-          <TouchableOpacity
-            onPress={() => router.back()}
-            style={styles.backBtn}
-          >
-            <Ionicons
-              name="chevron-back"
-              size={20}
-              color="#fff"
-            />
+          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+            <Ionicons name="chevron-back" size={20} color="#fff" />
           </TouchableOpacity>
           <View style={{ flex: 1 }}>
-            <Text style={styles.headerTitle}>
-              Admin · Grade Games
-            </Text>
+            <Text style={styles.headerTitle}>Admin · Grade Games</Text>
             <Text style={styles.headerSub}>
-              Edit scores & grade moneyline picks
+              Edit scores & grade moneyline picks (last {DAYS_BACK} days)
             </Text>
           </View>
           <View style={{ width: 32 }} />
@@ -566,28 +549,18 @@ export default function GradeGamesScreen() {
               { key: "mlb", label: "MLB" },
               { key: "nhl", label: "NHL" },
             ].map((f) => {
-              const selected =
-                sportFilter ===
-                (f.key as "all" | SportCode);
+              const selected = sportFilter === (f.key as "all" | SportCode);
               return (
                 <TouchableOpacity
                   key={f.key}
-                  style={[
-                    styles.filterChip,
-                    selected && styles.filterChipSelected,
-                  ]}
-                  onPress={() =>
-                    setSportFilter(
-                      f.key as "all" | SportCode,
-                    )
-                  }
+                  style={[styles.filterChip, selected && styles.filterChipSelected]}
+                  onPress={() => setSportFilter(f.key as "all" | SportCode)}
                   activeOpacity={0.85}
                 >
                   <Text
                     style={[
                       styles.filterChipText,
-                      selected &&
-                        styles.filterChipTextSelected,
+                      selected && styles.filterChipTextSelected,
                     ]}
                   >
                     {f.label}
@@ -597,7 +570,7 @@ export default function GradeGamesScreen() {
             })}
           </View>
 
-          {/* Status + pending row */}
+          {/* Status + toggles row */}
           <View style={styles.filterRow}>
             {[
               { key: "all", label: "Any status" },
@@ -605,29 +578,18 @@ export default function GradeGamesScreen() {
               { key: "in_progress", label: "In progress" },
               { key: "final", label: "Final" },
             ].map((f) => {
-              const selected =
-                statusFilter ===
-                (f.key as typeof statusFilter);
+              const selected = statusFilter === (f.key as typeof statusFilter);
               return (
                 <TouchableOpacity
                   key={f.key}
-                  style={[
-                    styles.filterChipSmall,
-                    selected &&
-                      styles.filterChipSelected,
-                  ]}
-                  onPress={() =>
-                    setStatusFilter(
-                      f.key as typeof statusFilter,
-                    )
-                  }
+                  style={[styles.filterChipSmall, selected && styles.filterChipSelected]}
+                  onPress={() => setStatusFilter(f.key as typeof statusFilter)}
                   activeOpacity={0.85}
                 >
                   <Text
                     style={[
                       styles.filterChipTextSmall,
-                      selected &&
-                        styles.filterChipTextSelected,
+                      selected && styles.filterChipTextSelected,
                     ]}
                   >
                     {f.label}
@@ -636,39 +598,28 @@ export default function GradeGamesScreen() {
               );
             })}
 
+            {/* Backend toggle: show ALL games vs only games with pending ML */}
             <TouchableOpacity
               style={[
                 styles.pendingChip,
-                onlyPendingML &&
-                  styles.pendingChipActive,
+                showAllGames && { backgroundColor: "rgba(255,255,255,0.08)", borderColor: "rgba(255,255,255,0.25)" },
               ]}
-              onPress={() =>
-                setOnlyPendingML((prev) => !prev)
-              }
+              onPress={() => setShowAllGames((prev) => !prev)}
               activeOpacity={0.9}
             >
               <Ionicons
-                name="funnel-outline"
+                name={showAllGames ? "grid-outline" : "alert-circle-outline"}
                 size={12}
-                color={
-                  onlyPendingML ? INK : GOLD
-                }
+                color={showAllGames ? "#fff" : GOLD}
                 style={{ marginRight: 4 }}
               />
-              <Text
-                style={[
-                  styles.pendingChipText,
-                  onlyPendingML && {
-                    color: INK,
-                  },
-                ]}
-              >
-                Pending ML only
+              <Text style={[styles.pendingChipText, showAllGames && { color: "#fff" }]}>
+                {showAllGames ? "All games" : "Pending games only"}
               </Text>
             </TouchableOpacity>
           </View>
 
-          {/* Search + bulk action row */}
+          {/* Search + front-end pending filter + bulk action row */}
           <View style={styles.searchRow}>
             <View style={styles.searchBox}>
               <Ionicons
@@ -686,34 +637,57 @@ export default function GradeGamesScreen() {
               />
             </View>
 
+            {/* Front-end toggle: just narrows current list */}
+            <TouchableOpacity
+              style={[
+                styles.smallToggleBtn,
+                onlyPendingML && { backgroundColor: GOLD, borderColor: GOLD },
+              ]}
+              onPress={() => setOnlyPendingML((p) => !p)}
+              activeOpacity={0.9}
+            >
+              <Text
+                style={[
+                  styles.smallToggleText,
+                  onlyPendingML && { color: INK, fontFamily: "PoppinsSemiBold" },
+                ]}
+              >
+                Pending
+              </Text>
+            </TouchableOpacity>
+
             <TouchableOpacity
               style={[
                 styles.bulkBtn,
-                (bulkSaving ||
-                  filteredGames.length === 0) && {
-                  opacity: 0.55,
-                },
+                (bulkSaving || filteredGames.length === 0) && { opacity: 0.55 },
               ]}
-              disabled={
-                bulkSaving || filteredGames.length === 0
-              }
+              disabled={bulkSaving || filteredGames.length === 0}
               onPress={handleGradeAllVisible}
             >
               {bulkSaving ? (
-                <ActivityIndicator
-                  size="small"
-                  color="#000"
-                />
+                <ActivityIndicator size="small" color="#000" />
               ) : (
                 <>
-                  <Ionicons
-                    name="flash-outline"
-                    size={16}
-                    color="#000"
-                  />
-                  <Text style={styles.bulkBtnText}>
-                    Grade all
-                  </Text>
+                  <Ionicons name="flash-outline" size={16} color="#000" />
+                  <Text style={styles.bulkBtnText}>Grade all</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.regradeAllBtn,
+                (bulkRegrading || filteredGames.length === 0) && { opacity: 0.55 },
+              ]}
+              disabled={bulkRegrading || filteredGames.length === 0}
+              onPress={handleRegradeAllVisible}
+            >
+              {bulkRegrading ? (
+                <ActivityIndicator size="small" color={GOLD} />
+              ) : (
+                <>
+                  <Ionicons name="refresh" size={16} color={GOLD} />
+                  <Text style={styles.regradeAllBtnText}>Regrade</Text>
                 </>
               )}
             </TouchableOpacity>
@@ -723,21 +697,12 @@ export default function GradeGamesScreen() {
         {/* List */}
         {loading ? (
           <View style={styles.center}>
-            <ActivityIndicator
-              size="large"
-              color={GOLD}
-            />
-            <Text style={styles.loadingText}>
-              Loading games with pending picks...
-            </Text>
+            <ActivityIndicator size="large" color={GOLD} />
+            <Text style={styles.loadingText}>Loading games…</Text>
           </View>
         ) : filteredGames.length === 0 ? (
           <View style={styles.center}>
-            <Ionicons
-              name="checkmark-circle"
-              size={40}
-              color={GOLD}
-            />
+            <Ionicons name="checkmark-circle" size={40} color={GOLD} />
             <Text style={styles.emptyText}>
               No games match your filters.
             </Text>
@@ -745,13 +710,9 @@ export default function GradeGamesScreen() {
         ) : (
           <FlatList
             data={filteredGames}
-            keyExtractor={(item) =>
-              `${item.league_game_id}-${item.game_day}-${item.sport}`
-            }
+            keyExtractor={(item) => `${item.league_game_id}-${item.game_day}-${item.sport}`}
             renderItem={renderItem}
-            contentContainerStyle={{
-              paddingBottom: 40,
-            }}
+            contentContainerStyle={{ paddingBottom: 40 }}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
@@ -767,21 +728,15 @@ export default function GradeGamesScreen() {
 }
 
 const styles = StyleSheet.create({
-  bg: {
-    flex: 1,
-    backgroundColor: INK,
-  },
+  bg: { flex: 1, backgroundColor: INK },
   overlay: {
     flex: 1,
     backgroundColor: "rgba(3,3,10,0.8)",
     paddingHorizontal: 16,
     paddingTop: 40,
   },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 14,
-  },
+
+  header: { flexDirection: "row", alignItems: "center", marginBottom: 14 },
   backBtn: {
     width: 32,
     height: 32,
@@ -793,16 +748,8 @@ const styles = StyleSheet.create({
     marginRight: 10,
     backgroundColor: "rgba(10,10,20,0.9)",
   },
-  headerTitle: {
-    color: "#fff",
-    fontSize: RFValue(15),
-    fontFamily: "PoppinsSemiBold",
-  },
-  headerSub: {
-    color: "rgba(255,255,255,0.7)",
-    fontSize: RFValue(11),
-    fontFamily: "Poppins",
-  },
+  headerTitle: { color: "#fff", fontSize: RFValue(15), fontFamily: "PoppinsSemiBold" },
+  headerSub: { color: "rgba(255,255,255,0.7)", fontSize: RFValue(11), fontFamily: "Poppins" },
 
   filtersBox: {
     borderRadius: 16,
@@ -813,12 +760,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginBottom: 12,
   },
-  filterRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    marginBottom: 6,
-  },
+  filterRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginBottom: 6 },
   filterChip: {
     paddingHorizontal: 10,
     paddingVertical: 5,
@@ -839,24 +781,11 @@ const styles = StyleSheet.create({
     marginRight: 6,
     marginBottom: 4,
   },
-  filterChipSelected: {
-    backgroundColor: GOLD,
-    borderColor: GOLD,
-  },
-  filterChipText: {
-    color: "#fff",
-    fontFamily: "PoppinsMedium",
-    fontSize: RFValue(10),
-  },
-  filterChipTextSmall: {
-    color: "#fff",
-    fontFamily: "Poppins",
-    fontSize: RFValue(9.5),
-  },
-  filterChipTextSelected: {
-    color: INK,
-    fontFamily: "PoppinsSemiBold",
-  },
+  filterChipSelected: { backgroundColor: GOLD, borderColor: GOLD },
+  filterChipText: { color: "#fff", fontFamily: "PoppinsMedium", fontSize: RFValue(10) },
+  filterChipTextSmall: { color: "#fff", fontFamily: "Poppins", fontSize: RFValue(9.5) },
+  filterChipTextSelected: { color: INK, fontFamily: "PoppinsSemiBold" },
+
   pendingChip: {
     flexDirection: "row",
     alignItems: "center",
@@ -868,20 +797,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(12,12,28,0.9)",
     marginLeft: "auto",
   },
-  pendingChipActive: {
-    backgroundColor: GOLD,
-  },
-  pendingChipText: {
-    color: GOLD,
-    fontFamily: "PoppinsMedium",
-    fontSize: RFValue(9.5),
-  },
+  pendingChipText: { color: GOLD, fontFamily: "PoppinsMedium", fontSize: RFValue(9.5) },
 
-  searchRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 4,
-  },
+  searchRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
   searchBox: {
     flex: 1,
     flexDirection: "row",
@@ -893,12 +811,19 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     backgroundColor: "rgba(5,5,15,0.95)",
   },
-  searchInput: {
-    flex: 1,
-    color: "#fff",
-    fontFamily: "Poppins",
-    fontSize: RFValue(11.5),
+  searchInput: { flex: 1, color: "#fff", fontFamily: "Poppins", fontSize: RFValue(11.5) },
+
+  smallToggleBtn: {
+    marginLeft: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
+    backgroundColor: "rgba(0,0,0,0.22)",
   },
+  smallToggleText: { color: "#fff", fontFamily: "PoppinsMedium", fontSize: RFValue(10.5) },
+
   bulkBtn: {
     marginLeft: 8,
     paddingHorizontal: 10,
@@ -910,31 +835,26 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     minWidth: 80,
   },
-  bulkBtnText: {
-    color: "#000",
-    fontFamily: "PoppinsSemiBold",
-    fontSize: RFValue(11),
-    marginLeft: 4,
-  },
+  bulkBtnText: { color: "#000", fontFamily: "PoppinsSemiBold", fontSize: RFValue(11), marginLeft: 4 },
 
-  center: {
-    flex: 1,
+  regradeAllBtn: {
+    marginLeft: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,215,0,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.65)",
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    minWidth: 88,
   },
-  loadingText: {
-    marginTop: 8,
-    color: "#fff",
-    fontSize: RFValue(12),
-    fontFamily: "Poppins",
-  },
-  emptyText: {
-    marginTop: 8,
-    color: "#fff",
-    fontSize: RFValue(13),
-    textAlign: "center",
-    fontFamily: "Poppins",
-  },
+  regradeAllBtnText: { color: GOLD, fontFamily: "PoppinsSemiBold", fontSize: RFValue(11), marginLeft: 6 },
+
+  center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  loadingText: { marginTop: 8, color: "#fff", fontSize: RFValue(12), fontFamily: "Poppins" },
+  emptyText: { marginTop: 8, color: "#fff", fontSize: RFValue(13), textAlign: "center", fontFamily: "Poppins" },
 
   card: {
     backgroundColor: CARD,
@@ -944,30 +864,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
-  cardHeader: {
-    flexDirection: "row",
-    marginBottom: 8,
-  },
-  gameTitle: {
-    color: "#fff",
-    fontSize: RFValue(13.5),
-    fontFamily: "PoppinsSemiBold",
-  },
-  gameMeta: {
-    color: "rgba(255,255,255,0.7)",
-    fontSize: RFValue(10.5),
-    fontFamily: "Poppins",
-  },
-  statusPillRow: {
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-  },
-  statusPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    marginBottom: 4,
-  },
+  cardHeader: { flexDirection: "row", marginBottom: 8 },
+  gameTitle: { color: "#fff", fontSize: RFValue(13.5), fontFamily: "PoppinsSemiBold" },
+  gameMeta: { color: "rgba(255,255,255,0.7)", fontSize: RFValue(10.5), fontFamily: "Poppins" },
+
+  statusPillRow: { alignItems: "flex-end", justifyContent: "space-between" },
+  statusPill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, marginBottom: 4 },
   statusPillText: {
     fontSize: RFValue(9.5),
     fontFamily: "PoppinsMedium",
@@ -982,27 +884,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 7,
     paddingVertical: 3,
   },
-  pendingPillText: {
-    color: GOLD,
-    fontSize: RFValue(9.5),
-    fontFamily: "Poppins",
-  },
+  pendingPillText: { color: GOLD, fontSize: RFValue(9.5), fontFamily: "Poppins" },
 
-  scoreRow: {
-    flexDirection: "row",
-    marginTop: 6,
-    marginBottom: 6,
-  },
-  scoreCol: {
-    flex: 1,
-    marginRight: 6,
-  },
-  scoreLabel: {
-    color: "rgba(255,255,255,0.8)",
-    fontSize: RFValue(10.5),
-    marginBottom: 3,
-    fontFamily: "Poppins",
-  },
+  scoreRow: { flexDirection: "row", marginTop: 6, marginBottom: 6 },
+  scoreCol: { flex: 1, marginRight: 6 },
+  scoreLabel: { color: "rgba(255,255,255,0.8)", fontSize: RFValue(10.5), marginBottom: 3, fontFamily: "Poppins" },
   scoreInput: {
     borderWidth: 1,
     borderColor: DIV,
@@ -1014,6 +900,7 @@ const styles = StyleSheet.create({
     fontFamily: "PoppinsMedium",
     backgroundColor: "rgba(6,6,18,0.96)",
   },
+
   gradeButton: {
     marginTop: 6,
     backgroundColor: GOLD,
@@ -1024,10 +911,24 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  gradeButtonText: {
-    color: "#000",
+  gradeButtonText: { color: "#000", fontFamily: "PoppinsSemiBold", fontSize: RFValue(11.5), marginLeft: 6 },
+
+  regradeButton: {
+    marginTop: 8,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.55)",
+    backgroundColor: "rgba(0,0,0,0.35)",
+  },
+  regradeButtonText: {
+    marginLeft: 8,
+    color: GOLD,
     fontFamily: "PoppinsSemiBold",
-    fontSize: RFValue(11.5),
-    marginLeft: 6,
+    fontSize: RFValue(11.2),
   },
 });

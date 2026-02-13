@@ -36,6 +36,10 @@ type EntryCard = {
   planetName: string;
 };
 
+/** NEW LOGIC CONSTANTS */
+const TOURNAMENT_DAYS = 6; // Tue-Sun (6 total days)
+const TOURNAMENT_LAST_OFFSET = TOURNAMENT_DAYS - 1; // 5
+
 /* --------- Date Helpers --------- */
 function toLocalISO(d: Date) {
   const y = d.getFullYear();
@@ -68,23 +72,11 @@ const planetNameFor = (title?: string | null, cents?: number) =>
 function pillDef(status: EntryStatus) {
   switch (status) {
     case "active":
-      return {
-        text: "Active",
-        dot: "#22e58b",
-        bg: "rgba(34,229,139,0.16)",
-      };
+      return { text: "Active", dot: "#22e58b", bg: "rgba(34,229,139,0.16)" };
     case "winner":
-      return {
-        text: "Winner",
-        dot: GOLD,
-        bg: "rgba(255,215,0,0.22)",
-      };
+      return { text: "Winner", dot: GOLD, bg: "rgba(255,215,0,0.22)" };
     default:
-      return {
-        text: "Finished",
-        dot: "#9d7cff",
-        bg: "rgba(157,124,255,0.22)",
-      };
+      return { text: "Finished", dot: "#9d7cff", bg: "rgba(157,124,255,0.22)" };
   }
 }
 
@@ -92,10 +84,10 @@ function prettyRange(startISO: string, endISO: string) {
   if (!startISO || !endISO) return "";
   const s = parseLocalISO(startISO);
   const e = parseLocalISO(endISO);
-  return `${s.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  })} - ${e.toLocaleDateString(undefined, { day: "numeric" })}`;
+  return `${s.toLocaleDateString(undefined, { month: "short", day: "numeric" })} - ${e.toLocaleDateString(
+    undefined,
+    { month: "short", day: "numeric" }
+  )}`;
 }
 
 export default function EntriesIndex() {
@@ -125,9 +117,7 @@ export default function EntriesIndex() {
       throw eErr;
     }
 
-    const tIds = Array.from(
-      new Set((entries || []).map((e: any) => e.tournament_id))
-    );
+    const tIds = Array.from(new Set((entries || []).map((e: any) => e.tournament_id)));
     if (tIds.length === 0) {
       setCards([]);
       return;
@@ -153,25 +143,26 @@ export default function EntriesIndex() {
       const t = tById.get(String(e.tournament_id));
       if (!t) continue;
 
-      const d0 = parseLocalISO(String(t.start_date));
-      // tournaments are 3 days → start_date + 2
-      const d2 = addDays(d0, 2);
+      const d0 = parseLocalISO(String(t.start_date).slice(0, 10));
+
+      // ✅ NEW: tournament ends at end_date if present, else start + 5 (6 days total)
+      const endISO =
+        t.end_date && String(t.end_date).slice(0, 10)
+          ? String(t.end_date).slice(0, 10)
+          : toLocalISO(addDays(d0, TOURNAMENT_LAST_OFFSET));
+
+      const dEnd = parseLocalISO(endISO);
 
       let st: EntryStatus = "active";
-
-      if (e.status === "winner") {
-        st = "winner";
-      } else if (now > d2 || e.status === "eliminated") {
-        // treat any old "eliminated" rows as finished
-        st = "finished";
-      }
+      if (e.status === "winner") st = "winner";
+      else if (now > dEnd || e.status === "eliminated") st = "finished";
 
       rows.push({
         id: String(e.id),
         tournamentId: String(e.tournament_id),
         fee: Number(t.entry_fee_cents ?? 0) / 100,
         startISO: toLocalISO(d0),
-        endISO: toLocalISO(d2),
+        endISO: endISO,
         status: st,
         planetName: planetNameFor(t.title, t.entry_fee_cents),
       });
@@ -200,9 +191,7 @@ export default function EntriesIndex() {
     const total = cards.length;
     const active = cards.filter((c) => c.status === "active").length;
     const winners = cards.filter((c) => c.status === "winner").length;
-    const finished = cards.filter(
-      (c) => c.status === "finished" || c.status === "winner"
-    ).length;
+    const finished = cards.filter((c) => c.status === "finished" || c.status === "winner").length;
     return { total, active, finished, winners };
   }, [cards]);
 
@@ -219,10 +208,7 @@ export default function EntriesIndex() {
     <ImageBackground source={BG} resizeMode="cover" style={styles.bg}>
       {/* Top header */}
       <View style={styles.topBar}>
-        <TouchableOpacity
-          onPress={() => router.push("/(tabs)/tournaments")}
-          style={styles.backBtn}
-        >
+        <TouchableOpacity onPress={() => router.push("/(tabs)/tournaments")} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={RFValue(18)} color="#fff" />
           <Text style={styles.backTxt}></Text>
         </TouchableOpacity>
@@ -240,7 +226,7 @@ export default function EntriesIndex() {
         <View style={{ flex: 1 }}>
           <Text style={styles.summaryTitle}>Tournament Overview</Text>
           <Text style={styles.summarySubtitle}>
-            Track your entries across the the galaxy.
+            One entry = 6 days (Tue–Sun). One pick per day.
           </Text>
         </View>
         <View style={styles.summaryCounts}>
@@ -261,9 +247,7 @@ export default function EntriesIndex() {
 
       {/* Filter chips */}
       <View style={styles.filterBar}>
-        {(
-          ["all", "active", "winner", "finished"] as FilterKey[]
-        ).map((k) => {
+        {(["all", "active", "winner", "finished"] as FilterKey[]).map((k) => {
           const active = filter === k;
           return (
             <TouchableOpacity
@@ -292,32 +276,21 @@ export default function EntriesIndex() {
             paddingHorizontal: RFValue(14),
             paddingBottom: RFValue(32),
           }}
-          ItemSeparatorComponent={() => (
-            <View style={{ height: RFValue(12) }} />
-          )}
+          ItemSeparatorComponent={() => <View style={{ height: RFValue(12) }} />}
           refreshing={refreshing}
           onRefresh={onRefresh}
           ListEmptyComponent={
             <View style={styles.emptyWrap}>
-              <Text style={styles.emptyText}>
-                No entries found in this filter.
-              </Text>
-              <TouchableOpacity
-                style={styles.emptyBtn}
-                onPress={() => router.push("/(tabs)/tournaments")}
-              >
+              <Text style={styles.emptyText}>No entries found in this filter.</Text>
+              <TouchableOpacity style={styles.emptyBtn} onPress={() => router.push("/(tabs)/tournaments")}>
                 <Text style={styles.emptyBtnTxt}>Browse Tournaments</Text>
               </TouchableOpacity>
             </View>
           }
           renderItem={({ item }) => {
             const pill = pillDef(item.status);
-
-            const isFinishedOrWinner =
-              item.status === "finished" || item.status === "winner";
-            const manageLabel = isFinishedOrWinner
-              ? "View Picks"
-              : "Manage Picks";
+            const isFinishedOrWinner = item.status === "finished" || item.status === "winner";
+            const manageLabel = isFinishedOrWinner ? "View Picks" : "Manage Picks";
 
             return (
               <LinearGradient
@@ -344,9 +317,7 @@ export default function EntriesIndex() {
                 {/* Date range */}
                 <View style={styles.rowBetween}>
                   <Text style={styles.rangeLabel}>Tournament Window</Text>
-                  <Text style={styles.rangeValue}>
-                    {prettyRange(item.startISO, item.endISO)}
-                  </Text>
+                  <Text style={styles.rangeValue}>{prettyRange(item.startISO, item.endISO)}</Text>
                 </View>
 
                 <View style={styles.divider} />
@@ -358,10 +329,7 @@ export default function EntriesIndex() {
                     onPress={() =>
                       router.push({
                         pathname: "/leaderboard",
-                        params: {
-                          tournamentId: item.tournamentId,
-                          entryId: item.id,
-                        },
+                        params: { tournamentId: item.tournamentId, entryId: item.id },
                       } as any)
                     }
                   >

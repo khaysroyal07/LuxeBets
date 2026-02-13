@@ -39,33 +39,51 @@ if (
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-const SPORT_TABS: Array<{ key: SportKey; label: string; iconUrl: string }> = [
+/**
+ * ✅ FIX: WNBA + NHL icons
+ * - Your old icon URLs were dead (404).
+ * - Also: don't force tint on full-color icons (like JPG).
+ */
+const SPORT_TABS: Array<{
+  key: SportKey;
+  label: string;
+  iconUrl: string;
+  tint?: string; // if set, icon will be tinted (good for monochrome icons)
+}> = [
   {
     key: "nfl",
     label: "NFL",
     iconUrl: "https://img.icons8.com/ios-filled/100/american-football.png",
+    tint: "#fff",
   },
   {
     key: "nba",
     label: "NBA",
     iconUrl: "https://img.icons8.com/ios-filled/100/basketball.png",
+    tint: "#fff",
   },
   {
     key: "wnba",
     label: "WNBA",
-    iconUrl: "https://img.icons8.com/fluency/100/basketball-2.png",
+    // working icon; reuse the same basketball glyph, still reads fine
+    iconUrl: "https://img.icons8.com/ios-filled/100/basketball.png",
+    tint: "#fff",
   },
   {
     key: "mlb",
     label: "MLB",
     iconUrl: "https://img.icons8.com/ios-filled/100/baseball.png",
+    tint: "#fff",
   },
   {
     key: "nhl",
     label: "NHL",
-    iconUrl: "https://img.icons8.com/ios-filled/100/ice-hockey.png",
+    // working hockey icon (full color) — do NOT tint
+    iconUrl:
+      "https://img.icons8.com/external-kmg-design-glyph-kmg-design/1200/external-ice-hockey-active-lifestyle-kmg-design-glyph-kmg-design.jpg",
   },
 ];
+
 const SPORTS = SPORT_TABS.map((t) => t.key);
 const YEAR_OPTIONS = ["Auto", 2025, 2024, 2023, 2022];
 const DEFAULT_TIER = "20";
@@ -261,7 +279,7 @@ export default function Dash() {
   }, [sportKey]);
 
   async function fetchWindowSerial(
-   center: Date,
+    center: Date,
     aheadDays: number,
     backDays: number,
     stopAfter: number
@@ -413,11 +431,7 @@ export default function Dash() {
     <View style={styles.teamCol}>
       <TeamAvatar uri={logo || defaultTeamLogo} name={name} />
       <View style={styles.teamNameBox}>
-        <Text
-          style={styles.teamName}
-          numberOfLines={1}
-          ellipsizeMode="tail"
-        >
+        <Text style={styles.teamName} numberOfLines={1} ellipsizeMode="tail">
           {name}
         </Text>
       </View>
@@ -447,9 +461,7 @@ export default function Dash() {
               style={StyleSheet.absoluteFill}
             />
             <View style={styles.statusWrap}>
-              <View
-                style={[styles.statusPill, { backgroundColor: tagStyle.bg }]}
-              >
+              <View style={[styles.statusPill, { backgroundColor: tagStyle.bg }]}>
                 <Text
                   style={[styles.statusPillText, { color: tagStyle.fg }]}
                   numberOfLines={1}
@@ -465,11 +477,7 @@ export default function Dash() {
                   {item.homeScore ?? "-"} - {item.awayScore ?? "-"}
                 </Text>
                 <View style={styles.centerMetaBox}>
-                  <Text
-                    style={styles.dateText}
-                    numberOfLines={1}
-                    ellipsizeMode="tail"
-                  >
+                  <Text style={styles.dateText} numberOfLines={1} ellipsizeMode="tail">
                     {item.when}
                   </Text>
                   <Text style={styles.relativeText} numberOfLines={1}>
@@ -481,6 +489,7 @@ export default function Dash() {
             </View>
           </BlurView>
         </View>
+
         <View style={styles.standingsCardVertical}>
           <View style={styles.standingBox}>
             <Text style={styles.standingTeamName} numberOfLines={1}>
@@ -522,13 +531,10 @@ export default function Dash() {
       >
         <Image
           source={{ uri: cfg.iconUrl }}
-          style={[styles.sportIconSmall, { tintColor: "#fff" }]}
+          style={[styles.sportIconSmall, cfg.tint ? { tintColor: cfg.tint } : null]}
         />
         <Text
-          style={[
-            styles.sportNameHorizontal,
-            selected && { color: GOLD },
-          ]}
+          style={[styles.sportNameHorizontal, selected && { color: GOLD }]}
           numberOfLines={1}
         >
           {cfg.label}
@@ -572,7 +578,11 @@ export default function Dash() {
     }
   };
 
-  /** 🪧 DARK, SEMI-TRANSPARENT HERO AD CARD */
+  /**
+   * ✅ FIX: bottom tags on Premnix billboard card
+   * - Your "pill row" could wrap weird + feel off-balance.
+   * - Now: consistent alignment, spacing, and a small "tags row" that always sits cleanly.
+   */
   const HeroTournamentCard = () => (
     <TouchableOpacity
       activeOpacity={0.9}
@@ -584,12 +594,11 @@ export default function Dash() {
       }
     >
       <BlurView intensity={45} tint="dark" style={styles.heroCardBlur}>
-        {/* subtle dark galaxy blend */}
         <LinearGradient
           colors={[
-            "rgba(15,23,42,0.85)",  // navy
-            "rgba(76,29,149,0.8)",  // deep purple
-            "rgba(15,23,42,0.9)",   // back to navy
+            "rgba(15,23,42,0.85)",
+            "rgba(76,29,149,0.8)",
+            "rgba(15,23,42,0.9)",
           ]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
@@ -597,7 +606,6 @@ export default function Dash() {
         />
 
         <View style={styles.heroContent}>
-          {/* LEFT: copy */}
           <View style={styles.heroLeft}>
             <View style={styles.heroBrandRow}>
               <Text style={styles.heroBrandDot}>●</Text>
@@ -605,27 +613,29 @@ export default function Dash() {
               <Text style={styles.heroBrandTag}>GALAXY SPORTS</Text>
             </View>
 
-            <Text style={styles.heroTitle}>Bet the Galaxy.</Text>
+            <Text style={styles.heroTitle}>Fear Nothing.</Text>
             <Text style={styles.heroSubtitle}>
-              One weekly slate. One entry. Chase the top of the Premnix
-              leaderboard.
+              One weekly slate. One entry. Chase the top of the Premnix leaderboard.
             </Text>
 
-            <View style={styles.heroBottomRow}>
-              <View style={styles.heroPillDark}>
-                <Text style={styles.heroPillDarkText}>
+            {/* ✅ tags row (fixed) */}
+            <View style={styles.heroTagsRow}>
+              <View style={styles.heroTagPillSolid}>
+                <Text style={styles.heroTagPillSolidText}>
                   From ${DEFAULT_TIER} to play
                 </Text>
               </View>
-              <View style={styles.heroPillOutline}>
-                <Text style={styles.heroPillOutlineText}>
-                  Sun–Tues • Weekly
-                </Text>
+
+              <View style={styles.heroTagPillOutline}>
+                <Text style={styles.heroTagPillOutlineText}>Sun–Tues • Weekly</Text>
+              </View>
+
+              <View style={styles.heroTagPillMuted}>
+                <Text style={styles.heroTagPillMutedText}>Fast payouts</Text>
               </View>
             </View>
           </View>
 
-          {/* RIGHT: badge + shiny button */}
           <View style={styles.heroRight}>
             <View style={styles.heroRightBadge}>
               <Text style={styles.heroRightBadgeText}>FEATURED</Text>
@@ -638,6 +648,7 @@ export default function Dash() {
                 end={{ x: 1, y: 1 }}
                 style={styles.heroCtaButton}
               >
+                <Text style={styles.heroCtaTextMain}>Enter now</Text>
                 <Text style={styles.heroCtaTextSub}>Spots open • Sun–Tues</Text>
               </LinearGradient>
             </View>
@@ -651,7 +662,6 @@ export default function Dash() {
     <ImageBackground
       source={require("@/assets/images/bgDash.png")}
       style={styles.container}
-      imageStyle={{ resizeMode: "cover" }}
     >
       {/* TOP BAR */}
       <View style={styles.topBar}>
@@ -660,22 +670,14 @@ export default function Dash() {
         </View>
 
         <View style={{ flexDirection: "row", gap: RFValue(12) }}>
-          <TouchableOpacity
-            onPress={() => router.push("/leaderboard")}
-            activeOpacity={0.85}
-          >
+          <TouchableOpacity onPress={() => router.push("/leaderboard")} activeOpacity={0.85}>
             <Image
-              source={{
-                uri: "https://img.icons8.com/ios-filled/50/leaderboard.png",
-              }}
+              source={{ uri: "https://img.icons8.com/ios-filled/50/leaderboard.png" }}
               style={[styles.iconSmall, { tintColor: GOLD }]}
             />
           </TouchableOpacity>
 
-          <TouchableOpacity
-            onPress={() => setProfileOpen((v) => !v)}
-            activeOpacity={0.85}
-          >
+          <TouchableOpacity onPress={() => setProfileOpen((v) => !v)} activeOpacity={0.85}>
             <Image
               source={{ uri: "https://img.icons8.com/ios-filled/50/user.png" }}
               style={[styles.iconSmall, { tintColor: "#fff" }]}
@@ -695,9 +697,7 @@ export default function Dash() {
         >
           <View style={styles.filterTopBtn}>
             <Image
-              source={{
-                uri: "https://img.icons8.com/ios-filled/50/filter--v1.png",
-              }}
+              source={{ uri: "https://img.icons8.com/ios-filled/50/filter--v1.png" }}
               style={{
                 width: RFValue(18),
                 height: RFValue(18),
@@ -742,9 +742,7 @@ export default function Dash() {
             ))}
           </View>
 
-          <Text style={[styles.filterTitle, { marginTop: RFValue(8) }]}>
-            Time
-          </Text>
+          <Text style={[styles.filterTitle, { marginTop: RFValue(8) }]}>Time</Text>
           <View style={styles.filterRowChips}>
             <Chip
               label={todayOnly ? "Today ✓" : "Today"}
@@ -753,9 +751,7 @@ export default function Dash() {
             />
           </View>
 
-          <Text style={[styles.filterTitle, { marginTop: RFValue(8) }]}>
-            Year
-          </Text>
+          <Text style={[styles.filterTitle, { marginTop: RFValue(8) }]}>Year</Text>
           <View style={styles.filterRowChips}>
             {YEAR_OPTIONS.map((y: any) => (
               <Chip
@@ -768,25 +764,11 @@ export default function Dash() {
             ))}
           </View>
 
-          <Text style={[styles.filterTitle, { marginTop: RFValue(8) }]}>
-            Sort
-          </Text>
+          <Text style={[styles.filterTitle, { marginTop: RFValue(8) }]}>Sort</Text>
           <View style={styles.filterRowChips}>
-            <Chip
-              label="Smart"
-              selected={sortMode === "smart"}
-              onPress={() => setSortMode("smart")}
-            />
-            <Chip
-              label="Time ↑"
-              selected={sortMode === "timeAsc"}
-              onPress={() => setSortMode("timeAsc")}
-            />
-            <Chip
-              label="Time ↓"
-              selected={sortMode === "timeDesc"}
-              onPress={() => setSortMode("timeDesc")}
-            />
+            <Chip label="Smart" selected={sortMode === "smart"} onPress={() => setSortMode("smart")} />
+            <Chip label="Time ↑" selected={sortMode === "timeAsc"} onPress={() => setSortMode("timeAsc")} />
+            <Chip label="Time ↓" selected={sortMode === "timeDesc"} onPress={() => setSortMode("timeDesc")} />
           </View>
 
           <View
@@ -817,36 +799,20 @@ export default function Dash() {
 
       {/* PROFILE MENU */}
       {profileOpen && (
-        <View
-          style={[StyleSheet.absoluteFill, { zIndex: 40 }]}
-          pointerEvents="box-none"
-        >
-          <Pressable
-            style={styles.overlayTap}
-            onPress={() => setProfileOpen(false)}
-          />
+        <View style={[StyleSheet.absoluteFill, { zIndex: 40 }]} pointerEvents="box-none">
+          <Pressable style={styles.overlayTap} onPress={() => setProfileOpen(false)} />
           <BlurView intensity={70} tint="dark" style={styles.profileMenu}>
-            <Pressable
-              style={styles.menuItem}
-              onPress={() => go("/user/profile")}
-            >
+            <Pressable style={styles.menuItem} onPress={() => go("/user/profile")}>
               <Image
-                source={{
-                  uri: "https://img.icons8.com/ios-glyphs/30/user--v1.png",
-                }}
+                source={{ uri: "https://img.icons8.com/ios-glyphs/30/user--v1.png" }}
                 style={styles.menuIcon}
               />
               <Text style={styles.menuText}>Profile</Text>
             </Pressable>
             <View style={styles.menuDivider} />
-            <Pressable
-              style={styles.menuItem}
-              onPress={() => go("/user/settings")}
-            >
+            <Pressable style={styles.menuItem} onPress={() => go("/user/settings")}>
               <Image
-                source={{
-                  uri: "https://img.icons8.com/ios-glyphs/30/settings.png",
-                }}
+                source={{ uri: "https://img.icons8.com/ios-glyphs/30/settings.png" }}
                 style={styles.menuIcon}
               />
               <Text style={styles.menuText}>Settings</Text>
@@ -872,66 +838,39 @@ export default function Dash() {
             />
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Winning streaks</Text>
-              <TouchableOpacity
-                onPress={() => setStreakOpen(false)}
-                style={styles.modalClose}
-              >
+              <TouchableOpacity onPress={() => setStreakOpen(false)} style={styles.modalClose}>
                 <Text style={styles.modalCloseText}>✕</Text>
               </TouchableOpacity>
             </View>
-            {!!streakError && (
-              <Text style={styles.modalNote}>{streakError}</Text>
-            )}
+            {!!streakError && <Text style={styles.modalNote}>{streakError}</Text>}
             <FlatList
               data={streaks}
               keyExtractor={(it, idx) => String(it?.id ?? idx)}
               refreshControl={
-                <RefreshControl
-                  refreshing={streakLoading}
-                  onRefresh={loadStreaks}
-                  tintColor="#fff"
-                />
+                <RefreshControl refreshing={streakLoading} onRefresh={loadStreaks} tintColor="#fff" />
               }
               renderItem={({ item, index }) => {
                 const trophy = trophyForRank(index + 1);
                 const max = Math.max(1, streaks[0]?.streak || 1);
-                const barW = Math.max(
-                  10,
-                  (item.streak / max) * (width * 0.5)
-                );
+                const barW = Math.max(10, (item.streak / max) * (width * 0.5));
                 return (
                   <View style={styles.rankRow}>
                     <Text style={styles.rankNum}>{index + 1}</Text>
-                    {trophy ? (
-                      <Image source={trophy} style={styles.trophy} />
-                    ) : (
-                      <View style={{ width: RFValue(24) }} />
-                    )}
-                    <Image
-                      source={{
-                        uri: item.avatarUrl || defaultTeamLogo,
-                      }}
-                      style={styles.userAvatar}
-                    />
+                    {trophy ? <Image source={trophy} style={styles.trophy} /> : <View style={{ width: RFValue(24) }} />}
+                    <Image source={{ uri: item.avatarUrl || defaultTeamLogo }} style={styles.userAvatar} />
                     <View style={{ flex: 1 }}>
                       <Text style={styles.rankName} numberOfLines={1}>
                         {item.name}
                       </Text>
                       <View style={styles.progressTrack}>
-                        <View
-                          style={[styles.progressBar, { width: barW }]}
-                        />
+                        <View style={[styles.progressBar, { width: barW }]} />
                       </View>
                     </View>
                     <Text style={styles.rankStreak}>W{item.streak}</Text>
                   </View>
                 );
               }}
-              ListEmptyComponent={
-                !streakLoading ? (
-                  <Text style={styles.modalNote}>No players yet.</Text>
-                ) : null
-              }
+              ListEmptyComponent={!streakLoading ? <Text style={styles.modalNote}>No players yet.</Text> : null}
               contentContainerStyle={{ paddingBottom: RFValue(8) }}
               showsVerticalScrollIndicator={false}
             />
@@ -976,9 +915,7 @@ export default function Dash() {
               <Text style={styles.sectionTitle}>
                 {SPORT_TABS[selectedSportIndex].label} games
               </Text>
-              <Text style={styles.sectionSubtitle}>
-                Scroll through today’s galaxy slate
-              </Text>
+              <Text style={styles.sectionSubtitle}>Scroll through today’s galaxy slate</Text>
             </View>
 
             {loading ? (
@@ -998,11 +935,7 @@ export default function Dash() {
             {!!note && <Text style={styles.infoText}>{note}</Text>}
           </>
         }
-        ListEmptyComponent={
-          !loading ? (
-            <Text style={styles.emptyText}>No events to show.</Text>
-          ) : null
-        }
+        ListEmptyComponent={!loading ? <Text style={styles.emptyText}>No events to show.</Text> : null}
         ListFooterComponent={<View style={{ height: RFValue(40) }} />}
         contentContainerStyle={{ paddingBottom: RFValue(96) }}
         showsVerticalScrollIndicator={false}
@@ -1013,7 +946,7 @@ export default function Dash() {
 
 /* ---------------- Styles ---------------- */
 const styles = StyleSheet.create({
-  container: { flex: 1, width: "100%", height: "100%" },
+  container: { flex: 1, backgroundColor: "#0c031e" },
 
   topBar: {
     flexDirection: "row",
@@ -1028,11 +961,6 @@ const styles = StyleSheet.create({
     fontFamily: "PoppinsBold",
     fontSize: RFValue(22),
     color: "white",
-  },
-  appSubtitle: {
-    fontFamily: "PoppinsMedium",
-    fontSize: RFValue(12),
-    color: "rgba(255,255,255,0.8)",
   },
 
   filterRowTop: {
@@ -1159,11 +1087,11 @@ const styles = StyleSheet.create({
     paddingVertical: RFValue(14),
   },
   heroLeft: {
-    flex: 1.4,
+    flex: 1.35,
     paddingRight: RFValue(10),
   },
   heroRight: {
-    flex: 0.9,
+    flex: 0.95,
     alignItems: "flex-end",
     justifyContent: "space-between",
   },
@@ -1201,13 +1129,16 @@ const styles = StyleSheet.create({
     fontSize: RFValue(11),
     color: "rgba(241,245,249,0.92)",
   },
-  heroBottomRow: {
+
+  // ✅ fixed tags row
+  heroTagsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
+    alignItems: "center",
     marginTop: RFValue(10),
     gap: RFValue(6),
   },
-  heroPillDark: {
+  heroTagPillSolid: {
     paddingHorizontal: RFValue(10),
     paddingVertical: RFValue(5),
     borderRadius: RFValue(999),
@@ -1215,12 +1146,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(148,163,184,0.9)",
   },
-  heroPillDarkText: {
+  heroTagPillSolidText: {
     fontFamily: "PoppinsMedium",
     fontSize: RFValue(10),
     color: GOLD,
   },
-  heroPillOutline: {
+  heroTagPillOutline: {
     paddingHorizontal: RFValue(10),
     paddingVertical: RFValue(5),
     borderRadius: RFValue(999),
@@ -1228,11 +1159,25 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(226,232,240,0.9)",
   },
-  heroPillOutlineText: {
+  heroTagPillOutlineText: {
     fontFamily: "PoppinsMedium",
     fontSize: RFValue(10),
     color: "rgba(248,250,252,0.96)",
   },
+  heroTagPillMuted: {
+    paddingHorizontal: RFValue(10),
+    paddingVertical: RFValue(5),
+    borderRadius: RFValue(999),
+    backgroundColor: "rgba(2,6,23,0.55)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  heroTagPillMutedText: {
+    fontFamily: "PoppinsMedium",
+    fontSize: RFValue(10),
+    color: "rgba(226,232,240,0.95)",
+  },
+
   heroRightBadge: {
     paddingHorizontal: RFValue(10),
     paddingVertical: RFValue(4),
@@ -1262,11 +1207,13 @@ const styles = StyleSheet.create({
     paddingVertical: RFValue(8),
     borderWidth: 1,
     borderColor: "rgba(234,179,8,0.9)",
+    alignItems: "center",
   },
   heroCtaTextMain: {
     fontFamily: "PoppinsSemiBold",
-    fontSize: RFValue(11.5),
+    fontSize: RFValue(12),
     color: "#111827",
+    lineHeight: RFValue(14),
   },
   heroCtaTextSub: {
     fontFamily: "PoppinsMedium",
@@ -1278,7 +1225,7 @@ const styles = StyleSheet.create({
   sectionHeaderRow: {
     flexDirection: "row",
     alignItems: "baseline",
-    justifyContent: "space_between",
+    justifyContent: "space-between", // ✅ FIX (was "space_between")
     paddingHorizontal: RFValue(16),
     marginTop: RFValue(4),
   },
@@ -1392,14 +1339,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: RFValue(6),
   },
   scoreText: {
-    fontFamily:
-      Platform.OS === "android" ? "monospace" : "PoppinsSemiBold",
+    fontFamily: Platform.OS === "android" ? "monospace" : "PoppinsSemiBold",
     fontSize: RFValue(22),
     lineHeight: RFValue(26),
     color: "white",
-    ...(Platform.OS === "ios"
-      ? { fontVariant: ["tabular-nums"] }
-      : { letterSpacing: 0.5 }),
+    ...(Platform.OS === "ios" ? { fontVariant: ["tabular-nums"] } : { letterSpacing: 0.5 }),
     textAlign: "center",
   },
   centerMetaBox: {

@@ -166,7 +166,9 @@ export default function SignUpScreen() {
     if (form.password.length < 8)
       return "Password must be at least 8 characters.";
     if (!form.country) return "Country is required.";
-    if (!form.state) return "State is required.";
+    // Only require state for US users
+    if (form.country === "US" && !form.state)
+      return "State is required for US users.";
     if (!form.termsAccepted)
       return "Please accept Terms & Privacy Policy.";
     return null;
@@ -209,16 +211,20 @@ export default function SignUpScreen() {
     }
   };
 
+  // ✅ Fixed: close DOB picker on both iOS + Android
   const onChangeDob = (event: DateTimePickerEvent, date?: Date) => {
-    if (Platform.OS === "android") {
+    if (event.type === "dismissed") {
       setShowDobPicker(false);
+      return;
     }
-    if (event.type === "dismissed") return;
 
     const picked = date || dobDate || new Date(2000, 0, 1);
     setDobDate(picked);
     const iso = formatIsoDate(picked);
     onChange("dob", iso);
+
+    // Close after selecting a date on ALL platforms
+    setShowDobPicker(false);
   };
 
   // max date: exactly 18 years ago
@@ -233,6 +239,8 @@ export default function SignUpScreen() {
     US_STATES.find((s) => s.code === form.state)?.name || "";
   const selectedCountryName =
     COUNTRIES.find((c) => c.code === form.country)?.name || "";
+
+  const isUS = form.country === "US";
 
   return (
     <ImageBackground source={BG} style={styles.bg} resizeMode="cover">
@@ -274,9 +282,7 @@ export default function SignUpScreen() {
                 <Underlined
                   placeholder="First name"
                   value={form.first_name}
-                  onChangeText={(v: string) =>
-                    onChange("first_name", v)
-                  }
+                  onChangeText={(v: string) => onChange("first_name", v)}
                 />
               </View>
               <View style={{ width: RFValue(16) }} />
@@ -284,9 +290,7 @@ export default function SignUpScreen() {
                 <Underlined
                   placeholder="Last name"
                   value={form.last_name}
-                  onChangeText={(v: string) =>
-                    onChange("last_name", v)
-                  }
+                  onChangeText={(v: string) => onChange("last_name", v)}
                 />
               </View>
             </View>
@@ -309,9 +313,7 @@ export default function SignUpScreen() {
             <Underlined
               placeholder="Username"
               value={form.username}
-              onChangeText={(v: string) =>
-                onChange("username", v)
-              }
+              onChangeText={(v: string) => onChange("username", v)}
               autoCapitalize="none"
             />
             <Underlined
@@ -341,9 +343,9 @@ export default function SignUpScreen() {
                       placeholder="Country"
                       value={
                         form.country
-                          ? `${form.country} ${
+                          ? `${form.country}${
                               selectedCountryName
-                                ? "• " + selectedCountryName
+                                ? " • " + selectedCountryName
                                 : ""
                             }`
                           : ""
@@ -353,30 +355,36 @@ export default function SignUpScreen() {
                   </View>
                 </TouchableOpacity>
               </View>
-              <View style={{ width: RFValue(16) }} />
-              {/* State picker */}
-              <View style={{ flex: 1 }}>
-                <TouchableOpacity
-                  activeOpacity={0.85}
-                  onPress={() => setShowStatePicker(true)}
-                >
-                  <View pointerEvents="none">
-                    <Underlined
-                      placeholder="State"
-                      value={
-                        form.state
-                          ? `${form.state} ${
-                              selectedStateName
-                                ? "• " + selectedStateName
-                                : ""
-                            }`
-                          : ""
-                      }
-                      editable={false}
-                    />
+
+              {/* Only show State if country is US */}
+              {isUS && (
+                <>
+                  <View style={{ width: RFValue(16) }} />
+                  {/* State picker */}
+                  <View style={{ flex: 1 }}>
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={() => setShowStatePicker(true)}
+                    >
+                      <View pointerEvents="none">
+                        <Underlined
+                          placeholder="State"
+                          value={
+                            form.state
+                              ? `${form.state}${
+                                  selectedStateName
+                                    ? " • " + selectedStateName
+                                    : ""
+                                }`
+                              : ""
+                          }
+                          editable={false}
+                        />
+                      </View>
+                    </TouchableOpacity>
                   </View>
-                </TouchableOpacity>
-              </View>
+                </>
+              )}
             </View>
 
             {/* Referral code */}
@@ -393,9 +401,7 @@ export default function SignUpScreen() {
             <Underlined
               placeholder="Password"
               value={form.password}
-              onChangeText={(v: string) =>
-                onChange("password", v)
-              }
+              onChangeText={(v: string) => onChange("password", v)}
               secureTextEntry
               autoCapitalize="none"
             />
@@ -403,9 +409,7 @@ export default function SignUpScreen() {
             {/* Password strength */}
             <View style={styles.meterWrapper}>
               <View style={styles.meterTrack}>
-                <View
-                  style={[styles.meterFill, { width: pwPct }]}
-                />
+                <View style={[styles.meterFill, { width: pwPct }]} />
               </View>
               <Text style={styles.meterText}>
                 Strength: {label} ({score}/5)
@@ -415,9 +419,7 @@ export default function SignUpScreen() {
             {/* Checkboxes */}
             <TouchableOpacity
               style={styles.checkRow}
-              onPress={() =>
-                onChange("geoConsent", !form.geoConsent)
-              }
+              onPress={() => onChange("geoConsent", !form.geoConsent)}
               activeOpacity={0.8}
             >
               <View
@@ -478,9 +480,7 @@ export default function SignUpScreen() {
           <DateTimePicker
             value={dobDate || new Date(2000, 0, 1)}
             mode="date"
-            display={
-              Platform.OS === "ios" ? "spinner" : "default"
-            }
+            display={Platform.OS === "ios" ? "spinner" : "default"}
             maximumDate={maxDob}
             onChange={onChangeDob}
           />
@@ -497,10 +497,7 @@ export default function SignUpScreen() {
             style={styles.modalBackdrop}
             onPress={() => setShowCountryPicker(false)}
           >
-            <Pressable
-              style={styles.modalCard}
-              onPress={() => {}}
-            >
+            <Pressable style={styles.modalCard} onPress={() => {}}>
               <Text style={styles.modalTitle}>Select Country</Text>
               <ScrollView
                 style={{ maxHeight: RFValue(260), marginTop: 6 }}
@@ -512,15 +509,16 @@ export default function SignUpScreen() {
                     style={styles.countryRow}
                     onPress={() => {
                       onChange("country", c.code);
+                      // If not US, clear state so US states don't stick around
+                      if (c.code !== "US") {
+                        onChange("state", "");
+                        setShowStatePicker(false);
+                      }
                       setShowCountryPicker(false);
                     }}
                   >
-                    <Text style={styles.countryCode}>
-                      {c.code}
-                    </Text>
-                    <Text style={styles.countryName}>
-                      {c.name}
-                    </Text>
+                    <Text style={styles.countryCode}>{c.code}</Text>
+                    <Text style={styles.countryName}>{c.name}</Text>
                   </TouchableOpacity>
                 ))}
               </ScrollView>
@@ -530,7 +528,7 @@ export default function SignUpScreen() {
 
         {/* State Picker Modal */}
         <Modal
-          visible={showStatePicker}
+          visible={showStatePicker && isUS}
           transparent
           animationType="fade"
           onRequestClose={() => setShowStatePicker(false)}
@@ -539,10 +537,7 @@ export default function SignUpScreen() {
             style={styles.modalBackdrop}
             onPress={() => setShowStatePicker(false)}
           >
-            <Pressable
-              style={styles.modalCard}
-              onPress={() => {}}
-            >
+            <Pressable style={styles.modalCard} onPress={() => {}}>
               <Text style={styles.modalTitle}>Select State</Text>
               <ScrollView
                 style={{ maxHeight: RFValue(260), marginTop: 6 }}
@@ -557,12 +552,8 @@ export default function SignUpScreen() {
                       setShowStatePicker(false);
                     }}
                   >
-                    <Text style={styles.stateCode}>
-                      {s.code}
-                    </Text>
-                    <Text style={styles.stateName}>
-                      {s.name}
-                    </Text>
+                    <Text style={styles.stateCode}>{s.code}</Text>
+                    <Text style={styles.stateName}>{s.name}</Text>
                   </TouchableOpacity>
                 ))}
               </ScrollView>

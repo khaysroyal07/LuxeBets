@@ -21,10 +21,9 @@ type Props = {
   tournamentId: number | string;
   userId?: string;
 
-  // Optional tournament meta (you can pass these from TournamentsScreen later)
   tournamentTitle?: string;
   tournamentSubtitle?: string;
-  entryLabel?: string; // e.g. "$20 entry"
+  entryLabel?: string; // "$20 entry"
   weekLabel?: string | null;
   joinLabel?: string | null;
 
@@ -48,7 +47,6 @@ export default function EntriesModal({
   const [referralCode, setReferralCode] = useState("");
   const [walletDollars, setWalletDollars] = useState<number | null>(null);
 
-  // Load wallet balance for current user (nice UX)
   useEffect(() => {
     (async () => {
       try {
@@ -66,7 +64,7 @@ export default function EntriesModal({
           setWalletDollars(data.balance_cents / 100);
         }
       } catch {
-        // soft-fail, balance is just nice-to-have
+        // ignore
       }
     })();
   }, [userId]);
@@ -85,14 +83,10 @@ export default function EntriesModal({
         return;
       }
 
-      const payload: any = {
-        tournament_id: tournamentId,
-      };
+      const payload: any = { tournament_id: tournamentId };
 
       const trimmedCode = referralCode.trim().toUpperCase();
-      if (trimmedCode.length > 0) {
-        payload.referral_code = trimmedCode;
-      }
+      if (trimmedCode.length > 0) payload.referral_code = trimmedCode;
 
       const r = await fetch(`${FUNCTIONS_BASE}/join_tournament`, {
         method: "POST",
@@ -105,14 +99,8 @@ export default function EntriesModal({
 
       const j = await r.json().catch(() => ({}));
 
-      if (r.status === 401) {
-        throw new Error(
-          j?.message || "Session expired. Please log in again."
-        );
-      }
-      if (!r.ok || j?.ok === false) {
-        throw new Error(j?.message || "Failed to join tournament.");
-      }
+      if (r.status === 401) throw new Error(j?.message || "Session expired. Please log in again.");
+      if (!r.ok || j?.ok === false) throw new Error(j?.message || "Failed to join tournament.");
 
       const entryId = j?.entry?.id ?? j?.entry_id ?? "";
 
@@ -120,21 +108,13 @@ export default function EntriesModal({
       const chargedCents = j?.charged_cents ?? null;
       const baseFeeCents = j?.base_fee_cents ?? null;
 
-      // Show a nice confirmation if referral actually applied
       if (trimmedCode && discountCents > 0) {
         const saved = (discountCents / 100).toFixed(2);
-        const charged = chargedCents != null
-          ? (chargedCents / 100).toFixed(2)
-          : null;
-        const base = baseFeeCents != null
-          ? (baseFeeCents / 100).toFixed(2)
-          : null;
+        const charged = chargedCents != null ? (chargedCents / 100).toFixed(2) : null;
+        const base = baseFeeCents != null ? (baseFeeCents / 100).toFixed(2) : null;
 
         let msg = `Referral ${trimmedCode} applied.\nYou saved $${saved}.`;
-        if (charged && base) {
-          msg += `\nEntry: $${base} → Charged: $${charged}`;
-        }
-
+        if (charged && base) msg += `\nEntry: $${base} → Charged: $${charged}`;
         Alert.alert("Referral applied", msg);
       }
 
@@ -148,49 +128,31 @@ export default function EntriesModal({
 
   return (
     <View style={styles.card}>
-      {/* Header */}
       <Text style={styles.title}>Join Tournament</Text>
       <Text style={styles.subtitle}>
-        Confirm your entry and apply a referral code if you have one.
+        You’re entering a 6-day tournament (Tue–Sun). Join is open Sun–Tue — you can enter
+        multiple tournaments in the same week.
       </Text>
 
-      {/* Tournament summary */}
       <View style={styles.summaryBox}>
         <View style={{ flex: 1 }}>
           <Text style={styles.tTitle}>{tournamentTitle}</Text>
-          {!!tournamentSubtitle && (
-            <Text style={styles.tSubtitle}>{tournamentSubtitle}</Text>
-          )}
-          {!!weekLabel && (
-            <Text style={styles.tMeta}>{weekLabel}</Text>
-          )}
-          {!!joinLabel && (
-            <Text style={styles.tMetaDim}>{joinLabel}</Text>
-          )}
+          {!!tournamentSubtitle && <Text style={styles.tSubtitle}>{tournamentSubtitle}</Text>}
+          {!!weekLabel && <Text style={styles.tMeta}>{weekLabel}</Text>}
+          {!!joinLabel && <Text style={styles.tMetaDim}>{joinLabel}</Text>}
         </View>
 
         {!!entryLabel && (
           <View style={styles.feePill}>
-            <Ionicons
-              name="trophy-outline"
-              size={16}
-              color="#111"
-              style={{ marginRight: 4 }}
-            />
+            <Ionicons name="trophy-outline" size={16} color="#111" style={{ marginRight: 4 }} />
             <Text style={styles.feePillText}>{entryLabel}</Text>
           </View>
         )}
       </View>
 
-      {/* Wallet row */}
       <View style={styles.walletRow}>
         <View style={{ flexDirection: "row", alignItems: "center" }}>
-          <Ionicons
-            name="wallet-outline"
-            size={18}
-            color={GOLD}
-            style={{ marginRight: 6 }}
-          />
+          <Ionicons name="wallet-outline" size={18} color={GOLD} style={{ marginRight: 6 }} />
           <Text style={styles.walletLabel}>Wallet balance</Text>
         </View>
         <Text style={styles.walletValue}>
@@ -198,7 +160,6 @@ export default function EntriesModal({
         </Text>
       </View>
 
-      {/* Referral code input */}
       <View style={styles.inputBlock}>
         <Text style={styles.inputLabel}>Referral code (optional)</Text>
         <TextInput
@@ -211,10 +172,8 @@ export default function EntriesModal({
         />
       </View>
 
-      {/* Error text */}
       {!!err && <Text style={styles.err}>{err}</Text>}
 
-      {/* Action buttons */}
       <View style={styles.row}>
         <TouchableOpacity
           style={[styles.btn, styles.btnSecondary]}
@@ -231,11 +190,7 @@ export default function EntriesModal({
           disabled={loading}
           activeOpacity={0.9}
         >
-          {loading ? (
-            <ActivityIndicator size="small" color="#111" />
-          ) : (
-            <Text style={styles.btnPrimaryText}>Join</Text>
-          )}
+          {loading ? <ActivityIndicator size="small" color="#111" /> : <Text style={styles.btnPrimaryText}>Join</Text>}
         </TouchableOpacity>
       </View>
     </View>
@@ -250,11 +205,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
-  title: {
-    color: "#fff",
-    fontFamily: "PoppinsBold",
-    fontSize: RFValue(16),
-  },
+  title: { color: "#fff", fontFamily: "PoppinsBold", fontSize: RFValue(16) },
   subtitle: {
     color: "rgba(255,255,255,0.75)",
     fontFamily: "Poppins",
@@ -271,29 +222,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
   },
-  tTitle: {
-    color: "#fff",
-    fontFamily: "PoppinsSemiBold",
-    fontSize: RFValue(13),
-  },
-  tSubtitle: {
-    color: "rgba(255,255,255,0.8)",
-    fontFamily: "Poppins",
-    fontSize: RFValue(11),
-    marginTop: 2,
-  },
-  tMeta: {
-    color: GOLD,
-    fontFamily: "PoppinsMedium",
-    fontSize: RFValue(10),
-    marginTop: 4,
-  },
-  tMetaDim: {
-    color: "rgba(255,255,255,0.7)",
-    fontFamily: "Poppins",
-    fontSize: RFValue(9),
-    marginTop: 2,
-  },
+  tTitle: { color: "#fff", fontFamily: "PoppinsSemiBold", fontSize: RFValue(13) },
+  tSubtitle: { color: "rgba(255,255,255,0.8)", fontFamily: "Poppins", fontSize: RFValue(11), marginTop: 2 },
+  tMeta: { color: GOLD, fontFamily: "PoppinsMedium", fontSize: RFValue(10), marginTop: 4 },
+  tMetaDim: { color: "rgba(255,255,255,0.7)", fontFamily: "Poppins", fontSize: RFValue(9), marginTop: 2 },
   feePill: {
     paddingHorizontal: RFValue(10),
     paddingVertical: RFValue(6),
@@ -303,36 +235,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginLeft: RFValue(8),
   },
-  feePillText: {
-    color: "#111",
-    fontFamily: "PoppinsSemiBold",
-    fontSize: RFValue(11),
-  },
-  walletRow: {
-    marginTop: RFValue(10),
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  walletLabel: {
-    color: "rgba(255,255,255,0.85)",
-    fontFamily: "PoppinsMedium",
-    fontSize: RFValue(11),
-  },
-  walletValue: {
-    color: GOLD,
-    fontFamily: "PoppinsSemiBold",
-    fontSize: RFValue(12),
-  },
-  inputBlock: {
-    marginTop: RFValue(14),
-  },
-  inputLabel: {
-    color: "rgba(255,255,255,0.8)",
-    fontFamily: "PoppinsMedium",
-    fontSize: RFValue(11),
-    marginBottom: RFValue(4),
-  },
+  feePillText: { color: "#111", fontFamily: "PoppinsSemiBold", fontSize: RFValue(11) },
+  walletRow: { marginTop: RFValue(10), flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  walletLabel: { color: "rgba(255,255,255,0.85)", fontFamily: "PoppinsMedium", fontSize: RFValue(11) },
+  walletValue: { color: GOLD, fontFamily: "PoppinsSemiBold", fontSize: RFValue(12) },
+  inputBlock: { marginTop: RFValue(14) },
+  inputLabel: { color: "rgba(255,255,255,0.8)", fontFamily: "PoppinsMedium", fontSize: RFValue(11), marginBottom: RFValue(4) },
   input: {
     borderRadius: RFValue(10),
     borderWidth: 1,
@@ -344,41 +252,11 @@ const styles = StyleSheet.create({
     fontSize: RFValue(12),
     backgroundColor: "rgba(0,0,0,0.55)",
   },
-  err: {
-    color: "#ffb4b4",
-    fontFamily: "Poppins",
-    fontSize: RFValue(10),
-    marginTop: RFValue(6),
-  },
-  row: {
-    flexDirection: "row",
-    gap: RFValue(8),
-    justifyContent: "flex-end",
-    marginTop: RFValue(14),
-  },
-  btn: {
-    flex: 1,
-    paddingVertical: RFValue(9),
-    borderRadius: RFValue(999),
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  btnSecondary: {
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.2)",
-  },
-  btnPrimary: {
-    backgroundColor: GOLD,
-  },
-  btnSecondaryText: {
-    color: "#fff",
-    fontFamily: "PoppinsMedium",
-    fontSize: RFValue(12),
-  },
-  btnPrimaryText: {
-    color: "#111",
-    fontFamily: "PoppinsSemiBold",
-    fontSize: RFValue(12),
-  },
+  err: { color: "#ffb4b4", fontFamily: "Poppins", fontSize: RFValue(10), marginTop: RFValue(6) },
+  row: { flexDirection: "row", gap: RFValue(8), justifyContent: "flex-end", marginTop: RFValue(14) },
+  btn: { flex: 1, paddingVertical: RFValue(9), borderRadius: RFValue(999), alignItems: "center", justifyContent: "center" },
+  btnSecondary: { backgroundColor: "rgba(255,255,255,0.08)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)" },
+  btnPrimary: { backgroundColor: GOLD },
+  btnSecondaryText: { color: "#fff", fontFamily: "PoppinsMedium", fontSize: RFValue(12) },
+  btnPrimaryText: { color: "#111", fontFamily: "PoppinsSemiBold", fontSize: RFValue(12) },
 });

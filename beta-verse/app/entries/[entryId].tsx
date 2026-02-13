@@ -49,7 +49,7 @@ type GameRow = {
   awayName: string;
   mlHome?: number | null;
   mlAway?: number | null;
-  spread?: number | null; // home spread from SportsDataIO PointSpread
+  spread?: number | null; // home spread
   total?: number | null;
 };
 
@@ -64,6 +64,48 @@ type ExistingPick = {
   market: Market;
 };
 
+/* ---------------- SAFE DATE HELPERS ---------------- */
+
+// strict YYYY-MM-DD
+function isISODateString(v: any): v is string {
+  return typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+}
+
+// returns Date in local time at midnight, OR null
+function safeDateFromISO(iso?: string | null): Date | null {
+  if (!iso || !isISODateString(iso)) return null;
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  const dt = new Date(y, m - 1, d);
+  // sanity check to avoid out-of-bounds weirdness
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt;
+}
+
+// timezone-safe "today ISO" for a given TZ without parsing locale strings
+function todayISOInTimeZone(timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+
+  const y = parts.find((p) => p.type === "year")?.value;
+  const m = parts.find((p) => p.type === "month")?.value;
+  const d = parts.find((p) => p.type === "day")?.value;
+
+  if (!y || !m || !d) {
+    // fallback to local ISO if something goes wrong
+    const z = new Date();
+    const yy = z.getFullYear();
+    const mm = String(z.getMonth() + 1).padStart(2, "0");
+    const dd = String(z.getDate()).padStart(2, "0");
+    return `${yy}-${mm}-${dd}`;
+  }
+  return `${y}-${m}-${d}`;
+}
+
 const pickShort = (full?: string) => {
   const name = (full || "").trim();
   if (!name) return "TEAM";
@@ -77,10 +119,9 @@ const pickShort = (full?: string) => {
   );
 };
 
-const dayISO = (d: string | Date) =>
-  typeof d === "string" ? d : d.toISOString().slice(0, 10);
 const fmtOdds = (v?: number | null) =>
   v == null ? "" : v > 0 ? ` (+${v})` : ` (${v})`;
+
 const mins = (ms: number) => Math.floor(ms / 60000);
 
 export default function ManagePick() {
@@ -91,10 +132,11 @@ export default function ManagePick() {
   const [loading, setLoading] = useState(true);
   const [tournament, setTournament] = useState<{
     id: string;
-    start_date: string;
-    end_date?: string | null;
+    start_date: string; // YYYY-MM-DD
+    end_date?: string | null; // YYYY-MM-DD
     entry_fee_cents: number;
   } | null>(null);
+
   const [dayISOState, setDayISOState] = useState<string>("");
   const [league, setLeague] = useState<LeagueKey>("NFL");
 
@@ -112,11 +154,12 @@ export default function ManagePick() {
     return () => clearInterval(tick.current);
   }, []);
 
-  // load entry, tournament, and existing pick
+  // load entry, tournament, existing pick
   useEffect(() => {
     let on = true;
     (async () => {
       try {
+        if (!entryId) throw new Error("Missing entryId");
         setLoading(true);
 
         // 1) entry
@@ -125,35 +168,74 @@ export default function ManagePick() {
           .select("id, tournament_id")
           .eq("id", entryId)
           .maybeSingle();
+
         if (entErr) throw entErr;
         if (!ent) throw new Error("Entry not found.");
 
-        // 2) tournament_phase
+        // 2) tournament
+        // NOTE: your real FK points to public.tournaments (not tournament_phase)
         const { data: t, error: tErr } = await supabase
-          .from("tournament_phase")
+          .from("tournaments")
           .select("id, start_date, end_date, entry_fee_cents")
           .eq("id", ent.tournament_id)
           .maybeSingle();
+
         if (tErr) throw tErr;
         if (!t) throw new Error("Tournament not found.");
 
-        const iso = typeof date === "string" ? date : (t.start_date as string);
+        const startIso = String(t.start_date).slice(0, 10);
+        const endIso = t.end_date ? String(t.end_date).slice(0, 10) : null;
 
-        // 3) existing pick for this entry/day (via day_date)
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
+        if (!isISODateString(startIso)) {
+          throw new Error(`Invalid tournament start_date: ${String(t.start_date)}`);
+        }
+        if (endIso && !isISODateString(endIso)) {
+          throw new Error(`Invalid tournament end_date: ${String(t.end_date)}`);
+        }
+
+        // "today" in America/New_York
+        const todayIso = todayISOInTimeZone("America/New_York");
+
+        // Decide which day this screen represents.
+        // Clamp param to sane ISO and within tournament window.
+        const todayInTournament =
+          todayIso >= startIso && (!endIso || todayIso <= endIso);
+
+        let iso: string;
+
+        const paramIso = isISODateString(date) ? date : null;
+
+        if (paramIso) {
+          // If user clicks a future day but today is valid in-range, clamp to today
+          if (paramIso > todayIso && todayInTournament) iso = todayIso;
+          else iso = paramIso;
+        } else {
+          iso = todayInTournament ? todayIso : startIso;
+        }
+
+        // Hard clamp iso to tournament range (prevents weird out-of-bounds days)
+        if (iso < startIso) iso = startIso;
+        if (endIso && iso > endIso) iso = endIso;
+
+        // 3) existing pick for this entry/day
+        const { data: auth } = await supabase.auth.getUser();
+        const user = auth?.user;
+
         let curr: ExistingPick | null = null;
+
         if (user) {
-          const { data: pick } = await supabase
+          const { data: pick, error: pickErr } = await supabase
             .from("picks")
             .select("selection, league_game_id, day_date")
             .eq("entry_id", entryId)
             .eq("day_date", iso)
             .maybeSingle();
 
+          if (pickErr) throw pickErr;
+
           if (pick && pick.selection) {
             const sel: any = pick.selection;
+
             const side: Side =
               sel.side === "home" ||
               sel.side === "away" ||
@@ -161,7 +243,9 @@ export default function ManagePick() {
               sel.side === "under"
                 ? sel.side
                 : "home";
+
             const team: string = sel.team || "";
+
             const market: Market =
               sel.market === "spread"
                 ? "spread"
@@ -183,11 +267,12 @@ export default function ManagePick() {
         if (on) {
           setTournament({
             id: String(t.id),
-            start_date: String(t.start_date),
-            end_date: t.end_date ? String(t.end_date) : null,
+            start_date: startIso,
+            end_date: endIso,
             entry_fee_cents: Number(t.entry_fee_cents ?? 0),
           });
           setDayISOState(iso);
+
           if (curr) {
             setExisting(curr);
             setLocked(true);
@@ -203,6 +288,7 @@ export default function ManagePick() {
         if (on) setLoading(false);
       }
     })();
+
     return () => {
       on = false;
     };
@@ -211,6 +297,14 @@ export default function ManagePick() {
   // load games & odds
   const loadGames = async () => {
     if (!dayISOState) return;
+
+    const dayDate = safeDateFromISO(dayISOState);
+    if (!dayDate) {
+      Alert.alert("Error", `Invalid day date: ${dayISOState}`);
+      setGames([]);
+      return;
+    }
+
     try {
       setGamesBusy(true);
       setNotEnabled(false);
@@ -218,14 +312,12 @@ export default function ManagePick() {
       const sport = L2S[league];
       const teams = await getTeams(sport);
 
-      const raw = await getGamesByDate(sport, new Date(dayISO(dayISOState)));
-      const mapped = (raw || []).map((g: any) =>
-        normalizeGame(sport, g, teams)
-      );
+      const raw = await getGamesByDate(sport, dayDate);
+      const mapped = (raw || []).map((g: any) => normalizeGame(sport, g, teams));
 
       let oddsMap: Record<string, any> = {};
       try {
-        oddsMap = await getOddsByDate(sport, new Date(dayISO(dayISOState)));
+        oddsMap = await getOddsByDate(sport, dayDate);
       } catch (err: any) {
         if (isNotEnabledError(err)) setNotEnabled(true);
       }
@@ -250,7 +342,7 @@ export default function ManagePick() {
             awayName: g.awayName,
             mlHome: o.mlHome ?? null,
             mlAway: o.mlAway ?? null,
-            spread: o.spread ?? null, // home spread
+            spread: o.spread ?? null,
             total: o.total ?? null,
           } as GameRow;
         })
@@ -272,7 +364,6 @@ export default function ManagePick() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [league, dayISOState]);
 
-  // helper to format existing pick text
   const formatExisting = (p: ExistingPick | null) => {
     if (!p) return "";
     switch (p.market) {
@@ -287,7 +378,6 @@ export default function ManagePick() {
     }
   };
 
-  // save pick
   const savePick = async (game: GameRow, side: Side) => {
     if (locked) {
       Alert.alert("Pick locked", "You already submitted a pick today.");
@@ -305,19 +395,24 @@ export default function ManagePick() {
       betTab === "Spread" ? "spread" : betTab === "Total" ? "total" : "ml";
 
     try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+      const { data: auth } = await supabase.auth.getUser();
+      const user = auth?.user;
+
       if (!user) throw new Error("Not signed in.");
       if (!tournament) throw new Error("Tournament missing.");
+      if (!entryId) throw new Error("Entry missing.");
+      if (!isISODateString(dayISOState)) throw new Error("Invalid day.");
 
       // check existing pick for this entry/day
-      const { data: existingRow } = await supabase
+      const { data: existingRow, error: exErr } = await supabase
         .from("picks")
         .select("id")
         .eq("entry_id", entryId)
         .eq("day_date", dayISOState)
         .maybeSingle();
+
+      if (exErr) throw exErr;
+
       if (existingRow?.id) {
         setLocked(true);
         Alert.alert("Pick locked", "You already submitted a pick for this day.");
@@ -330,20 +425,14 @@ export default function ManagePick() {
       let price: number | null = null;
 
       if (market === "total") {
-        // Over / Under on game total
         team = side === "over" ? "Over" : "Under";
         line = game.total ?? null;
       } else {
-        // team-based markets
         team = side === "home" ? game.homeShort : game.awayShort;
 
         if (market === "ml") {
-          price =
-            side === "home"
-              ? game.mlHome ?? null
-              : game.mlAway ?? null;
+          price = side === "home" ? game.mlHome ?? null : game.mlAway ?? null;
         } else if (market === "spread" && game.spread != null) {
-          // game.spread is home spread; away is the opposite sign
           line = side === "home" ? game.spread : -game.spread;
         }
       }
@@ -361,37 +450,36 @@ export default function ManagePick() {
 
       const { error } = await supabase.from("picks").insert({
         entry_id: entryId,
+        // keep both if your table has them
         game_day: dayISOState,
         day_date: dayISOState,
-        sport,
+        sport, // column exists (you said it does)
         market,
         league_game_id: String(game.id),
-        selection: selectionPayload, // jsonb
+        selection: selectionPayload,
       });
 
       if (error) throw error;
 
-      setExisting({
+      const newExisting: ExistingPick = {
         side,
         leagueGameId: String(game.id),
         team,
         market,
-      });
+      };
+
+      setExisting(newExisting);
       setLocked(true);
-      Alert.alert("Saved", `Your pick is ${formatExisting({
-        side,
-        leagueGameId: String(game.id),
-        team,
-        market,
-      })}.`);
+      Alert.alert("Saved", `Your pick is ${formatExisting(newExisting)}.`);
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Could not save pick.");
     }
   };
 
   const dayLabel = useMemo(() => {
-    if (!dayISOState) return "";
-    return new Date(dayISOState).toLocaleDateString(undefined, {
+    const d = safeDateFromISO(dayISOState);
+    if (!d) return "";
+    return d.toLocaleDateString(undefined, {
       weekday: "long",
       month: "short",
       day: "numeric",
@@ -420,11 +508,11 @@ export default function ManagePick() {
       {/* Day & lock info */}
       <View style={styles.headerCard}>
         <Text style={styles.subTitle}>{dayLabel}</Text>
-        <Text style={styles.noteTxt}>
-          One pick per day. You can pick from any game that{" "}
-          <Text style={{ color: GOLD, fontWeight: "900" }}>hasn’t started</Text>{" "}
-          yet.
-        </Text>
+   <Text style={styles.noteTxt}>
+  One pick per day (6 total). Choose any game that{" "}
+  <Text style={{ color: GOLD, fontWeight: "900" }}>hasn’t started</Text> yet.
+</Text>
+
         {!!existing && (
           <Text style={[styles.lockTxt, { marginTop: RFValue(6) }]}>
             Submitted:{" "}
@@ -475,7 +563,7 @@ export default function ManagePick() {
       <View style={{ paddingHorizontal: RFValue(16), marginTop: RFValue(6) }}>
         <Text style={{ color: "#ccc", fontSize: RFValue(11) }}>
           Viewing {betTab}. ML = moneyline, Spread = point spread, Total =
-          Over/Under. We still store a simple JSON pick for scoring.
+          Over/Under. Picks stored as JSON for scoring.
         </Text>
       </View>
 
@@ -502,10 +590,13 @@ export default function ManagePick() {
               <View style={{ height: RFValue(10) }} />
             )}
             renderItem={({ item }) => {
-              const pickedThis =
-                existing && existing.leagueGameId === item.id;
+              const pickedThis = existing && existing.leagueGameId === item.id;
               const isStarted = item.start <= Date.now();
-              const startTxt = new Date(item.start).toLocaleString();
+
+              const startTxt = Number.isFinite(item.start)
+                ? new Date(item.start).toLocaleString()
+                : "Time TBD";
+
               const timeLeftMin = Math.max(0, mins(item.start - Date.now()));
               const startsIn = isStarted
                 ? "Started"
@@ -527,8 +618,7 @@ export default function ManagePick() {
                     ? `${-item.spread}`
                     : `+${Math.abs(item.spread)}`
                   : "";
-              const totalLabel =
-                item.total != null ? `${item.total}` : "";
+              const totalLabel = item.total != null ? `${item.total}` : "";
 
               return (
                 <View style={styles.gameCard}>
@@ -551,10 +641,10 @@ export default function ManagePick() {
                     </Text>
                   </View>
 
-                  <Text
-                    style={styles.gameTeams}
-                    numberOfLines={1}
-                  >{`${item.awayShort} @ ${item.homeShort}`}</Text>
+                  <Text style={styles.gameTeams} numberOfLines={1}>
+                    {`${item.awayShort} @ ${item.homeShort}`}
+                  </Text>
+
                   <Text
                     style={{ color: "#bbb", marginBottom: RFValue(6) }}
                     numberOfLines={1}
@@ -563,28 +653,24 @@ export default function ManagePick() {
                   </Text>
 
                   {betTab === "ML" && (
-                    <Text
-                      style={{ color: "#bbb", marginBottom: RFValue(8) }}
-                    >
+                    <Text style={{ color: "#bbb", marginBottom: RFValue(8) }}>
                       Moneyline: {item.awayShort}
                       {fmtOdds(item.mlAway)} @ {item.homeShort}
                       {fmtOdds(item.mlHome)}{" "}
                       {notEnabled ? "(odds unavailable)" : ""}
                     </Text>
                   )}
+
                   {betTab === "Spread" && (
-                    <Text
-                      style={{ color: "#bbb", marginBottom: RFValue(8) }}
-                    >
+                    <Text style={{ color: "#bbb", marginBottom: RFValue(8) }}>
                       Spread: {item.awayShort} {awaySpreadLabel} •{" "}
                       {item.homeShort} {homeSpreadLabel}{" "}
                       {notEnabled ? "(odds unavailable)" : ""}
                     </Text>
                   )}
+
                   {betTab === "Total" && (
-                    <Text
-                      style={{ color: "#bbb", marginBottom: RFValue(8) }}
-                    >
+                    <Text style={{ color: "#bbb", marginBottom: RFValue(8) }}>
                       Total: {totalLabel || "—"}{" "}
                       {notEnabled ? "(odds unavailable)" : ""}
                     </Text>
@@ -604,9 +690,7 @@ export default function ManagePick() {
                             (locked || isStarted) && styles.disabled,
                           ]}
                         >
-                          <Text style={styles.pickTxt}>
-                            Over {totalLabel}
-                          </Text>
+                          <Text style={styles.pickTxt}>Over {totalLabel}</Text>
                         </TouchableOpacity>
 
                         <TouchableOpacity
@@ -620,9 +704,7 @@ export default function ManagePick() {
                             (locked || isStarted) && styles.disabled,
                           ]}
                         >
-                          <Text style={styles.pickTxt}>
-                            Under {totalLabel}
-                          </Text>
+                          <Text style={styles.pickTxt}>Under {totalLabel}</Text>
                         </TouchableOpacity>
                       </>
                     ) : (
@@ -677,6 +759,7 @@ export default function ManagePick() {
                       This game already started.
                     </Text>
                   )}
+
                   {locked && !pickedThis && (
                     <Text
                       style={{
