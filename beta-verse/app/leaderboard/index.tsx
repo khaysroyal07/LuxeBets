@@ -46,7 +46,7 @@ type Tournament = {
 };
 
 type WeekOption = {
-  key: string; // "YYYY-MM-DD" (Sunday local)
+  key: string; // "YYYY-MM-DD"
   label: string;
   monthKey: string;
   monthLabel: string;
@@ -87,7 +87,6 @@ const medalColor = (rank: number) => {
   return "#fff";
 };
 
-/** ---- DATE HELPERS ---- */
 const toLocalISO = (d: Date) => {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -103,14 +102,12 @@ const parseTsToLocalDateOnly = (ts: string) => {
   return toLocalISO(new Date(ms));
 };
 
-// ✅ IMPORTANT: Week key should be SUNDAY (join_open_at) in LOCAL DATE
+// week key should come from join_open_at
 const weekKeyForTournament = (t: Tournament): string | null => {
-  // join_open_at is the real “week start”
   if (t.join_open_at) {
     const k = parseTsToLocalDateOnly(t.join_open_at);
     if (k) return k;
   }
-  // fallback
   if (t.start_date) return String(t.start_date).slice(0, 10);
   return null;
 };
@@ -134,8 +131,11 @@ export default function LeaderboardScreen() {
   const [weekMenuOpen, setWeekMenuOpen] = useState(false);
 
   const [userId, setUserId] = useState<string | null>(null);
+
+  // did user join the CURRENTLY SELECTED planet?
   const [hasJoined, setHasJoined] = useState<boolean | null>(null);
 
+  // all joined tournament ids for selected week
   const [joinedTournamentIds, setJoinedTournamentIds] = useState<Set<string>>(new Set());
 
   const [showStanding, setShowStanding] = useState(true);
@@ -144,46 +144,46 @@ export default function LeaderboardScreen() {
   /* ---------------------- AUTH ---------------------- */
   useEffect(() => {
     let on = true;
+
     (async () => {
       try {
         const { data, error } = await supabase.auth.getUser();
         if (!on) return;
+
         if (error || !data.user) setUserId(null);
         else setUserId(data.user.id);
       } catch {
         if (on) setUserId(null);
       }
     })();
+
     return () => {
       on = false;
     };
   }, []);
 
-  /* ---------------------- TOURNAMENTS + WEEKS ---------------------- */
+  /* ---------------------- LOAD TOURNAMENTS ---------------------- */
   useEffect(() => {
     let on = true;
+
     (async () => {
       try {
         setBootLoading(true);
 
-        // ✅ don’t filter by start_date anymore (that’s why you see Sat)
-        // Just load recent tournaments and build week list from join_open_at
         const { data, error } = await supabase
           .from("tournaments")
-          .select(
-            `
-              id,
-              tier,
-              planet_name,
-              week_label,
-              start_date,
-              entry_fee_cents,
-              status,
-              created_at,
-              join_open_at,
-              join_close_at
-            `
-          )
+          .select(`
+            id,
+            tier,
+            planet_name,
+            week_label,
+            start_date,
+            entry_fee_cents,
+            status,
+            created_at,
+            join_open_at,
+            join_close_at
+          `)
           .order("join_open_at", { ascending: false, nullsFirst: false });
 
         if (error) throw error;
@@ -201,19 +201,36 @@ export default function LeaderboardScreen() {
 
           const dt = parseDateOnlyLocal(weekKey);
           const monthKey = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
-          const monthLabel = dt.toLocaleDateString("en-US", { month: "short", year: "numeric" });
-          const label = dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          const monthLabel = dt.toLocaleDateString("en-US", {
+            month: "short",
+            year: "numeric",
+          });
+          const label = dt.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+          });
 
-          weeksMap.set(weekKey, { key: weekKey, label, monthKey, monthLabel });
+          weeksMap.set(weekKey, {
+            key: weekKey,
+            label,
+            monthKey,
+            monthLabel,
+          });
         }
 
-        const weeks = Array.from(weeksMap.values()).sort((a, b) => b.key.localeCompare(a.key));
+        const weeks = Array.from(weeksMap.values()).sort((a, b) =>
+          b.key.localeCompare(a.key)
+        );
+
         setWeekOptions(weeks);
 
         if (weeks[0]) {
           setSelectedWeekKey(weeks[0].key);
 
-          const weekTournaments = all.filter((t) => weekKeyForTournament(t) === weeks[0].key);
+          const weekTournaments = all.filter(
+            (t) => weekKeyForTournament(t) === weeks[0].key
+          );
+
           if (weekTournaments[0]) setSelectedTid(weekTournaments[0].id);
         }
       } catch (e: any) {
@@ -229,13 +246,16 @@ export default function LeaderboardScreen() {
     };
   }, []);
 
-  /* ---------------------- DERIVED LISTS ---------------------- */
+  /* ---------------------- DERIVED ---------------------- */
   const tournamentsForWeek = useMemo(() => {
     if (!selectedWeekKey) return [];
     return tournaments.filter((t) => weekKeyForTournament(t) === selectedWeekKey);
   }, [tournaments, selectedWeekKey]);
 
-  const weekTournamentIds = useMemo(() => tournamentsForWeek.map((t) => t.id), [tournamentsForWeek]);
+  const weekTournamentIds = useMemo(
+    () => tournamentsForWeek.map((t) => t.id),
+    [tournamentsForWeek]
+  );
 
   const monthOptions: MonthOption[] = useMemo(() => {
     const map = new Map<string, MonthOption>();
@@ -270,13 +290,25 @@ export default function LeaderboardScreen() {
     return Number.isFinite(ms) ? Date.now() >= ms : true;
   }, [currentTournament?.join_open_at]);
 
-  /* ---------------------- WEEK MENU SELECT ---------------------- */
+  const selectedPlanetJoined = useMemo(() => {
+    if (!selectedTid) return false;
+    return joinedTournamentIds.has(selectedTid);
+  }, [joinedTournamentIds, selectedTid]);
+
+  const isBootScreen = useMemo(() => {
+    return bootLoading && !selectedWeekKey && tournaments.length === 0;
+  }, [bootLoading, selectedWeekKey, tournaments.length]);
+
+  /* ---------------------- WEEK SELECT ---------------------- */
   const handleWeekSelect = useCallback(
     (week: WeekOption) => {
       setSelectedWeekKey(week.key);
       setWeekMenuOpen(false);
 
-      const weekTournaments = tournaments.filter((t) => weekKeyForTournament(t) === week.key);
+      const weekTournaments = tournaments.filter(
+        (t) => weekKeyForTournament(t) === week.key
+      );
+
       if (weekTournaments[0]) setSelectedTid(weekTournaments[0].id);
       else {
         setSelectedTid(null);
@@ -290,15 +322,19 @@ export default function LeaderboardScreen() {
 
   useEffect(() => {
     if (!tournamentsForWeek.length) return;
+
     const existsInWeek = tournamentsForWeek.some((t) => t.id === selectedTid);
-    if (!selectedTid || !existsInWeek) setSelectedTid(tournamentsForWeek[0].id);
+    if (!selectedTid || !existsInWeek) {
+      setSelectedTid(tournamentsForWeek[0].id);
+    }
   }, [tournamentsForWeek, selectedTid]);
 
-  /* ---------------------- JOINED FOR WEEK (ENTRIES ONLY) ---------------------- */
-  const fetchJoinedForWeek = useCallback(async () => {
+  /* ---------------------- FETCH JOINED IDS ---------------------- */
+  const fetchJoinedForWeek = useCallback(async (): Promise<Set<string>> => {
     if (!userId || !selectedWeekKey || weekTournamentIds.length === 0) {
-      setJoinedTournamentIds(new Set());
-      return;
+      const empty = new Set<string>();
+      setJoinedTournamentIds(empty);
+      return empty;
     }
 
     try {
@@ -310,25 +346,28 @@ export default function LeaderboardScreen() {
 
       if (enRes.error) throw enRes.error;
 
-      const s = new Set<string>((enRes.data || []).map((r: any) => r.tournament_id));
-      setJoinedTournamentIds(s);
+      const joinedIds = new Set<string>(
+        (enRes.data || []).map((r: any) => String(r.tournament_id))
+      );
 
-      if (s.size > 0 && selectedTid && !s.has(selectedTid)) {
-        setSelectedTid(Array.from(s)[0]);
-      }
+      setJoinedTournamentIds(joinedIds);
+
+      return joinedIds;
     } catch (e: any) {
       console.warn("fetchJoinedForWeek error", e);
-      setJoinedTournamentIds(new Set());
+      const empty = new Set<string>();
+      setJoinedTournamentIds(empty);
+      return empty;
     }
-  }, [userId, selectedWeekKey, weekTournamentIds, selectedTid]);
+  }, [userId, selectedWeekKey, weekTournamentIds]);
 
   useEffect(() => {
     fetchJoinedForWeek();
   }, [fetchJoinedForWeek]);
 
-  /* ---------------------- LEADERBOARD FETCH ---------------------- */
+  /* ---------------------- FETCH LEADERBOARD ---------------------- */
   const fetchLeaderboard = useCallback(
-    async (opts?: { refreshing?: boolean }) => {
+    async (opts?: { refreshing?: boolean; joinedIdsOverride?: Set<string> }) => {
       const isRefreshing = !!opts?.refreshing;
 
       if (!selectedWeekKey || weekTournamentIds.length === 0) {
@@ -343,16 +382,38 @@ export default function LeaderboardScreen() {
         return;
       }
 
-      const idsFilter =
-        selectedTid && weekTournamentIds.includes(selectedTid) ? [selectedTid] : weekTournamentIds;
-
       try {
         setErrorMsg("");
         if (isRefreshing) setRefreshing(true);
         else setLoading(true);
 
-        const joinedAny = joinedTournamentIds.size > 0;
-        if (!joinedAny) {
+        let joinedIds = opts?.joinedIdsOverride;
+
+        if (!joinedIds) {
+          const enRes = await supabase
+            .from("entries")
+            .select("tournament_id")
+            .eq("user_id", userId)
+            .in("tournament_id", weekTournamentIds);
+
+          if (enRes.error) throw enRes.error;
+
+          joinedIds = new Set<string>(
+            (enRes.data || []).map((r: any) => String(r.tournament_id))
+          );
+
+          setJoinedTournamentIds(joinedIds);
+        }
+
+        // user joined none in this week
+        if (joinedIds.size === 0) {
+          setHasJoined(false);
+          setRows([]);
+          return;
+        }
+
+        // user selected a planet they did not join
+        if (selectedTid && !joinedIds.has(selectedTid)) {
           setHasJoined(false);
           setRows([]);
           return;
@@ -365,30 +426,46 @@ export default function LeaderboardScreen() {
           return;
         }
 
+        const idsFilter =
+          selectedTid && joinedIds.has(selectedTid)
+            ? [selectedTid]
+            : Array.from(joinedIds);
+
         const { data, error } = await supabase.rpc("get_tournament_leaderboard", {
           p_tournament_ids: idsFilter,
         });
 
         if (error) throw error;
 
-        const mapped: LeaderRow[] =
-          (data || []).map((row: any) => {
-            const tid = String(row.tournament_id || "");
-            const uid = String(row.user_id || "");
-            const rk = String(row.row_key || `${tid}:${uid}`);
+        const mapped: LeaderRow[] = (data || []).map((row: any) => {
+          const tid = String(row.tournament_id || "");
+          const uid = String(row.user_id || "");
+          const rk = String(row.row_key || `${tid}:${uid}`);
 
-            return {
-              row_key: rk,
-              tournament_id: tid,
-              user_id: uid,
-              username: row.username || `${uid.slice(0, 6)}…`,
-              points_total: row.points_total ?? 0,
-              status: row.status ?? "active",
-              rank: row.rank ?? null,
-            };
-          }) ?? [];
+          return {
+            row_key: rk,
+            tournament_id: tid,
+            user_id: uid,
+            username: row.username || `${uid.slice(0, 6)}…`,
+            points_total: row.points_total ?? 0,
+            status: row.status ?? "active",
+            rank: row.rank ?? null,
+          };
+        });
 
-        setRows(mapped);
+        const sorted = [...mapped].sort((a, b) => {
+          const ar = typeof a.rank === "number" ? a.rank : Number.MAX_SAFE_INTEGER;
+          const br = typeof b.rank === "number" ? b.rank : Number.MAX_SAFE_INTEGER;
+
+          if (ar !== br) return ar - br;
+
+          const dp = (b.points_total ?? 0) - (a.points_total ?? 0);
+          if (dp !== 0) return dp;
+
+          return (a.username || "").localeCompare(b.username || "");
+        });
+
+        setRows(sorted);
       } catch (e: any) {
         console.warn("leaderboard fetch error", e);
         setErrorMsg(e?.message || "Failed to load leaderboard.");
@@ -399,18 +476,61 @@ export default function LeaderboardScreen() {
         setRefreshing(false);
       }
     },
-    [selectedWeekKey, weekTournamentIds, selectedTid, userId, joinedTournamentIds, isOpenNow]
+    [selectedWeekKey, weekTournamentIds, selectedTid, userId, isOpenNow]
   );
 
   useEffect(() => {
     fetchLeaderboard();
   }, [fetchLeaderboard]);
 
-  const onRefresh = useCallback(() => {
-    fetchJoinedForWeek()
-      .catch(() => null)
-      .finally(() => fetchLeaderboard({ refreshing: true }));
+  const onRefresh = useCallback(async () => {
+    try {
+      const joinedIds = await fetchJoinedForWeek();
+      await fetchLeaderboard({ refreshing: true, joinedIdsOverride: joinedIds });
+    } catch (e) {
+      console.warn("refresh error", e);
+      setRefreshing(false);
+    }
   }, [fetchJoinedForWeek, fetchLeaderboard]);
+
+  /* ---------------------- REALTIME ---------------------- */
+  useEffect(() => {
+    if (!selectedTid || !userId) return;
+
+    const channel = supabase
+      .channel(`leaderboard-${selectedTid}-${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "leaderboards",
+          filter: `tournament_id=eq.${selectedTid}`,
+        },
+        async () => {
+          const joinedIds = await fetchJoinedForWeek();
+          await fetchLeaderboard({ joinedIdsOverride: joinedIds });
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "entries",
+          filter: `tournament_id=eq.${selectedTid}`,
+        },
+        async () => {
+          const joinedIds = await fetchJoinedForWeek();
+          await fetchLeaderboard({ joinedIdsOverride: joinedIds });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [selectedTid, userId, fetchJoinedForWeek, fetchLeaderboard]);
 
   /* ---------------------- STANDING + PODIUM ---------------------- */
   const myRow = useMemo(() => rows.find((r) => r.user_id === userId) || null, [rows, userId]);
@@ -458,7 +578,12 @@ export default function LeaderboardScreen() {
     if (topScore <= 0) return [];
 
     const rankedTop = rows
-      .filter((r) => typeof r.rank === "number" && (r.rank as number) > 0 && (r.rank as number) <= 3)
+      .filter(
+        (r) =>
+          typeof r.rank === "number" &&
+          (r.rank as number) > 0 &&
+          (r.rank as number) <= 3
+      )
       .sort((a, b) => (a.rank as number) - (b.rank as number));
 
     if (rankedTop.length) return rankedTop;
@@ -473,16 +598,6 @@ export default function LeaderboardScreen() {
       .slice(0, 3);
   }, [rows, topScore]);
 
-  const selectedPlanetJoined = useMemo(() => {
-    if (!selectedTid) return false;
-    return joinedTournamentIds.has(selectedTid);
-  }, [joinedTournamentIds, selectedTid]);
-
-  const isBootScreen = useMemo(() => {
-    return bootLoading && !selectedWeekKey && tournaments.length === 0;
-  }, [bootLoading, selectedWeekKey, tournaments.length]);
-
-  /* ---------------------- RENDER ---------------------- */
   return (
     <ImageBackground source={BG} resizeMode="cover" style={styles.bg}>
       <Modal
@@ -495,7 +610,10 @@ export default function LeaderboardScreen() {
           <Pressable style={styles.modalCard} onPress={() => null}>
             <View style={styles.modalHeaderRow}>
               <Text style={styles.modalTitle}>Tie for #1</Text>
-              <TouchableOpacity onPress={() => setTieModalOpen(false)} style={styles.modalCloseBtn}>
+              <TouchableOpacity
+                onPress={() => setTieModalOpen(false)}
+                style={styles.modalCloseBtn}
+              >
                 <Ionicons name="close" size={RFValue(16)} color="#fff" />
               </TouchableOpacity>
             </View>
@@ -522,7 +640,11 @@ export default function LeaderboardScreen() {
       ) : (
         <>
           <View style={styles.topBar}>
-            <TouchableOpacity style={styles.iconBtn} activeOpacity={0.9} onPress={() => router.back()}>
+            <TouchableOpacity
+              style={styles.iconBtn}
+              activeOpacity={0.9}
+              onPress={() => router.back()}
+            >
               <Ionicons name="chevron-back" size={RFValue(18)} color="#fff" />
             </TouchableOpacity>
             <Text style={styles.title}>Tournament Leaderboard</Text>
@@ -530,14 +652,24 @@ export default function LeaderboardScreen() {
           </View>
 
           <View style={styles.headerCard}>
-            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
               <Text style={styles.headerTitle}>Star Points Ranking</Text>
               <TouchableOpacity
                 activeOpacity={0.9}
                 onPress={() => setShowStanding((s) => !s)}
                 style={styles.collapseBtn}
               >
-                <Ionicons name={showStanding ? "chevron-up" : "chevron-down"} size={RFValue(14)} color="#fff" />
+                <Ionicons
+                  name={showStanding ? "chevron-up" : "chevron-down"}
+                  size={RFValue(14)}
+                  color="#fff"
+                />
                 <Text style={styles.collapseTxt}>{showStanding ? "Hide" : "Show"}</Text>
               </TouchableOpacity>
             </View>
@@ -547,12 +679,21 @@ export default function LeaderboardScreen() {
               style={styles.dropdownTrigger}
               onPress={() => setWeekMenuOpen(true)}
             >
-              <Ionicons name="calendar" size={RFValue(14)} color={GOLD} style={{ marginRight: RFValue(4) }} />
+              <Ionicons
+                name="calendar"
+                size={RFValue(14)}
+                color={GOLD}
+                style={{ marginRight: RFValue(4) }}
+              />
               <Text style={styles.dropdownPrefix}>Week:</Text>
               <Text style={styles.dropdownLabel} numberOfLines={1}>
                 {selectedWeekLabel}
               </Text>
-              <Ionicons name={weekMenuOpen ? "chevron-up" : "chevron-down"} size={RFValue(14)} color="#fff" />
+              <Ionicons
+                name={weekMenuOpen ? "chevron-up" : "chevron-down"}
+                size={RFValue(14)}
+                color="#fff"
+              />
             </TouchableOpacity>
 
             <Text style={styles.headerText}>
@@ -560,15 +701,20 @@ export default function LeaderboardScreen() {
             </Text>
 
             <Text style={styles.headerText}>
-              Goal:{" "}
-              <Text style={{ color: GOLD, fontWeight: "900" }}>{TARGET_POINTS} pts</Text> over 6 days. Ranking is
-              based on <Text style={{ color: "#fff" }}>total points</Text>.
+              Goal: <Text style={{ color: GOLD, fontWeight: "900" }}>{TARGET_POINTS} pts</Text> over 6
+              days. Ranking is based on <Text style={{ color: "#fff" }}>total points</Text>.
             </Text>
 
             {tournamentsForWeek.length > 0 && (
               <View style={styles.planetRow}>
                 {tournamentsForWeek.map((t) => {
-                  const label = (t.planet_name || t.tier || t.week_label || "Tournament").toLowerCase();
+                  const label = (
+                    t.planet_name ||
+                    t.tier ||
+                    t.week_label ||
+                    "Tournament"
+                  ).toLowerCase();
+
                   const selected = selectedTid === t.id;
                   const joined = joinedTournamentIds.has(t.id);
 
@@ -583,7 +729,13 @@ export default function LeaderboardScreen() {
                         joined && { borderColor: "rgba(255,215,0,0.45)" },
                       ]}
                     >
-                      <Text style={[styles.planetPillText, selected && styles.planetPillTextSelected]} numberOfLines={1}>
+                      <Text
+                        style={[
+                          styles.planetPillText,
+                          selected && styles.planetPillTextSelected,
+                        ]}
+                        numberOfLines={1}
+                      >
                         {label}
                       </Text>
                     </TouchableOpacity>
@@ -634,12 +786,20 @@ export default function LeaderboardScreen() {
                           return (
                             <TouchableOpacity
                               key={w.key}
-                              style={[styles.dropdownWeekRow, selected && styles.dropdownWeekRowSelected]}
+                              style={[
+                                styles.dropdownWeekRow,
+                                selected && styles.dropdownWeekRowSelected,
+                              ]}
                               activeOpacity={0.9}
                               onPress={() => handleWeekSelect(w)}
                             >
                               <View style={styles.dropdownWeekAccent} />
-                              <Text style={[styles.dropdownWeekText, selected && styles.dropdownWeekTextSelected]}>
+                              <Text
+                                style={[
+                                  styles.dropdownWeekText,
+                                  selected && styles.dropdownWeekTextSelected,
+                                ]}
+                              >
                                 {w.label}
                               </Text>
                             </TouchableOpacity>
@@ -662,8 +822,15 @@ export default function LeaderboardScreen() {
           <View style={styles.listWrap}>
             {hasJoined === false ? (
               <View style={styles.emptyWrap}>
-                <Text style={{ color: "#eee", textAlign: "center", fontSize: RFValue(12) }}>
-                  You must <Text style={{ color: GOLD, fontWeight: "900" }}>join</Text> this tournament week to view the leaderboard.
+                <Text
+                  style={{
+                    color: "#eee",
+                    textAlign: "center",
+                    fontSize: RFValue(12),
+                  }}
+                >
+                  You must <Text style={{ color: GOLD, fontWeight: "900" }}>join</Text> this tournament
+                  planet to view its leaderboard.
                 </Text>
               </View>
             ) : loading && !rows.length ? (
@@ -673,14 +840,20 @@ export default function LeaderboardScreen() {
             ) : rows.length === 0 ? (
               <View style={styles.emptyWrap}>
                 <Text style={{ color: "#ccc", textAlign: "center" }}>
-                  {selectedPlanetJoined ? "No leaderboard rows yet." : "You didn't join this planet. Tap the planet you joined."}
+                  {selectedPlanetJoined
+                    ? "No leaderboard rows yet."
+                    : "You didn't join this planet. Tap the planet you joined."}
                 </Text>
               </View>
             ) : (
               <FlatList
                 data={rows}
-                keyExtractor={(row, idx) => row.row_key || `${row.tournament_id}:${row.user_id}:${idx}`}
-                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={GOLD} />}
+                keyExtractor={(row, idx) =>
+                  row.row_key || `${row.tournament_id}:${row.user_id}:${idx}`
+                }
+                refreshControl={
+                  <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={GOLD} />
+                }
                 ListHeaderComponent={
                   <View style={{ paddingHorizontal: RFValue(12), paddingTop: RFValue(12) }}>
                     {showStanding && (
@@ -695,7 +868,10 @@ export default function LeaderboardScreen() {
                             </View>
                             <View style={styles.meRight}>
                               <View style={[styles.meTierPill, { borderColor: tierColor(myPts) }]}>
-                                <Text style={[styles.meTierTxt, { color: tierColor(myPts) }]} numberOfLines={1}>
+                                <Text
+                                  style={[styles.meTierTxt, { color: tierColor(myPts) }]}
+                                  numberOfLines={1}
+                                >
                                   {tierLabel(myPts)}
                                 </Text>
                               </View>
@@ -704,10 +880,17 @@ export default function LeaderboardScreen() {
 
                           <View style={styles.progressRow}>
                             <View style={styles.progressTrack}>
-                              <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` }]} />
+                              <View
+                                style={[
+                                  styles.progressFill,
+                                  { width: `${Math.round(progress * 100)}%` },
+                                ]}
+                              />
                             </View>
                             <Text style={styles.progressTxt}>
-                              {myPts >= TARGET_POINTS ? "Goal complete 🎉" : `${ptsToNext} pts to next tier • ${nextTierLabel}`}
+                              {myPts >= TARGET_POINTS
+                                ? "Goal complete 🎉"
+                                : `${ptsToNext} pts to next tier • ${nextTierLabel}`}
                             </Text>
                           </View>
                         </View>
@@ -723,7 +906,11 @@ export default function LeaderboardScreen() {
                                   activeOpacity={0.9}
                                   style={styles.tiePill}
                                 >
-                                  <Ionicons name="alert-circle" size={RFValue(12)} color={GOLD} />
+                                  <Ionicons
+                                    name="alert-circle"
+                                    size={RFValue(12)}
+                                    color={GOLD}
+                                  />
                                   <Text style={styles.tieTxt}>Tie • {topTied.length}</Text>
                                 </TouchableOpacity>
                               )}
@@ -774,16 +961,32 @@ export default function LeaderboardScreen() {
                   const isTop3 = !!rank && rank <= 3;
 
                   return (
-                    <View style={[styles.rowCard, isTop3 && styles.rowCardTop, isMe && styles.rowCardMe]}>
+                    <View
+                      style={[
+                        styles.rowCard,
+                        isTop3 && styles.rowCardTop,
+                        isMe && styles.rowCardMe,
+                      ]}
+                    >
                       <View style={styles.rowLeft}>
                         <View
                           style={[
                             styles.rankCircle,
                             isTop3 && rank ? { borderColor: medalColor(rank) } : null,
-                            isMe ? { backgroundColor: "rgba(255,215,0,0.12)", borderColor: GOLD } : null,
+                            isMe
+                              ? {
+                                  backgroundColor: "rgba(255,215,0,0.12)",
+                                  borderColor: GOLD,
+                                }
+                              : null,
                           ]}
                         >
-                          <Text style={[styles.rankTxt, isTop3 && rank ? { color: medalColor(rank) } : null]}>
+                          <Text
+                            style={[
+                              styles.rankTxt,
+                              isTop3 && rank ? { color: medalColor(rank) } : null,
+                            ]}
+                          >
                             {rank ? String(rank) : "—"}
                           </Text>
                         </View>
@@ -802,7 +1005,12 @@ export default function LeaderboardScreen() {
                           <Text style={styles.pointsTxt}>{pts}</Text>
                           <Text style={styles.pointsLabel}>pts</Text>
                         </View>
-                        <View style={[styles.tierBadge, { borderColor: tColor, shadowColor: tColor }]}>
+                        <View
+                          style={[
+                            styles.tierBadge,
+                            { borderColor: tColor, shadowColor: tColor },
+                          ]}
+                        >
                           <Text style={[styles.tierBadgeTxt, { color: tColor }]} numberOfLines={1}>
                             {tier}
                           </Text>
@@ -820,7 +1028,6 @@ export default function LeaderboardScreen() {
   );
 }
 
-/* styles: unchanged from your file + small additions used above */
 const styles = StyleSheet.create({
   bg: { flex: 1, backgroundColor: "#050009" },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
@@ -953,7 +1160,12 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 12 },
   },
-  dropdownTitle: { color: "#fff", fontWeight: "800", fontSize: RFValue(13), marginBottom: RFValue(8) },
+  dropdownTitle: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: RFValue(13),
+    marginBottom: RFValue(8),
+  },
   dropdownMonthBlock: { marginBottom: RFValue(8) },
   dropdownMonthHeader: {
     backgroundColor: "rgba(255,215,0,0.08)",
@@ -1027,9 +1239,19 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 0 },
   },
-  meHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: RFValue(10) },
+  meHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: RFValue(10),
+  },
   meTitle: { color: "#fff", fontWeight: "900", fontSize: RFValue(14) },
-  meSub: { color: "#cfcfcf", marginTop: RFValue(2), fontSize: RFValue(11), fontWeight: "600" },
+  meSub: {
+    color: "#cfcfcf",
+    marginTop: RFValue(2),
+    fontSize: RFValue(11),
+    fontWeight: "600",
+  },
   meRight: { alignItems: "flex-end", maxWidth: RFValue(150) },
   meTierPill: {
     paddingHorizontal: RFValue(10),
@@ -1049,7 +1271,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.06)",
   },
-  progressFill: { height: "100%", borderRadius: RFValue(999), backgroundColor: "rgba(255,215,0,0.7)" },
+  progressFill: {
+    height: "100%",
+    borderRadius: RFValue(999),
+    backgroundColor: "rgba(255,215,0,0.7)",
+  },
   progressTxt: {
     marginTop: RFValue(6),
     color: "rgba(255,255,255,0.75)",
@@ -1065,7 +1291,11 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.10)",
     padding: RFValue(12),
   },
-  podiumHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  podiumHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
   podiumTitle: { color: "#fff", fontWeight: "900", fontSize: RFValue(12) },
   podiumRow: { flexDirection: "row", gap: RFValue(10), marginTop: RFValue(10) },
   podiumItem: {
@@ -1089,8 +1319,18 @@ const styles = StyleSheet.create({
     marginBottom: RFValue(6),
   },
   podiumRank: { color: "#fff", fontWeight: "900", fontSize: RFValue(12) },
-  podiumName: { color: "#eee", fontWeight: "800", fontSize: RFValue(10), marginTop: RFValue(2) },
-  podiumPts: { color: "rgba(255,255,255,0.75)", fontSize: RFValue(10), marginTop: RFValue(2), fontWeight: "700" },
+  podiumName: {
+    color: "#eee",
+    fontWeight: "800",
+    fontSize: RFValue(10),
+    marginTop: RFValue(2),
+  },
+  podiumPts: {
+    color: "rgba(255,255,255,0.75)",
+    fontSize: RFValue(10),
+    marginTop: RFValue(2),
+    fontWeight: "700",
+  },
 
   tiePill: {
     flexDirection: "row",
@@ -1116,7 +1356,10 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.06)",
     marginBottom: RFValue(6),
   },
-  rowCardTop: { borderColor: "rgba(255,215,0,0.18)", backgroundColor: "rgba(12,10,24,0.95)" },
+  rowCardTop: {
+    borderColor: "rgba(255,215,0,0.18)",
+    backgroundColor: "rgba(12,10,24,0.95)",
+  },
   rowCardMe: {
     borderColor: "rgba(255,215,0,0.65)",
     backgroundColor: "rgba(20,16,30,0.98)",
@@ -1126,7 +1369,12 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
   },
 
-  rowLeft: { flexDirection: "row", alignItems: "center", gap: RFValue(8), flexShrink: 1 },
+  rowLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: RFValue(8),
+    flexShrink: 1,
+  },
   rankCircle: {
     width: RFValue(28),
     height: RFValue(28),
@@ -1138,7 +1386,12 @@ const styles = StyleSheet.create({
     borderColor: GOLD,
   },
   rankTxt: { color: GOLD, fontWeight: "900", fontSize: RFValue(14) },
-  userTxt: { color: "#fff", fontWeight: "800", fontSize: RFValue(13), maxWidth: RFValue(160) },
+  userTxt: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: RFValue(13),
+    maxWidth: RFValue(160),
+  },
   statusTxt: { color: "#aaa", fontSize: RFValue(10) },
 
   rowRight: { flexDirection: "row", alignItems: "center", gap: RFValue(10) },
@@ -1149,7 +1402,12 @@ const styles = StyleSheet.create({
     borderRadius: RFValue(10),
     backgroundColor: "rgba(255,255,255,0.06)",
   },
-  pointsTxt: { color: "#fff", fontWeight: "900", fontSize: RFValue(16), lineHeight: RFValue(18) },
+  pointsTxt: {
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: RFValue(16),
+    lineHeight: RFValue(18),
+  },
   pointsLabel: { color: "#aaa", fontSize: RFValue(9) },
 
   tierBadge: {
@@ -1181,9 +1439,18 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.14)",
     padding: RFValue(14),
   },
-  modalHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  modalHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
   modalTitle: { color: "#fff", fontWeight: "900", fontSize: RFValue(14) },
-  modalSub: { color: "rgba(255,255,255,0.7)", marginTop: RFValue(4), fontSize: RFValue(10), fontWeight: "700" },
+  modalSub: {
+    color: "rgba(255,255,255,0.7)",
+    marginTop: RFValue(4),
+    fontSize: RFValue(10),
+    fontWeight: "700",
+  },
   modalCloseBtn: {
     width: RFValue(30),
     height: RFValue(30),
@@ -1206,6 +1473,12 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.08)",
     marginBottom: RFValue(8),
   },
-  modalName: { color: "#fff", fontWeight: "800", fontSize: RFValue(12), flexShrink: 1, paddingRight: RFValue(10) },
+  modalName: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: RFValue(12),
+    flexShrink: 1,
+    paddingRight: RFValue(10),
+  },
   modalPts: { color: GOLD, fontWeight: "900", fontSize: RFValue(12) },
 });
