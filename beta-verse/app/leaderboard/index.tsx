@@ -46,7 +46,7 @@ type Tournament = {
 };
 
 type WeekOption = {
-  key: string; // "YYYY-MM-DD"
+  key: string;
   label: string;
   monthKey: string;
   monthLabel: string;
@@ -87,6 +87,8 @@ const medalColor = (rank: number) => {
   return "#fff";
 };
 
+const parseDateOnlyLocal = (iso: string) => new Date(`${iso}T12:00:00`);
+
 const toLocalISO = (d: Date) => {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -94,21 +96,25 @@ const toLocalISO = (d: Date) => {
   return `${y}-${m}-${day}`;
 };
 
-const parseDateOnlyLocal = (iso: string) => new Date(`${iso}T12:00:00`);
-
 const parseTsToLocalDateOnly = (ts: string) => {
   const ms = new Date(ts).getTime();
   if (!Number.isFinite(ms)) return null;
   return toLocalISO(new Date(ms));
 };
 
-// week key should come from join_open_at
+// group week by actual tournament week first
 const weekKeyForTournament = (t: Tournament): string | null => {
+  if (t.start_date) return String(t.start_date).slice(0, 10);
+
+  if (t.week_label && /^\d{4}-\d{2}-\d{2}/.test(String(t.week_label))) {
+    return String(t.week_label).slice(0, 10);
+  }
+
   if (t.join_open_at) {
     const k = parseTsToLocalDateOnly(t.join_open_at);
     if (k) return k;
   }
-  if (t.start_date) return String(t.start_date).slice(0, 10);
+
   return null;
 };
 
@@ -132,10 +138,7 @@ export default function LeaderboardScreen() {
 
   const [userId, setUserId] = useState<string | null>(null);
 
-  // did user join the CURRENTLY SELECTED planet?
-  const [hasJoined, setHasJoined] = useState<boolean | null>(null);
-
-  // all joined tournament ids for selected week
+  // ALL tournaments the user joined, across all weeks
   const [joinedTournamentIds, setJoinedTournamentIds] = useState<Set<string>>(new Set());
 
   const [showStanding, setShowStanding] = useState(true);
@@ -184,6 +187,7 @@ export default function LeaderboardScreen() {
             join_open_at,
             join_close_at
           `)
+          .order("start_date", { ascending: false, nullsFirst: false })
           .order("join_open_at", { ascending: false, nullsFirst: false });
 
         if (error) throw error;
@@ -246,16 +250,44 @@ export default function LeaderboardScreen() {
     };
   }, []);
 
+  /* ---------------------- LOAD ALL JOINED TOURNAMENT IDS ---------------------- */
+  const fetchJoinedTournamentIds = useCallback(async (): Promise<Set<string>> => {
+    if (!userId) {
+      const empty = new Set<string>();
+      setJoinedTournamentIds(empty);
+      return empty;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("entries")
+        .select("tournament_id, created_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+
+      const joinedIds = new Set<string>((data || []).map((r: any) => String(r.tournament_id)));
+      setJoinedTournamentIds(joinedIds);
+
+      return joinedIds;
+    } catch (e) {
+      console.warn("fetchJoinedTournamentIds error", e);
+      const empty = new Set<string>();
+      setJoinedTournamentIds(empty);
+      return empty;
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    fetchJoinedTournamentIds();
+  }, [fetchJoinedTournamentIds]);
+
   /* ---------------------- DERIVED ---------------------- */
   const tournamentsForWeek = useMemo(() => {
     if (!selectedWeekKey) return [];
     return tournaments.filter((t) => weekKeyForTournament(t) === selectedWeekKey);
   }, [tournaments, selectedWeekKey]);
-
-  const weekTournamentIds = useMemo(
-    () => tournamentsForWeek.map((t) => t.id),
-    [tournamentsForWeek]
-  );
 
   const monthOptions: MonthOption[] = useMemo(() => {
     const map = new Map<string, MonthOption>();
@@ -284,12 +316,6 @@ export default function LeaderboardScreen() {
       : "Current Tournament";
   }, [currentTournament]);
 
-  const isOpenNow = useMemo(() => {
-    if (!currentTournament?.join_open_at) return true;
-    const ms = new Date(currentTournament.join_open_at).getTime();
-    return Number.isFinite(ms) ? Date.now() >= ms : true;
-  }, [currentTournament?.join_open_at]);
-
   const selectedPlanetJoined = useMemo(() => {
     if (!selectedTid) return false;
     return joinedTournamentIds.has(selectedTid);
@@ -298,6 +324,34 @@ export default function LeaderboardScreen() {
   const isBootScreen = useMemo(() => {
     return bootLoading && !selectedWeekKey && tournaments.length === 0;
   }, [bootLoading, selectedWeekKey, tournaments.length]);
+
+  /* ---------------------- INITIAL SELECT JOINED TOURNAMENT ---------------------- */
+  useEffect(() => {
+    if (!tournaments.length || !joinedTournamentIds.size) return;
+
+    const joinedTournaments = tournaments.filter((t) => joinedTournamentIds.has(t.id));
+    if (!joinedTournaments.length) return;
+
+    const mostRecentJoinedTournament = joinedTournaments[0];
+    const joinedWeekKey = weekKeyForTournament(mostRecentJoinedTournament);
+
+    if (!joinedWeekKey) return;
+
+    setSelectedWeekKey(joinedWeekKey);
+    setSelectedTid(mostRecentJoinedTournament.id);
+  }, [tournaments, joinedTournamentIds]);
+
+  /* ---------------------- KEEP SELECTED TOURNAMENT IN CURRENT WEEK ---------------------- */
+  useEffect(() => {
+    if (!tournamentsForWeek.length) return;
+
+    const existsInWeek = tournamentsForWeek.some((t) => t.id === selectedTid);
+    if (!selectedTid || !existsInWeek) {
+      // prefer a joined tournament for that week if any
+      const joinedInWeek = tournamentsForWeek.find((t) => joinedTournamentIds.has(t.id));
+      setSelectedTid(joinedInWeek?.id || tournamentsForWeek[0].id);
+    }
+  }, [tournamentsForWeek, selectedTid, joinedTournamentIds]);
 
   /* ---------------------- WEEK SELECT ---------------------- */
   const handleWeekSelect = useCallback(
@@ -309,76 +363,29 @@ export default function LeaderboardScreen() {
         (t) => weekKeyForTournament(t) === week.key
       );
 
-      if (weekTournaments[0]) setSelectedTid(weekTournaments[0].id);
-      else {
+      if (weekTournaments.length) {
+        const joinedInWeek = weekTournaments.find((t) => joinedTournamentIds.has(t.id));
+        setSelectedTid(joinedInWeek?.id || weekTournaments[0].id);
+      } else {
         setSelectedTid(null);
         setRows([]);
-        setHasJoined(null);
-        setJoinedTournamentIds(new Set());
       }
     },
-    [tournaments]
+    [tournaments, joinedTournamentIds]
   );
-
-  useEffect(() => {
-    if (!tournamentsForWeek.length) return;
-
-    const existsInWeek = tournamentsForWeek.some((t) => t.id === selectedTid);
-    if (!selectedTid || !existsInWeek) {
-      setSelectedTid(tournamentsForWeek[0].id);
-    }
-  }, [tournamentsForWeek, selectedTid]);
-
-  /* ---------------------- FETCH JOINED IDS ---------------------- */
-  const fetchJoinedForWeek = useCallback(async (): Promise<Set<string>> => {
-    if (!userId || !selectedWeekKey || weekTournamentIds.length === 0) {
-      const empty = new Set<string>();
-      setJoinedTournamentIds(empty);
-      return empty;
-    }
-
-    try {
-      const enRes = await supabase
-        .from("entries")
-        .select("tournament_id")
-        .eq("user_id", userId)
-        .in("tournament_id", weekTournamentIds);
-
-      if (enRes.error) throw enRes.error;
-
-      const joinedIds = new Set<string>(
-        (enRes.data || []).map((r: any) => String(r.tournament_id))
-      );
-
-      setJoinedTournamentIds(joinedIds);
-
-      return joinedIds;
-    } catch (e: any) {
-      console.warn("fetchJoinedForWeek error", e);
-      const empty = new Set<string>();
-      setJoinedTournamentIds(empty);
-      return empty;
-    }
-  }, [userId, selectedWeekKey, weekTournamentIds]);
-
-  useEffect(() => {
-    fetchJoinedForWeek();
-  }, [fetchJoinedForWeek]);
 
   /* ---------------------- FETCH LEADERBOARD ---------------------- */
   const fetchLeaderboard = useCallback(
-    async (opts?: { refreshing?: boolean; joinedIdsOverride?: Set<string> }) => {
+    async (opts?: { refreshing?: boolean }) => {
       const isRefreshing = !!opts?.refreshing;
 
-      if (!selectedWeekKey || weekTournamentIds.length === 0) {
+      if (!selectedTid) {
         setRows([]);
-        setHasJoined(null);
         return;
       }
 
       if (!userId) {
         setRows([]);
-        setHasJoined(false);
         return;
       }
 
@@ -387,52 +394,15 @@ export default function LeaderboardScreen() {
         if (isRefreshing) setRefreshing(true);
         else setLoading(true);
 
-        let joinedIds = opts?.joinedIdsOverride;
-
-        if (!joinedIds) {
-          const enRes = await supabase
-            .from("entries")
-            .select("tournament_id")
-            .eq("user_id", userId)
-            .in("tournament_id", weekTournamentIds);
-
-          if (enRes.error) throw enRes.error;
-
-          joinedIds = new Set<string>(
-            (enRes.data || []).map((r: any) => String(r.tournament_id))
-          );
-
-          setJoinedTournamentIds(joinedIds);
-        }
-
-        // user joined none in this week
-        if (joinedIds.size === 0) {
-          setHasJoined(false);
+        // IMPORTANT:
+        // only block if user did NOT join the selected tournament
+        if (!joinedTournamentIds.has(selectedTid)) {
           setRows([]);
           return;
         }
-
-        // user selected a planet they did not join
-        if (selectedTid && !joinedIds.has(selectedTid)) {
-          setHasJoined(false);
-          setRows([]);
-          return;
-        }
-
-        setHasJoined(true);
-
-        if (!isOpenNow) {
-          setRows([]);
-          return;
-        }
-
-        const idsFilter =
-          selectedTid && joinedIds.has(selectedTid)
-            ? [selectedTid]
-            : Array.from(joinedIds);
 
         const { data, error } = await supabase.rpc("get_tournament_leaderboard", {
-          p_tournament_ids: idsFilter,
+          p_tournament_ids: [selectedTid],
         });
 
         if (error) throw error;
@@ -470,13 +440,12 @@ export default function LeaderboardScreen() {
         console.warn("leaderboard fetch error", e);
         setErrorMsg(e?.message || "Failed to load leaderboard.");
         setRows([]);
-        setHasJoined(null);
       } finally {
         setLoading(false);
         setRefreshing(false);
       }
     },
-    [selectedWeekKey, weekTournamentIds, selectedTid, userId, isOpenNow]
+    [selectedTid, userId, joinedTournamentIds]
   );
 
   useEffect(() => {
@@ -485,13 +454,13 @@ export default function LeaderboardScreen() {
 
   const onRefresh = useCallback(async () => {
     try {
-      const joinedIds = await fetchJoinedForWeek();
-      await fetchLeaderboard({ refreshing: true, joinedIdsOverride: joinedIds });
+      await fetchJoinedTournamentIds();
+      await fetchLeaderboard({ refreshing: true });
     } catch (e) {
       console.warn("refresh error", e);
       setRefreshing(false);
     }
-  }, [fetchJoinedForWeek, fetchLeaderboard]);
+  }, [fetchJoinedTournamentIds, fetchLeaderboard]);
 
   /* ---------------------- REALTIME ---------------------- */
   useEffect(() => {
@@ -508,8 +477,8 @@ export default function LeaderboardScreen() {
           filter: `tournament_id=eq.${selectedTid}`,
         },
         async () => {
-          const joinedIds = await fetchJoinedForWeek();
-          await fetchLeaderboard({ joinedIdsOverride: joinedIds });
+          await fetchJoinedTournamentIds();
+          await fetchLeaderboard();
         }
       )
       .on(
@@ -521,8 +490,8 @@ export default function LeaderboardScreen() {
           filter: `tournament_id=eq.${selectedTid}`,
         },
         async () => {
-          const joinedIds = await fetchJoinedForWeek();
-          await fetchLeaderboard({ joinedIdsOverride: joinedIds });
+          await fetchJoinedTournamentIds();
+          await fetchLeaderboard();
         }
       )
       .subscribe();
@@ -530,7 +499,7 @@ export default function LeaderboardScreen() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [selectedTid, userId, fetchJoinedForWeek, fetchLeaderboard]);
+  }, [selectedTid, userId, fetchJoinedTournamentIds, fetchLeaderboard]);
 
   /* ---------------------- STANDING + PODIUM ---------------------- */
   const myRow = useMemo(() => rows.find((r) => r.user_id === userId) || null, [rows, userId]);
@@ -820,7 +789,7 @@ export default function LeaderboardScreen() {
           )}
 
           <View style={styles.listWrap}>
-            {hasJoined === false ? (
+            {!selectedPlanetJoined ? (
               <View style={styles.emptyWrap}>
                 <Text
                   style={{
@@ -829,8 +798,7 @@ export default function LeaderboardScreen() {
                     fontSize: RFValue(12),
                   }}
                 >
-                  You must <Text style={{ color: GOLD, fontWeight: "900" }}>join</Text> this tournament
-                  planet to view its leaderboard.
+                  You didn’t join this planet. Tap a gold-outlined planet that you joined.
                 </Text>
               </View>
             ) : loading && !rows.length ? (
@@ -840,9 +808,7 @@ export default function LeaderboardScreen() {
             ) : rows.length === 0 ? (
               <View style={styles.emptyWrap}>
                 <Text style={{ color: "#ccc", textAlign: "center" }}>
-                  {selectedPlanetJoined
-                    ? "No leaderboard rows yet."
-                    : "You didn't join this planet. Tap the planet you joined."}
+                  No leaderboard rows yet.
                 </Text>
               </View>
             ) : (
